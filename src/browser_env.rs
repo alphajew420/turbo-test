@@ -324,6 +324,11 @@ pub fn install_independent_html(scope: &mut v8::PinScope, html: &str) {
 fn handle_of(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>) -> Option<Handle> {
     let f = obj.get_internal_field(scope, 0)?;
     let v = v8::Local::<v8::Value>::try_from(f).ok()?;
+    // Embedder globals can also have internal fields; undefined and pointers
+    // must not be coerced into node handle zero.
+    if !v.is_uint32() {
+        return None;
+    }
     v.uint32_value(scope).map(Handle::from_raw)
 }
 
@@ -3969,7 +3974,15 @@ mod tests {
         init_v8();
         let isolate = &mut v8::Isolate::new(Default::default());
         v8::scope!(let scope, isolate);
-        let context = v8::Context::new(scope, Default::default());
+        let global_template = v8::ObjectTemplate::new(scope);
+        global_template.set_internal_field_count(2);
+        let context = v8::Context::new(
+            scope,
+            v8::ContextOptions {
+                global_template: Some(global_template),
+                ..Default::default()
+            },
+        );
         let scope = &mut v8::ContextScope::new(scope, context);
         install(scope);
         let source = v8::String::new(scope, "globalThis.event=new Event('test');event").unwrap();
@@ -4001,6 +4014,24 @@ mod tests {
         assert_eq!(
             value.to_rust_string_lossy(scope),
             "[[true,false],false,37.5]"
+        );
+        let source=v8::String::new(scope,"globalThis.windowTrust=null;window.addEventListener('host-window',event=>windowTrust=event.isTrusted);new Event('host-window')").unwrap();
+        let event = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let event = v8::Local::<v8::Object>::try_from(event).unwrap();
+        let target = context.global(scope);
+        dispatch_host_event(scope, event, target);
+        let source = v8::String::new(scope, "String(windowTrust)").unwrap();
+        let value = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        assert_eq!(
+            value.to_rust_string_lossy(scope),
+            "true",
+            "host Window dispatch must use private captured registry"
         );
         install_with_html(scope, "<body><button>new document</button></body>");
         let source=v8::String::new(scope,r#"(() => {const bus=new EventTarget(),e=new Event('x',{cancelable:true});let phase;bus.addEventListener('x',ev=>{phase=ev.eventPhase;ev.returnValue=false;});return JSON.stringify([bus.dispatchEvent(e),phase,e.currentTarget,e.defaultPrevented]);})()"#).unwrap();
