@@ -33,6 +33,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   dispatch from script dispatch across DOM, custom EventTarget and window listeners.
 - Preserve CSS list receiver identity across document replacement and same-origin frame access;
   new style elements use the current document's CSSOM closures.
+- Project supported document collections and creation methods onto Document; normalize text nodes,
+  replace children and compare actual native tree positions through Node methods.
+- Store element event-handler properties privately and invoke them during native event dispatch;
+  preserve measured legacy Window load/pageshow state and real DOMException errors.
 
 ## [0.4.5] — 2026-10-10
 

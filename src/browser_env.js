@@ -250,6 +250,57 @@
     g.__captureEventRecord=function(event){return eventRecords.get(event);};
     __ns.ttEvent=true;
   }
+const __domExceptionState = new WeakMap();
+const __domExceptionCodes = {IndexSizeError:1, HierarchyRequestError:3, WrongDocumentError:4,
+  InvalidCharacterError:5, NoModificationAllowedError:7, NotFoundError:8, NotSupportedError:9,
+  InUseAttributeError:10, InvalidStateError:11, SyntaxError:12, InvalidModificationError:13,
+  NamespaceError:14, InvalidAccessError:15, TypeMismatchError:17, SecurityError:18,
+  NetworkError:19, AbortError:20, URLMismatchError:21, QuotaExceededError:22,
+  TimeoutError:23, InvalidNodeTypeError:24, DataCloneError:25};
+const __exceptionState = (exception) => {
+  const state = __domExceptionState.get(exception);
+  if (!state) throw new TypeError("Illegal invocation");
+  return state;
+};
+const __exceptionString = value => {
+  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
+  return String(value);
+};
+g.DOMException = class DOMException {
+  constructor(message = "", name = "Error") {
+    const text = __exceptionString(message), kind = __exceptionString(name);
+    __domExceptionState.set(this, {message: text, name: kind});
+  }
+  get name() { return __exceptionState(this).name; }
+  get message() { return __exceptionState(this).message; }
+  get code() { return __domExceptionCodes[__exceptionState(this).name] || 0; }
+};
+Object.setPrototypeOf(DOMException.prototype, Error.prototype);
+for (const name of ["name", "message", "code"]) {
+  const descriptor = Object.getOwnPropertyDescriptor(DOMException.prototype, name);
+  Object.defineProperty(DOMException.prototype, name, {...descriptor, enumerable: true});
+}
+Object.defineProperty(DOMException.prototype, Symbol.toStringTag, {value: "DOMException", configurable: true});
+for (const [name, code] of Object.entries({INDEX_SIZE_ERR:1, DOMSTRING_SIZE_ERR:2,
+  HIERARCHY_REQUEST_ERR:3, WRONG_DOCUMENT_ERR:4, INVALID_CHARACTER_ERR:5, NO_DATA_ALLOWED_ERR:6,
+  NO_MODIFICATION_ALLOWED_ERR:7, NOT_FOUND_ERR:8, NOT_SUPPORTED_ERR:9, INUSE_ATTRIBUTE_ERR:10,
+  INVALID_STATE_ERR:11, SYNTAX_ERR:12, INVALID_MODIFICATION_ERR:13, NAMESPACE_ERR:14,
+  INVALID_ACCESS_ERR:15, VALIDATION_ERR:16, TYPE_MISMATCH_ERR:17, SECURITY_ERR:18,
+  NETWORK_ERR:19, ABORT_ERR:20, URL_MISMATCH_ERR:21, QUOTA_EXCEEDED_ERR:22, TIMEOUT_ERR:23,
+  INVALID_NODE_TYPE_ERR:24, DATA_CLONE_ERR:25})) {
+  for (const object of [DOMException, DOMException.prototype]) Object.defineProperty(object, name, {value: code, enumerable: true});
+}
+
+if(typeof __ns.makeNativeFunction==='function'){
+  var exceptionImplementation=g.DOMException;
+  var exceptionConstructor=__ns.makeNativeFunction(exceptionImplementation,'DOMException',0,true,true);
+  exceptionConstructor.prototype=exceptionImplementation.prototype;
+  Object.defineProperty(exceptionConstructor.prototype,'constructor',{value:exceptionConstructor,configurable:true,writable:true});
+  Object.defineProperty(exceptionConstructor,'prototype',{writable:false});
+  for(var exceptionKey of Object.keys(exceptionImplementation))Object.defineProperty(exceptionConstructor,exceptionKey,Object.getOwnPropertyDescriptor(exceptionImplementation,exceptionKey));
+  ['name','message','code'].forEach(function(key){var descriptor=Object.getOwnPropertyDescriptor(exceptionConstructor.prototype,key);descriptor.get=__ns.makeNativeFunction(descriptor.get,'get '+key,0);Object.defineProperty(exceptionConstructor.prototype,key,descriptor);});
+  g.DOMException=exceptionConstructor;
+}
   function beginEventDispatch(event,target,path,host=false){
     var state=eventRecord(event);
     if(state.dispatching||!state.type)throw new g.DOMException('The event is already being dispatched or uninitialized.','InvalidStateError');
@@ -395,7 +446,8 @@
   // Captured privately by the host before page scripts can run.
   g.__captureHostEventDispatch=function(event,target){
     var state=beginEventDispatch(event,target,[target],true);
-    // Navigation lifecycle events retain Chrome's legacy Window target override.
+    // Chrome's Window lifecycle dispatch retains its legacy target/path/dispatch state.
+    // Independently verified with raw CDP; ordinary dispatch still clears its state.
     var legacyWindow=target===g&&(state.type==='load'||state.type==='pageshow');
     if(legacyWindow)state.target=g.document;
     var registry=target===g?__ns.winListeners:(target.__etl||target.__listeners);
@@ -403,7 +455,7 @@
     try{if(list)for(var listener of list.slice()){
       if(state.stopImmediate)break;
       try{typeof listener==='function'?listener.call(target,event):listener.handleEvent(event);}catch(e){}
-    }}finally{endEventDispatch(state);}
+    }}finally{if(!legacyWindow)endEventDispatch(state);}
     return !state.defaultPrevented;
   };
   // document extras (pure-JS shims over the native tree).
@@ -1639,10 +1691,52 @@
     ['before','after','remove','replaceWith'].forEach(function(name){
       Object.defineProperty(characterProto,name,Object.getOwnPropertyDescriptor(elementProto,name));
     });
-    ['isEqualNode'].forEach(function(name){
-      var descriptor=Object.getOwnPropertyDescriptor(htmlProto,name);
-      if(descriptor){Object.defineProperty(nodeProto,name,descriptor);delete htmlProto[name];}
+    function projectCompatibility(owner,names,source){
+      var proto=prototypes[owner],check=__ns.domAccessor('nodeType',false,owner);
+      names.forEach(function(name){
+        var descriptor=Object.getOwnPropertyDescriptor(source,name);
+        if(!descriptor)return;
+        ['get','set','value'].forEach(function(key){
+          var delegate=descriptor[key];if(typeof delegate!=='function')return;
+          descriptor[key]=__ns.makeNativeFunction(function(){check.call(this);return delegate.apply(this,arguments);},key==='get'?'get '+name:key==='set'?'set '+name:name,delegate.length);
+        });
+        descriptor.enumerable=true;Object.defineProperty(proto,name,descriptor);
+      });
+    }
+    projectCompatibility('Document',['getElementsByTagName','getElementsByClassName','getElementsByName'],htmlProto);
+    projectCompatibility('Node',['isEqualNode','isSameNode','lastChild','previousSibling','replaceChild'],htmlProto);
+    projectCompatibility('Element',['classList','getClientRects','getElementsByTagName','getElementsByClassName','nextElementSibling','previousElementSibling','requestFullscreen'],htmlProto);
+    ['isEqualNode','isSameNode','lastChild','previousSibling','replaceChild','classList','getClientRects','getElementsByTagName','getElementsByClassName','getElementsByName','nextElementSibling','previousElementSibling','requestFullscreen','lastElementChild'].forEach(function(name){delete htmlProto[name];});
+    ['createTextNode','createComment','createDocumentFragment','createElementNS','getElementById'].forEach(function(name){
+      var descriptor=Object.getOwnPropertyDescriptor(d,name);
+      if(descriptor&&typeof descriptor.value==='function'){
+        Object.defineProperty(documentProto,name,{value:descriptor.value,writable:true,configurable:true,enumerable:true});
+        nativeKeys.push(name);
+      }
     });
+    ['accept','autoFocus','autocomplete','checked','disabled','form','max','min','multiple','name','pattern','placeholder','readOnly','required','step','value','getBoundingClientRect'].forEach(function(name){delete prototypes.HTMLCanvasElement[name];});
+    var eventHandlers=new WeakMap(),checkHandlerReceiver=__ns.domAccessor('nodeType',false,'HTMLElement');
+    var handlerNames='abort animationcancel animationend animationiteration animationstart auxclick beforeinput beforematch beforetoggle beforexrselect blur cancel canplay canplaythrough change click close command contentvisibilityautostatechange contextlost contextmenu contextrestored copy cuechange cut dblclick drag dragend dragenter dragleave dragover dragstart drop durationchange emptied ended error focus formdata gotpointercapture input invalid keydown keypress keyup load loadeddata loadedmetadata loadstart lostpointercapture mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup mousewheel paste pause play playing pointercancel pointerdown pointerenter pointerleave pointermove pointerout pointerover pointerrawupdate pointerup progress ratechange reset resize scroll scrollend scrollsnapchange scrollsnapchanging securitypolicyviolation seeked seeking select selectionchange selectstart slotchange stalled submit suspend timeupdate toggle transitioncancel transitionend transitionrun transitionstart volumechange waiting webkitanimationend webkitanimationiteration webkitanimationstart webkittransitionend wheel'.split(' ');
+    handlerNames.forEach(function(type){
+      var name='on'+type;
+      Object.defineProperty(htmlProto,name,{configurable:true,enumerable:true,
+        get:__ns.makeNativeFunction(function(){checkHandlerReceiver.call(this);var handlers=eventHandlers.get(this);return handlers&&handlers[name]&&handlers[name].value||null;},'get '+name,0),
+        set:__ns.makeNativeFunction(function(value){
+          checkHandlerReceiver.call(this);value=typeof value==='function'?value:null;
+          var handlers=eventHandlers.get(this);if(!handlers){handlers=Object.create(null);eventHandlers.set(this,handlers);}
+          var entry=handlers[name];
+          if(!entry){entry={value:null,callback:__ns.makeNativeFunction(function(event){var current=eventHandlers.get(this)[name].value;if(current&&current.call(this,event)===false)event.preventDefault();},name,1)};handlers[name]=entry;}
+          if(value&&!entry.value)this.addEventListener(type,entry.callback);
+          if(!value&&entry.value)this.removeEventListener(type,entry.callback);
+          entry.value=value;
+        },'set '+name,1)});
+    });
+    var nodeOperations={
+      replaceChild(node,old){getType.call(node);getType.call(old);if(old.parentNode!==this)throw new g.DOMException('The node is not a child.','NotFoundError');if(node!==old){this.insertBefore(node,old);this.removeChild(old);}return old;},
+      normalize(){var nodes=this.childNodes;for(var index=0;index<nodes.length;){var node=nodes[index];if(node.nodeType!==3){node.normalize();index++;continue;}while(index+1<nodes.length&&nodes[index+1].nodeType===3){node.data+=nodes[index+1].data;this.removeChild(nodes[index+1]);nodes=this.childNodes;}if(!node.data){this.removeChild(node);nodes=this.childNodes;}else index++;}},
+      compareDocumentPosition(other){getType.call(other);if(this===other)return 0;var root=this.getRootNode(),otherRoot=other.getRootNode();if(root!==otherRoot){var order=__ns.nodeComparisonOrder||(__ns.nodeComparisonOrder=new WeakMap());var next=__ns.nodeComparisonNext||1;[this,other].forEach(function(node){if(!order.has(node))order.set(node,next++);});__ns.nodeComparisonNext=next;return 33|(order.get(this)<order.get(other)?4:2);}if(this.contains(other))return 20;if(other.contains(this))return 10;var before=false,found=false;(function visit(node){if(found)return;if(node===this)before=true;if(node===other){found=true;return;}var children=node.childNodes;for(var i=0;i<children.length;i++)visit.call(this,children[i]);}).call(this,root);return before?4:2;}
+    };
+    Object.keys(nodeOperations).forEach(function(name){var delegate=nodeOperations[name];var fn=__ns.makeNativeFunction(function(){getType.call(this);if(arguments.length<delegate.length)throw new TypeError(name+' requires '+delegate.length+' arguments');return delegate.apply(this,arguments);},name,delegate.length);Object.defineProperty(nodeProto,name,{value:fn,writable:true,configurable:true,enumerable:true});});
     var tags={DIV:'HTMLDivElement',SPAN:'HTMLSpanElement',P:'HTMLParagraphElement',INPUT:'HTMLInputElement',TEXTAREA:'HTMLTextAreaElement',SELECT:'HTMLSelectElement',OPTION:'HTMLOptionElement',BUTTON:'HTMLButtonElement',LABEL:'HTMLLabelElement',CANVAS:'HTMLCanvasElement',A:'HTMLAnchorElement',FORM:'HTMLFormElement',STYLE:'HTMLStyleElement',SCRIPT:'HTMLScriptElement',IFRAME:'HTMLIFrameElement',IMG:'HTMLImageElement',UL:'HTMLUListElement',LI:'HTMLLIElement',TABLE:'HTMLTableElement'};
     Object.keys(htmlByTag).forEach(function(tag){tags[tag]=htmlByTag[tag];});
     Object.assign(tags,{TD:'HTMLTableCellElement',TH:'HTMLTableCellElement',THEAD:'HTMLTableSectionElement',TBODY:'HTMLTableSectionElement',TFOOT:'HTMLTableSectionElement',COLGROUP:'HTMLTableColElement',Q:'HTMLQuoteElement',BLOCKQUOTE:'HTMLQuoteElement'});

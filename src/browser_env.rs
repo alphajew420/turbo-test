@@ -2501,9 +2501,6 @@ fn el_dispatch_event(
                     .cloned()
                     .unwrap_or_default()
             });
-            if listeners.is_empty() {
-                return true;
-            }
             let cur_node = wrap(scope, node_h);
             set_prop(scope, record, "currentTarget", cur_node.into());
             let phase = v8::Integer::new(
@@ -2529,6 +2526,7 @@ fn el_dispatch_event(
                 let recv: v8::Local<v8::Value> = cur_node.into();
                 f.call(scope, recv, &[event]);
             }
+
             true
         };
 
@@ -4075,23 +4073,23 @@ mod tests {
             .unwrap();
         let event = v8::Local::<v8::Object>::try_from(event).unwrap();
         dispatch_host_event(scope, event, target);
-        let source=v8::String::new(scope,"JSON.stringify([loadSeen,loadEvent.currentTarget===null,loadEvent.eventPhase,loadEvent.composedPath().length])").unwrap();
+        let source=v8::String::new(scope,"JSON.stringify([loadSeen,loadEvent.currentTarget===window,loadEvent.eventPhase,loadEvent.composedPath().length])").unwrap();
         let value = v8::Script::compile(scope, source, None)
             .unwrap()
             .run(scope)
             .unwrap();
         assert_eq!(
             value.to_rust_string_lossy(scope),
-            "[[true,true,2,true],true,0,0]"
+            "[[true,true,2,true],true,2,1]"
         );
-        let source=v8::String::new(scope,"window.dispatchEvent(loadEvent);JSON.stringify([loadSeen,loadEvent.currentTarget,loadEvent.eventPhase])").unwrap();
+        let source=v8::String::new(scope,"try{window.dispatchEvent(loadEvent);}catch(error){globalThis.redispatchError=error.name;}JSON.stringify([loadSeen,redispatchError,loadEvent.currentTarget===window,loadEvent.eventPhase])").unwrap();
         let value = v8::Script::compile(scope, source, None)
             .unwrap()
             .run(scope)
             .unwrap();
         assert_eq!(
             value.to_rust_string_lossy(scope),
-            "[[false,true,2,false],null,0]"
+            "[[true,true,2,true],\"InvalidStateError\",true,2]"
         );
         install_with_html(scope, "<body><button>new document</button></body>");
         let source=v8::String::new(scope,r#"(() => {const bus=new EventTarget(),e=new Event('x',{cancelable:true});let phase;bus.addEventListener('x',ev=>{phase=ev.eventPhase;ev.returnValue=false;});return JSON.stringify([bus.dispatchEvent(e),phase,e.currentTarget,e.defaultPrevented]);})()"#).unwrap();
