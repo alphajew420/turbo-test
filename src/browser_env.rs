@@ -4136,9 +4136,17 @@ mod tests {
                 r#"(()=>{
               const node=document.createElement('span');node.textContent='new';
               document.body.appendChild(node);
+              const style=document.createElement('style');style.textContent='sentinel {}';
+              document.head.appendChild(style);
+              const rules=style.sheet.cssRules;
+              globalThis.retainedSheets=globalThis.retainedSheets||[];
+              if(retainedSheets.some(sheet=>sheet.cssRules.length!==1||sheet.cssRules.item(0).selectorText!=='.retained'))return false;
+              const constructed=new CSSStyleSheet();constructed.replaceSync('.retained {}');retainedSheets.push(constructed);
               return document.body.querySelector('span')===node &&
                 node.appendChild===Node.prototype.appendChild &&
-                node.ownerDocument===document;
+                node.ownerDocument===document && rules.length===1 &&
+                rules.item(0).selectorText==='sentinel' &&
+                rules instanceof CSSRuleList && document.styleSheets.length===1;
             })()"#,
             )
             .unwrap();
@@ -4223,7 +4231,7 @@ mod tests {
         child.set_security_token(parent.get_security_token(scope));
         {
             let scope = &mut v8::ContextScope::new(scope, child);
-            install_independent_html(scope, "<html><head><title>child</title></head><body><div id='only-child'>child</div></body></html>");
+            install_independent_html(scope, "<html><head><title>child</title><style>child-sentinel {}</style></head><body><div id='only-child'>child</div></body></html>");
         }
         let global = parent.global(scope);
         let key = v8::String::new(scope, "child").unwrap();
@@ -4239,6 +4247,8 @@ mod tests {
           node.setAttribute('data-touched', 'yes');
           if (child.document.head.querySelector('title').textContent !== 'child'
               || child.document.querySelectorAll('head').length !== 1) throw new Error('parsed head was replaced');
+          if(child.document.styleSheets.length!==1||child.document.styleSheets.item(0).cssRules.length!==1
+              ||child.document.styleSheets.item(0).cssRules.item(0).selectorText!=='child-sentinel')throw new Error('child CSSOM receiver identity was lost');
           let nested = '';
           node.addEventListener('probe', () => {
             document.getElementById('only-parent').textContent = 'updated';

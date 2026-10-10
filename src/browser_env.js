@@ -409,6 +409,8 @@
   // Native Lightning CSS validates selectors/declarations and recovers invalid rules.
   // This scanner builds the facade's mutable object graph from that parsed CSS.
   var cssStores=new WeakMap();
+  // Retained sheets keep their own list brand after this context installs another document.
+  var cssListPrototypes={};
   var cssRecord=function(list){var record=cssStores.get(list);if(!record)throw new TypeError('Illegal invocation');if(record.refresh&&!record.refreshing){record.refreshing=true;try{record.items=record.refresh();}finally{record.refreshing=false;}}return record;};
   ['CSSRuleList','StyleSheetList'].forEach(function(name){
     var illegalConstructor=function(){throw new TypeError('Illegal constructor');};
@@ -425,10 +427,11 @@
     Object.defineProperty(ctor.prototype,Symbol.iterator,{configurable:true,writable:true,value:Array.prototype.values});
     Object.defineProperty(ctor,'prototype',{writable:false});
     Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});
+    cssListPrototypes[name]=ctor.prototype;
   });
   var cssIndex=function(key){return typeof key==='string'&&/^(0|[1-9]\d*)$/.test(key)?Number(key):-1;};
   var cssList=function(name,refresh){
-    var target=Object.create(g[name||'CSSRuleList'].prototype),record={items:[],refresh:refresh,refreshing:false},proxy;
+    var target=Object.create(cssListPrototypes[name||'CSSRuleList']),record={items:[],refresh:refresh,refreshing:false},proxy;
     proxy=new Proxy(target,{
       get:function(obj,key,receiver){var index=cssIndex(key);return index>=0?cssRecord(proxy).items[index]:Reflect.get(obj,key,receiver);},
       has:function(obj,key){var index=cssIndex(key);return index>=0?index<cssRecord(proxy).items.length:Reflect.has(obj,key);},
@@ -556,6 +559,7 @@
   // OWN accessor on each control element (testing-library's setNativeValue reads
   // getOwnPropertyDescriptor(element)) AND on the interface .prototype (React's value-tracker reads
   // node.constructor.prototype). No setPrototypeOf — avoids touching the native proto chain.
+  var currentSheetGetter;
   (function(){
     var mkSheet = function(el){var sheet=new g.CSSStyleSheet();sheet.ownerNode=el;sheet.__constructed=false;sheet.__rules=parseCssRules(el.textContent||'',sheet,null);return sheet;};
     var orig = d.createElement.bind(d);
@@ -1151,9 +1155,7 @@
       // Defined on the shared element prototype and
       // WITHOUT a descriptor guard (the NON_MASKING interceptor makes every lookup
       // report a descriptor, so a guard would wrongly skip). Caches per element.
-      Object.defineProperty(baseProto, 'sheet', {
-        configurable: true,
-        get: function(){
+      currentSheetGetter=function(){
           var tag = this.tagName;
           if (!tag) return null;
           tag=String(tag).toUpperCase();if(tag!=='STYLE'&&tag!=='LINK')return null;
@@ -1166,8 +1168,8 @@
             catch (e) { return mkSheet(this); }
           }
           return this.__tcSheet;
-        }
-      });
+        };
+      Object.defineProperty(baseProto, 'sheet', {configurable:true,get:currentSheetGetter});
       var docProto = Object.getPrototypeOf(d) || baseProto;
       if (g.Document) g.Document.prototype = docProto;
       if (g.HTMLDocument) g.HTMLDocument.prototype = docProto;
@@ -1543,6 +1545,8 @@
       var descriptor=Object.getOwnPropertyDescriptor(oldBase,key);
       if(descriptor)Object.defineProperty(htmlProto,key,descriptor);
     });
+    // Read-only constructor prototypes can leave the previous bootstrap's sheet getter in oldBase.
+    if(currentSheetGetter)Object.defineProperty(htmlProto,'sheet',{configurable:true,get:currentSheetGetter});
     Reflect.ownKeys(oldDocument).forEach(function(key){
       if(key!=='exitFullscreen'&&key!=='cookie')return;
       var descriptor=Object.getOwnPropertyDescriptor(oldDocument,key);

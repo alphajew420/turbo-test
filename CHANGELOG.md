@@ -31,6 +31,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   retain native DOM listeners and subclass EventTarget state without exposing cascade helpers.
 - Keep event state private, expose read-only event fields and distinguish host-generated trusted
   dispatch from script dispatch across DOM, custom EventTarget and window listeners.
+- Preserve CSS list receiver identity across document replacement and same-origin frame access;
+  new style elements use the current document's CSSOM closures.
 
 ## [0.4.5] — 2026-10-10
 
