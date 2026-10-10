@@ -185,12 +185,12 @@ fn missing_getter(
 /// properties. Required so `document.x = …` shims AND React's expando writes on DOM nodes
 /// (`node.__reactProps$…`, `_reactListening…`) persist instead of being swallowed by the
 /// getter-only interceptor.
-fn passthrough_setter(
+fn passthrough_setter<T>(
     _scope: &mut v8::PinScope,
     _name: v8::Local<v8::Name>,
     _value: v8::Local<v8::Value>,
     _args: v8::PropertyCallbackArguments,
-    _rv: v8::ReturnValue<()>,
+    _rv: v8::ReturnValue<T>,
 ) -> v8::Intercepted {
     v8::Intercepted::kNo
 }
@@ -1227,6 +1227,41 @@ fn get_outer_html(
     let html = with_tree(|t| turbo_dom_parser::rtdom::serialize::serialize_outer(t, h))
         .unwrap_or_default();
     rv.set(v8::String::new(scope, &html).unwrap().into());
+}
+
+fn set_outer_html(
+    scope: &mut v8::PinScope,
+    _name: v8::Local<v8::Name>,
+    value: v8::Local<v8::Value>,
+    args: v8::PropertyCallbackArguments,
+    _rv: v8::ReturnValue<()>,
+) {
+    let _dom = DomScope::for_object(scope, args.holder());
+    let Some(node) = handle_of(scope, args.holder()) else {
+        return;
+    };
+    let parent = with_tree(|tree| {
+        NodeRef::new(tree, node)
+            .parent()
+            .map(|parent| parent.handle())
+    })
+    .flatten();
+    let Some(parent) = parent else {
+        return;
+    };
+    if with_tree(|tree| tree.node_type_id(parent) == 9).unwrap_or(false) {
+        throw_dom_error(
+            scope,
+            "NoModificationAllowedError",
+            "The document element cannot be replaced with outerHTML",
+        );
+        return;
+    }
+    let html = value.to_rust_string_lossy(scope);
+    with_tree_mut(|tree| {
+        tree.insert_adjacent_html(node, "beforebegin", &html);
+        tree.remove_child(parent, node);
+    });
 }
 
 /// `children` = element-only child nodes (HTMLCollection-ish array).
@@ -3470,7 +3505,7 @@ fn build_el_template<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
     tmpl_getter(scope, tmpl, "localName", get_local_name);
     tmpl_getter(scope, tmpl, "childNodes", get_child_nodes);
     tmpl_getter(scope, tmpl, "ownerDocument", get_owner_document);
-    tmpl_getter(scope, tmpl, "outerHTML", get_outer_html);
+    tmpl_accessor(scope, tmpl, "outerHTML", get_outer_html, set_outer_html);
     tmpl_getter(scope, tmpl, "children", get_children);
     tmpl_getter(scope, tmpl, "parentElement", get_parent_element);
     tmpl_getter(scope, tmpl, "firstElementChild", get_first_element_child);
@@ -4040,14 +4075,14 @@ mod tests {
             .unwrap();
         let event = v8::Local::<v8::Object>::try_from(event).unwrap();
         dispatch_host_event(scope, event, target);
-        let source=v8::String::new(scope,"JSON.stringify([loadSeen,loadEvent.currentTarget===window,loadEvent.eventPhase,loadEvent.composedPath().length])").unwrap();
+        let source=v8::String::new(scope,"JSON.stringify([loadSeen,loadEvent.currentTarget===null,loadEvent.eventPhase,loadEvent.composedPath().length])").unwrap();
         let value = v8::Script::compile(scope, source, None)
             .unwrap()
             .run(scope)
             .unwrap();
         assert_eq!(
             value.to_rust_string_lossy(scope),
-            "[[true,true,2,true],true,2,0]"
+            "[[true,true,2,true],true,0,0]"
         );
         let source=v8::String::new(scope,"window.dispatchEvent(loadEvent);JSON.stringify([loadSeen,loadEvent.currentTarget,loadEvent.eventPhase])").unwrap();
         let value = v8::Script::compile(scope, source, None)
@@ -4515,6 +4550,39 @@ mod tests {
         for key in ["own", "moved", "cloned"] {
             assert_eq!(value[key], true, "{key}: {result}");
         }
+        reset();
+    }
+
+    #[test]
+    fn native_outer_html_replaces_and_detaches_the_original_element() {
+        init_v8();
+        let mut isolate = v8::Isolate::new(Default::default());
+        v8::scope!(let scope, &mut isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_with_html(
+            scope,
+            "<body><iframe id=old></iframe><b id=after></b></body>",
+        );
+        let code = v8::String::new(scope, r#"
+          const old=document.getElementById('old');
+          old.outerHTML='<p id=first>one</p><span id=second>two</span>';
+          const detached=document.createElement('div');detached.outerHTML='<b></b>';
+          let protectedRoot=false;try{document.documentElement.outerHTML='<p></p>'}catch(e){protectedRoot=e.name==='NoModificationAllowedError'}
+          JSON.stringify({old:!old.isConnected&&old.parentNode===null,
+            order:Array.from(document.body.children,e=>e.id).join(',')==='first,second,after',
+            detached:detached.tagName==='DIV',protectedRoot})
+        "#).unwrap();
+        let out = v8::Script::compile(scope, code, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        let result: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            result,
+            serde_json::json!({"old":true,"order":true,"detached":true,"protectedRoot":true})
+        );
         reset();
     }
 

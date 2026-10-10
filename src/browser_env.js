@@ -403,7 +403,7 @@
     try{if(list)for(var listener of list.slice()){
       if(state.stopImmediate)break;
       try{typeof listener==='function'?listener.call(target,event):listener.handleEvent(event);}catch(e){}
-    }}finally{endEventDispatch(state);if(legacyWindow){state.currentTarget=target;state.eventPhase=2;}}
+    }}finally{endEventDispatch(state);}
     return !state.defaultPrevented;
   };
   // document extras (pure-JS shims over the native tree).
@@ -1564,7 +1564,7 @@
       DocumentFragment:['children','firstElementChild'],
       ShadowRoot:['host','mode','innerHTML']
     };
-    var writable={nodeValue:1,textContent:1,id:1,className:1,innerHTML:1,contentEditable:1,data:1};
+    var writable={nodeValue:1,textContent:1,id:1,className:1,innerHTML:1,outerHTML:1,contentEditable:1,data:1};
     var nativeKeys=['constructor'];
     Object.keys(accessorOwners).forEach(function(owner){
       accessorOwners[owner].forEach(function(name){
