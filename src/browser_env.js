@@ -111,8 +111,8 @@
       }
     } catch(e){}
     // overlay inline style (own props React/components set: background, height, display, ...)
-    var st = el && el.style;
-    if (st) { for (var k in st) { if (k.indexOf('__') !== 0 && Object.prototype.hasOwnProperty.call(st, k) && typeof st[k] !== 'function') setProp(k, st[k]); } }
+    var st = el && __ns.makeInlineStyleDeclaration(el);
+    if (st) { var inline=__ns.readDeclarationText(st);cssParts(inline,';').forEach(function(part){var colon=part.indexOf(':');if(colon>0)setProp(part.slice(0,colon),part.slice(colon+1).trim().replace(/\s*!important$/,''));}); }
     if (decl.display == null) decl.display = '';
     // `visibility` is INHERITED: a child with no explicit visibility takes the parent's computed
     // value. testing-library / dom-accessibility-api rely on this — they treat an element as
@@ -151,7 +151,7 @@
         }
       });
     } catch(e){}
-    return decl;
+    return __ns.makeComputedStyleDeclaration(decl,el);
   };
   if (typeof g.requestAnimationFrame === 'undefined') g.requestAnimationFrame = function(cb){ return setTimeout(function(){ cb(Date.now()); }, 0); };
   if (typeof g.cancelAnimationFrame === 'undefined') g.cancelAnimationFrame = function(id){ clearTimeout(id); };
@@ -237,14 +237,78 @@
     g.Event = Event;
     function mkSub(extra){ return function(type, init = {}){ if (arguments.length === 0) throw new TypeError('Event requires a type'); init = init || {}; Event.call(this, type, init); if (extra) extra(this, init); for (var k in init){ if (!(k in this)) this[k] = init[k]; } }; }
     function sub(name, extra){ var C = mkSub(extra); Object.defineProperty(C, 'name', {value: name, configurable: true}); C.prototype = Object.create(Event.prototype); C.prototype.constructor = C; Object.defineProperty(C.prototype,Symbol.toStringTag,{value:name,configurable:true});g[name] = C; }
-    var keyExtra = function(self, init){ self.key = init.key||''; self.code = init.code||''; self.keyCode = init.keyCode||0; self.which = init.which||init.keyCode||0; self.altKey=!!init.altKey; self.ctrlKey=!!init.ctrlKey; self.metaKey=!!init.metaKey; self.shiftKey=!!init.shiftKey; self.repeat=!!init.repeat; };
-    var mouseExtra = function(self, init){ self.button=init.button||0; self.buttons=init.buttons||0; self.clientX=init.clientX||0; self.clientY=init.clientY||0; self.pageX=init.pageX||0; self.pageY=init.pageY||0; self.altKey=!!init.altKey; self.ctrlKey=!!init.ctrlKey; self.metaKey=!!init.metaKey; self.shiftKey=!!init.shiftKey; self.relatedTarget=init.relatedTarget||null; };
     sub('CustomEvent', function(self, init){ self.detail = init.detail === undefined ? null : init.detail; });
     sub('MessageEvent',function(self,init){self.data=init.data===undefined?null:init.data;self.origin=init.origin===undefined?'':eventString(init.origin);self.lastEventId=init.lastEventId===undefined?'':eventString(init.lastEventId);self.source=init.source||null;self.ports=init.ports||[];});
-    sub('UIEvent'); sub('MouseEvent', mouseExtra); sub('PointerEvent', mouseExtra); sub('KeyboardEvent', keyExtra);
-    sub('InputEvent', function(self, init){ self.data = init.data; self.inputType = init.inputType||''; });
-    sub('FocusEvent', function(self, init){ self.relatedTarget = init.relatedTarget||null; });
-    sub('CompositionEvent'); sub('WheelEvent', mouseExtra); sub('DragEvent', mouseExtra); sub('TouchEvent'); sub('ClipboardEvent');
+    // UI input interfaces keep Web-IDL state private; arbitrary dictionary keys
+    // never become instance properties and inherited getters retain their brand.
+    var uiStates=new WeakMap(), mouseStates=new WeakMap(), keyStates=new WeakMap(), inputStates=new WeakMap(), focusStates=new WeakMap(), pointerStates=new WeakMap(), wheelStates=new WeakMap();
+    var numberValue=function(value,fallback=0){if(value===undefined)return fallback;if(typeof value==='bigint')throw new TypeError('Cannot convert a BigInt to a number');return Number(value);};
+    var intValue=function(value){return numberValue(value)>>0;};
+    var shortValue=function(value){return (intValue(value)<<16)>>16;};
+    var stringValue=function(value,fallback=''){return value===undefined?fallback:eventString(value);};
+    var stateOf=function(states,receiver){var state=states.get(receiver);if(!state)throw new TypeError('Illegal invocation');return state;};
+    var modifierNames={Alt:'altKey',Control:'ctrlKey',Meta:'metaKey',Shift:'shiftKey',AltGraph:'modifierAltGraph',CapsLock:'modifierCapsLock',Fn:'modifierFn',FnLock:'modifierFnLock',Hyper:'modifierHyper',NumLock:'modifierNumLock',ScrollLock:'modifierScrollLock',Super:'modifierSuper',Symbol:'modifierSymbol',SymbolLock:'modifierSymbolLock'};
+    function modifiers(init){var state={};Object.keys(modifierNames).forEach(function(name){state[modifierNames[name]]=!!init[modifierNames[name]];});return state;}
+    function member(prototype,name,descriptor){descriptor.configurable=true;descriptor.enumerable=true;if(descriptor.value){descriptor.writable=true;if(__ns.makeNativeFunction)descriptor.value=__ns.makeNativeFunction(descriptor.value,name,descriptor.value.length);}if(descriptor.get&&__ns.makeNativeFunction)descriptor.get=__ns.makeNativeFunction(descriptor.get,'get '+name,0);Object.defineProperty(prototype,name,descriptor);}
+    function readonly(prototype,states,names){names.forEach(function(name){member(prototype,name,{get:Object.getOwnPropertyDescriptor({get [name](){return stateOf(states,this)[name];}},name).get});});}
+    function tagEvent(Constructor,name){Object.defineProperty(Constructor.prototype,Symbol.toStringTag,{value:name,configurable:true});}
+    function initializeUI(event,init){var view=init.view===undefined?null:init.view;if(view!==null&&view!==g&&!((g.Window&&view instanceof g.Window)))throw new TypeError('view must be a Window');uiStates.set(event,{view:view,detail:intValue(init.detail),sourceCapabilities:null,pseudoTarget:null});}
+    class UIEvent extends Event {
+      constructor(type,init={}){if(!arguments.length)throw new TypeError('A type is required');super(type,init);initializeUI(this,init||{});}
+    }
+    readonly(UIEvent.prototype,uiStates,['view','detail','sourceCapabilities','pseudoTarget']);
+    member(UIEvent.prototype,'which',{get:Object.getOwnPropertyDescriptor({get which(){stateOf(uiStates,this);var keys=keyStates.get(this);if(keys)return keys.charCode||keys.keyCode;var mouse=mouseStates.get(this);if(mouse)return mouse.button===2?3:mouse.button===1?2:mouse.button===0?1:0;return 0;}},'which').get});
+    member(UIEvent.prototype,'initUIEvent',{value:function initUIEvent(type,bubbles=false,cancelable=false,view=null,detail=0){stateOf(uiStates,this);if(!arguments.length)throw new TypeError('A type is required');if(eventRecord(this).dispatching)return;Event.prototype.initEvent.call(this,type,bubbles,cancelable);initializeUI(this,{view:view,detail:detail});}});
+    tagEvent(UIEvent,'UIEvent');g.UIEvent=UIEvent;
+    function mouseState(init){var state=modifiers(init);['screenX','screenY','clientX','clientY','movementX','movementY'].forEach(function(name){state[name]=numberValue(init[name]);});state.button=shortValue(init.button);state.buttons=intValue(init.buttons)&65535;state.relatedTarget=init.relatedTarget||null;if(state.relatedTarget!==null&&!(state.relatedTarget instanceof g.EventTarget))throw new TypeError('relatedTarget must be an EventTarget');return state;}
+    class MouseEvent extends UIEvent {
+      constructor(type,init={}){if(!arguments.length)throw new TypeError('A type is required');super(type,init);mouseStates.set(this,mouseState(init||{}));}
+    }
+    readonly(MouseEvent.prototype,mouseStates,['screenX','screenY','clientX','clientY','ctrlKey','shiftKey','altKey','metaKey','button','buttons','relatedTarget','movementX','movementY']);
+    ['pageX','pageY','x','y','offsetX','offsetY','layerX','layerY'].forEach(function(name){var axis=name.endsWith('X')||name==='x'?'clientX':'clientY';member(MouseEvent.prototype,name,{get:Object.getOwnPropertyDescriptor({get [name](){var value=stateOf(mouseStates,this)[axis];return name.startsWith('page')?value+(axis==='clientX'?(g.scrollX||0):(g.scrollY||0)):value;}},name).get});});
+    ['fromElement','toElement'].forEach(function(name){member(MouseEvent.prototype,name,{get:Object.getOwnPropertyDescriptor({get [name](){var state=stateOf(mouseStates,this),event=eventRecord(this);return (name==='fromElement')===(event.type==='mouseover'||event.type==='mouseenter')?state.relatedTarget:event.target;}},name).get});});
+    function modifier(states,receiver,key){var state=stateOf(states,receiver);return !!state[modifierNames[eventString(key)]];}
+    member(MouseEvent.prototype,'getModifierState',{value:function getModifierState(key){if(!arguments.length)throw new TypeError('A modifier is required');return modifier(mouseStates,this,key);}});
+    member(MouseEvent.prototype,'initMouseEvent',{value:function initMouseEvent(type,bubbles=false,cancelable=false,view=null,detail=0,screenX=0,screenY=0,clientX=0,clientY=0,ctrlKey=false,altKey=false,shiftKey=false,metaKey=false,button=0,relatedTarget=null){stateOf(mouseStates,this);if(!arguments.length)throw new TypeError('A type is required');if(eventRecord(this).dispatching)return;UIEvent.prototype.initUIEvent.call(this,type,bubbles,cancelable,view,detail);mouseStates.set(this,mouseState({screenX,screenY,clientX,clientY,ctrlKey,altKey,shiftKey,metaKey,button,relatedTarget}));}});
+    tagEvent(MouseEvent,'MouseEvent');g.MouseEvent=MouseEvent;
+    class KeyboardEvent extends UIEvent {
+      constructor(type,init={}){if(!arguments.length)throw new TypeError('A type is required');super(type,init);init=init||{};var state=modifiers(init);state.key=stringValue(init.key);state.code=stringValue(init.code);state.location=intValue(init.location)>>>0;state.repeat=!!init.repeat;state.isComposing=!!init.isComposing;state.charCode=intValue(init.charCode)>>>0;state.keyCode=intValue(init.keyCode)>>>0;keyStates.set(this,state);}
+    }
+    readonly(KeyboardEvent.prototype,keyStates,['key','code','location','ctrlKey','shiftKey','altKey','metaKey','repeat','isComposing','charCode','keyCode']);
+    member(KeyboardEvent.prototype,'getModifierState',{value:function getModifierState(key){if(!arguments.length)throw new TypeError('A modifier is required');return modifier(keyStates,this,key);}});
+    member(KeyboardEvent.prototype,'initKeyboardEvent',{value:function initKeyboardEvent(type,bubbles=false,cancelable=false,view=null,key='',location=0,ctrlKey=false,altKey=false,shiftKey=false,metaKey=false){var state=stateOf(keyStates,this);if(!arguments.length)throw new TypeError('A type is required');if(eventRecord(this).dispatching)return;UIEvent.prototype.initUIEvent.call(this,type,bubbles,cancelable,view,0);Object.assign(state,{key:eventString(key),location:intValue(location)>>>0,ctrlKey:!!ctrlKey,altKey:!!altKey,shiftKey:!!shiftKey,metaKey:!!metaKey});}});
+    ['DOM_KEY_LOCATION_STANDARD','DOM_KEY_LOCATION_LEFT','DOM_KEY_LOCATION_RIGHT','DOM_KEY_LOCATION_NUMPAD'].forEach(function(name,value){[KeyboardEvent,KeyboardEvent.prototype].forEach(function(object){Object.defineProperty(object,name,{value:value,enumerable:true});});});
+    tagEvent(KeyboardEvent,'KeyboardEvent');g.KeyboardEvent=KeyboardEvent;
+    class InputEvent extends UIEvent {
+      constructor(type,init={}){if(!arguments.length)throw new TypeError('A type is required');super(type,init);init=init||{};inputStates.set(this,{data:init.data==null?null:eventString(init.data),isComposing:!!init.isComposing,inputType:stringValue(init.inputType),dataTransfer:init.dataTransfer||null});}
+    }
+    readonly(InputEvent.prototype,inputStates,['data','isComposing','inputType','dataTransfer']);
+    member(InputEvent.prototype,'getTargetRanges',{value:function getTargetRanges(){stateOf(inputStates,this);return [];}});
+    tagEvent(InputEvent,'InputEvent');g.InputEvent=InputEvent;
+    class FocusEvent extends UIEvent {
+      constructor(type,init={}){if(!arguments.length)throw new TypeError('A type is required');super(type,init);var related=(init||{}).relatedTarget||null;if(related!==null&&!(related instanceof g.EventTarget))throw new TypeError('relatedTarget must be an EventTarget');focusStates.set(this,{relatedTarget:related});}
+    }
+    readonly(FocusEvent.prototype,focusStates,['relatedTarget']);tagEvent(FocusEvent,'FocusEvent');g.FocusEvent=FocusEvent;
+    class PointerEvent extends MouseEvent {
+      constructor(type,init={}){if(!arguments.length)throw new TypeError('A type is required');super(type,init);init=init||{};var state={pointerId:intValue(init.pointerId),width:numberValue(init.width,1),height:numberValue(init.height,1),pressure:numberValue(init.pressure),tangentialPressure:numberValue(init.tangentialPressure),tiltX:intValue(init.tiltX),tiltY:intValue(init.tiltY),twist:intValue(init.twist)>>>0,pointerType:stringValue(init.pointerType),isPrimary:!!init.isPrimary,altitudeAngle:numberValue(init.altitudeAngle,Math.PI/2),azimuthAngle:numberValue(init.azimuthAngle),persistentDeviceId:intValue(init.persistentDeviceId)};pointerStates.set(this,state);}
+    }
+    readonly(PointerEvent.prototype,pointerStates,['pointerId','width','height','pressure','tangentialPressure','tiltX','tiltY','twist','pointerType','isPrimary','altitudeAngle','azimuthAngle','persistentDeviceId']);
+    member(PointerEvent.prototype,'getCoalescedEvents',{value:function getCoalescedEvents(){stateOf(pointerStates,this);return [];}});
+    member(PointerEvent.prototype,'getPredictedEvents',{value:function getPredictedEvents(){stateOf(pointerStates,this);return [];}});
+    tagEvent(PointerEvent,'PointerEvent');g.PointerEvent=PointerEvent;
+    class WheelEvent extends MouseEvent {
+      constructor(type,init={}){if(!arguments.length)throw new TypeError('A type is required');super(type,init);init=init||{};wheelStates.set(this,{deltaX:numberValue(init.deltaX),deltaY:numberValue(init.deltaY),deltaZ:numberValue(init.deltaZ),deltaMode:intValue(init.deltaMode)>>>0,momentum:false});}
+    }
+    readonly(WheelEvent.prototype,wheelStates,['deltaX','deltaY','deltaZ','deltaMode','momentum']);
+    ['wheelDelta','wheelDeltaX','wheelDeltaY'].forEach(function(name){member(WheelEvent.prototype,name,{get:Object.getOwnPropertyDescriptor({get [name](){var state=stateOf(wheelStates,this);return -3*(name==='wheelDeltaX'?state.deltaX:state.deltaY);}},name).get});});
+    ['DOM_DELTA_PIXEL','DOM_DELTA_LINE','DOM_DELTA_PAGE'].forEach(function(name,value){[WheelEvent,WheelEvent.prototype].forEach(function(object){Object.defineProperty(object,name,{value:value,enumerable:true});});});
+    tagEvent(WheelEvent,'WheelEvent');g.WheelEvent=WheelEvent;
+    // Use the native class bridge for actual implementations, preserving private
+    // records and subclass new.target rather than replacing Function.toString.
+    [UIEvent,MouseEvent,KeyboardEvent,InputEvent,FocusEvent,PointerEvent,WheelEvent].forEach(function(implementation){var name=implementation.name,constructor=__ns.makeNativeFunction?__ns.makeNativeFunction(implementation,name,1,true,true):implementation;constructor.prototype=implementation.prototype;Object.defineProperty(constructor.prototype,'constructor',{value:constructor,writable:true,configurable:true});Object.defineProperty(constructor,'prototype',{writable:false});Object.keys(implementation).forEach(function(key){Object.defineProperty(constructor,key,Object.getOwnPropertyDescriptor(implementation,key));});g[name]=constructor;});
+    [MouseEvent,KeyboardEvent,InputEvent,FocusEvent].forEach(function(implementation){Object.setPrototypeOf(g[implementation.name],g.UIEvent);});
+    [PointerEvent,WheelEvent].forEach(function(implementation){Object.setPrototypeOf(g[implementation.name],g.MouseEvent);});
+    sub('CompositionEvent'); sub('DragEvent'); sub('TouchEvent'); sub('ClipboardEvent');
     g.document.createEvent = function(){ return new Event('', {}); };
     // The installer captures and deletes this function before guest execution.
     g.__captureEventRecord=function(event){return eventRecords.get(event);};
@@ -509,25 +573,43 @@ if(typeof __ns.makeNativeFunction==='function'){
     }
     out.push(text.slice(start)); return out;
   };
-  var cssDeclaration = function(text){
-    var st=Object.create(g.CSSStyleDeclaration.prototype), values={}, names=[];
-    st.getPropertyValue=function(n){return (values[String(n)] || '').replace(/\s*!important$/,'');};
-    st.getPropertyPriority=function(n){return /!important$/.test(values[String(n)]||'')?'important':'';};
-    st.setProperty=function(n,v,priority){n=String(n);if(!(n in values))names.push(n);values[n]=String(v)+(priority==='important'?' !important':'');st[n]=String(v);};
-    st.removeProperty=function(n){var v=st.getPropertyValue(n);delete values[n];delete st[n];var i=names.indexOf(n);if(i>=0)names.splice(i,1);return v;};
-    st.item=function(i){return names[i]||'';};
-    Object.defineProperty(st,'length',{get:function(){return names.length;}});
-    Object.defineProperty(st,'cssText',{get:function(){return names.map(function(n){return n+': '+values[n]+';';}).join(' ');},set:function(t){names.slice().forEach(function(n){st.removeProperty(n);});parse(t);}});
-    var parse=function(t){cssParts(String(t),';').forEach(function(part){var i=part.indexOf(':');if(i>0){var n=part.slice(0,i).trim(),v=part.slice(i+1).trim();if(n&&v)st.setProperty(n,v);}});};
-    parse(text); return st;
-  };
+  var declarationRecords=new WeakMap(),inlineDeclarations=new WeakMap(),cssPropertyCache=new Map();
+  function declarationRecord(style){var record=declarationRecords.get(style);if(!record)throw new TypeError('Illegal invocation');if(record.owner){var text=record.owner.getAttribute('style')||'';if(text!==record.source){record.source=text;parseDeclaration(record,text);}}if(record.refresh){var fresh=declarationRecords.get(record.refresh());if(fresh){record.values=fresh.values;record.names=fresh.names;}}return record;}
+  function cssString(value){if(typeof value==='symbol')throw new TypeError('Cannot convert a Symbol to a string');return String(value);}
+  function cssPropertyName(name){if(name==='cssFloat')return 'float';return String(name).replace(/[A-Z]/g,function(c){return '-'+c.toLowerCase();}).replace(/^webkit-/,'-webkit-');}
+  function knownProperty(name){if(!cssPropertyCache.has(name))cssPropertyCache.set(name,typeof __ns.parseCssNative==='function'&&__ns.parseCssNative(name,true));return cssPropertyCache.get(name);}
+  function declarationText(record){return record.names.map(function(name){var value=record.values.get(name);return name+': '+value.text+(value.priority?' !important':'')+';';}).join(' ');}
+  __ns.readDeclarationText=function(style){return declarationText(declarationRecord(style));};
+  function colorText(name,text){if(!/(?:^color$|color$)/.test(name))return text;var match=/^#([\da-f]{3}|[\da-f]{6})$/i.exec(text);if(!match)return text;var hex=match[1];if(hex.length===3)hex=hex.replace(/./g,function(c){return c+c;});return 'rgb('+parseInt(hex.slice(0,2),16)+', '+parseInt(hex.slice(2,4),16)+', '+parseInt(hex.slice(4,6),16)+')';}
+  function storeDeclaration(record,name,text,priority){if(!record.values.has(name))record.names.push(name);record.values.set(name,{text:colorText(name,text),priority:priority||''});}
+  function parseDeclaration(record,text){record.names=[];record.values=new Map();var parsed=typeof __ns.parseCssNative==='function'?__ns.parseCssNative('x { '+text+' }'):'x { '+text+' }';var body=parsed.slice(parsed.indexOf('{')+1,parsed.lastIndexOf('}'));cssParts(body,';').forEach(function(part){var index=part.indexOf(':');if(index<1)return;var name=part.slice(0,index).trim();if(!name.startsWith('--')&&!knownProperty(name))return;var value=part.slice(index+1).trim(),important=/\s*!important\s*$/i.test(value);if(important)value=value.replace(/\s*!important\s*$/i,'').trim();var previous=record.values.get(name);if(previous&&previous.priority&&!important)return;storeDeclaration(record,name,value,important?'important':'');});}
+  function writableDeclaration(record){if(record.readOnly)throw new g.DOMException('The declaration is read-only','NoModificationAllowedError');}
+  function commitDeclaration(record){if(record.owner){record.source=declarationText(record);record.owner.setAttribute('style',record.source);}}
+  function removeDeclaration(record,name){var previous=record.values.get(name);if(!previous)return '';record.values.delete(name);record.names.splice(record.names.indexOf(name),1);commitDeclaration(record);return previous.text;}
+  function setDeclaration(record,name,value,priority){writableDeclaration(record);name=cssString(name);value=value===null?'':cssString(value);priority=priority==null?'':cssString(priority).toLowerCase();if(!value){removeDeclaration(record,name);return;}if(priority&&priority!=='important'||!name.startsWith('--')&&!knownProperty(name))return;var parsed={names:[],values:new Map()};parseDeclaration(parsed,name+': '+value+(priority?' !important':'')+';');var accepted=parsed.values.get(name);if(!accepted)return;storeDeclaration(record,name,accepted.text,accepted.priority);commitDeclaration(record);}
+  var declarationConstructor=__ns.makeNativeFunction(function(){throw new TypeError('Illegal constructor');},'CSSStyleDeclaration',0,true);
+  declarationConstructor.prototype={};Object.defineProperty(declarationConstructor.prototype,'constructor',{value:declarationConstructor,writable:true,configurable:true});Object.defineProperty(declarationConstructor.prototype,Symbol.toStringTag,{value:'CSSStyleDeclaration',configurable:true});Object.defineProperty(declarationConstructor,'prototype',{writable:false});Object.defineProperty(g,'CSSStyleDeclaration',{value:declarationConstructor,writable:true,configurable:true,enumerable:false});
+  var declarationPrototype=declarationConstructor.prototype;
+  function declarationMember(name,get,set){var descriptor={enumerable:true,configurable:true,get:__ns.makeNativeFunction(get,'get '+name,0)};if(set)descriptor.set=__ns.makeNativeFunction(set,'set '+name,1);Object.defineProperty(declarationPrototype,name,descriptor);}
+  declarationMember('length',function(){return declarationRecord(this).names.length;});
+  declarationMember('parentRule',function(){return declarationRecord(this).parentRule||null;});
+  declarationMember('cssText',function(){var record=declarationRecord(this);return record.computed?'':declarationText(record);},function(value){var record=declarationRecord(this);writableDeclaration(record);parseDeclaration(record,cssString(value));commitDeclaration(record);});
+  var declarationMethods={getPropertyValue:function(name){if(!arguments.length)throw new TypeError('getPropertyValue requires 1 argument');var record=declarationRecord(this),value=record.values.get(cssString(name));return value?value.text:'';},getPropertyPriority:function(name){if(!arguments.length)throw new TypeError('getPropertyPriority requires 1 argument');var value=declarationRecord(this).values.get(cssString(name));return value?value.priority:'';},setProperty:function(name,value,priority){if(arguments.length<2)throw new TypeError('setProperty requires 2 arguments');setDeclaration(declarationRecord(this),name,value,priority);},removeProperty:function(name){if(!arguments.length)throw new TypeError('removeProperty requires 1 argument');var record=declarationRecord(this);writableDeclaration(record);return removeDeclaration(record,cssString(name));},item:function(index){if(!arguments.length)throw new TypeError('item requires 1 argument');return declarationRecord(this).names[Number(index)>>>0]||'';}};
+  Object.keys(declarationMethods).forEach(function(name){Object.defineProperty(declarationPrototype,name,{value:__ns.makeNativeFunction(declarationMethods[name],name,name==='setProperty'?2:1),writable:true,enumerable:true,configurable:true});});
+  Object.defineProperty(declarationPrototype,Symbol.iterator,{value:Array.prototype.values,writable:true,configurable:true});
+  function declarationProperty(name){if(typeof name!=='string'||name.startsWith('--'))return null;var cssName=cssPropertyName(name);return knownProperty(cssName)?cssName:null;}
+  var cssDeclaration=function(text,owner,parentRule,readOnly){var target=Object.create(declarationPrototype),record={names:[],values:new Map(),owner:owner||null,parentRule:parentRule||null,source:String(text||''),readOnly:!!readOnly},proxy;parseDeclaration(record,record.source);proxy=new Proxy(target,{get:function(obj,key,receiver){var index=cssIndex(key);if(index>=0)return declarationRecord(proxy).names[index];if(Reflect.has(obj,key))return Reflect.get(obj,key,receiver);var name=declarationProperty(key),value=name&&declarationRecord(proxy).values.get(name);return name?value?value.text:'':undefined;},set:function(obj,key,value,receiver){if(cssIndex(key)>=0)return false;if(Reflect.has(obj,key))return Reflect.set(obj,key,value,receiver);var name=declarationProperty(key);if(name){setDeclaration(declarationRecord(proxy),name,value,'');return true;}return Reflect.set(obj,key,value,receiver);},has:function(obj,key){return cssIndex(key)>=0?cssIndex(key)<declarationRecord(proxy).names.length:Reflect.has(obj,key)||!!declarationProperty(key);},ownKeys:function(){return declarationRecord(proxy).names.map(function(_,i){return String(i);}).concat(Reflect.ownKeys(target));},getOwnPropertyDescriptor:function(obj,key){var index=cssIndex(key),names=declarationRecord(proxy).names;if(index>=0&&index<names.length)return {value:names[index],writable:false,enumerable:true,configurable:true};var descriptor=Reflect.getOwnPropertyDescriptor(obj,key);if(descriptor)return descriptor;var name=declarationProperty(key),value=name&&declarationRecord(proxy).values.get(name);return name?{value:value?value.text:'',writable:true,enumerable:true,configurable:true}:undefined;},deleteProperty:function(obj,key){return cssIndex(key)<0&&Reflect.deleteProperty(obj,key);}});declarationRecords.set(proxy,record);return proxy;};
+  var inlineDeclarationReceiver=__ns.domAccessor('nodeType',false,'Element');
+  __ns.makeInlineStyleDeclaration=function(element){inlineDeclarationReceiver.call(element);var style=inlineDeclarations.get(element);if(!style){style=cssDeclaration(element.getAttribute('style')||'',element);inlineDeclarations.set(element,style);}return style;};
+  var computedStyleReader=g.getComputedStyle;
+  __ns.makeComputedStyleDeclaration=function(values,element){var style=cssDeclaration(''),record=declarationRecords.get(style);Object.keys(values).forEach(function(name){var cssName=cssPropertyName(name),value=values[name];if(typeof value==='string'&&value&&knownProperty(cssName))storeDeclaration(record,cssName,value,'');});record.readOnly=true;record.computed=true;if(element)record.refresh=function(){return computedStyleReader(element);};return style;};
   var cssRuleStates=new WeakMap();
   var cssRuleRecord=function(rule,type){var record=cssRuleStates.get(rule);if(!record||type&&record.type!==type)throw new TypeError('Illegal invocation');return record;};
   function cssRuleInterface(name,parent){var ctor=__ns.makeNativeFunction(function(){throw new TypeError('Illegal constructor');},name,0,true);ctor.prototype=Object.create(parent||Object.prototype);Object.defineProperty(ctor.prototype,'constructor',{value:ctor,writable:true,configurable:true});Object.defineProperty(ctor.prototype,Symbol.toStringTag,{value:name,configurable:true});Object.defineProperty(ctor,'prototype',{writable:false});if(parent)Object.setPrototypeOf(ctor,parent.constructor);Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});}
   cssRuleInterface('CSSRule');cssRuleInterface('CSSStyleRule',g.CSSRule.prototype);cssRuleInterface('CSSImportRule',g.CSSRule.prototype);
   function cssRuleMember(owner,name,get,set){var descriptor={enumerable:true,configurable:true,get:__ns.makeNativeFunction(get,'get '+name,0)};if(set)descriptor.set=__ns.makeNativeFunction(set,'set '+name,1);Object.defineProperty(g[owner].prototype,name,descriptor);}
   ['type','parentRule','parentStyleSheet'].forEach(function(name){cssRuleMember('CSSRule',name,function(){return cssRuleRecord(this)[name];});});
-  function cssRuleText(record){if(record.type===1){var text=record.style.cssText;return record.selectorText+' {'+(text?' '+text+' ':' ')+'}';}return record.cssText;}
+  function cssRuleText(record){if(record.type===1){var text=declarationText(declarationRecord(record.style));return record.selectorText+' {'+(text?' '+text+' ':' ')+'}';}return record.cssText;}
   __ns.readCssRuleText=function(rule){return cssRuleText(cssRuleRecord(rule));};
   cssRuleMember('CSSRule','cssText',function(){return cssRuleText(cssRuleRecord(this));},function(value){cssRuleRecord(this);if(typeof value==='symbol')throw new TypeError('Cannot convert a Symbol to a string');String(value);});
   cssRuleMember('CSSStyleRule','selectorText',function(){return cssRuleRecord(this,1).selectorText;},function(value){var record=cssRuleRecord(this,1);if(typeof value==='symbol')throw new TypeError('Cannot convert a Symbol to a string');var parsed=parseCssRules(String(value)+' {}',record.parentStyleSheet,record.parentRule);if(parsed.length===1&&cssRuleRecord(parsed[0]).type===1)record.selectorText=cssRuleRecord(parsed[0],1).selectorText;});
@@ -551,8 +633,8 @@ if(typeof __ns.makeNativeFunction==='function'){
         if(head){
           var isAt=head[0]==='@',rule={};
           rule.parentStyleSheet=sheet;rule.parentRule=parent||null;
-          if(isAt){rule.type=/^@media\b/i.test(head)?4:/^@supports\b/i.test(head)?12:/^@font-face\b/i.test(head)?5:/^@keyframes\b/i.test(head)?7:0;rule.cssText=head+' { '+body.trim()+' }';if(rule.type===5)rule.style=cssDeclaration(body);else rule.cssRules=parseCssRules(body,sheet,rule,true);}
-          else {rule.type=1;rule.selectorText=head.replace(/\s*,\s*/g,', ');rule.style=cssDeclaration(body);rule.cssText=head+' { '+body.trim()+' }';}
+          if(isAt){rule.type=/^@media\b/i.test(head)?4:/^@supports\b/i.test(head)?12:/^@font-face\b/i.test(head)?5:/^@keyframes\b/i.test(head)?7:0;rule.cssText=head+' { '+body.trim()+' }';if(rule.type===5)rule.style=cssDeclaration(body,null,rule);else rule.cssRules=parseCssRules(body,sheet,rule,true);}
+          else {rule.type=1;rule.selectorText=head.replace(/\s*,\s*/g,', ');rule.style=cssDeclaration(body,null,rule);rule.cssText=head+' { '+body.trim()+' }';}
           cssItems(out).push(finishCssRule(rule));
         }
         start=i+1;
@@ -1640,6 +1722,7 @@ if(typeof __ns.makeNativeFunction==='function'){
         Object.defineProperty(prototypes[owner],name,descriptor);
       });
     });
+    var inlineStyle=Object.getOwnPropertyDescriptor(htmlProto,'style');inlineStyle.set=__ns.makeNativeFunction(function(value){var style=inlineStyle.get.call(this);Object.getOwnPropertyDescriptor(declarationPrototype,'cssText').set.call(style,value);},'set style',1);Object.defineProperty(htmlProto,'style',inlineStyle);
     ['Element','Document','DocumentFragment'].forEach(function(owner){
       var children=Object.getOwnPropertyDescriptor(prototypes[owner],'children').get;
       ['childElementCount','lastElementChild'].forEach(function(name){

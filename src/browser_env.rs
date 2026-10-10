@@ -331,6 +331,61 @@ fn handle_of(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>) -> Option<Han
     v.uint32_value(scope).map(Handle::from_raw)
 }
 
+/// Native light-document membership, used by hosts that enumerate child navigables.
+/// Shadow-tree nodes can be connected without belonging to the document's child list.
+pub fn is_light_document_node(scope: &mut v8::PinScope, object: v8::Local<v8::Object>) -> bool {
+    let _dom = DomScope::for_object(scope, object);
+    let Some(handle) = handle_of(scope, object) else {
+        return false;
+    };
+    with_tree(|tree| {
+        let mut current = Some(handle);
+        while let Some(node) = current {
+            if node == tree.root() {
+                return true;
+            }
+            current = tree.parent(node);
+        }
+        false
+    })
+    .unwrap_or(false)
+}
+
+/// Native containment across shadow hosts, for lifecycle work on moved subtrees.
+pub fn composed_contains_node(
+    scope: &mut v8::PinScope,
+    ancestor: v8::Local<v8::Object>,
+    node: v8::Local<v8::Object>,
+) -> bool {
+    let Some(a_context) = ancestor.get_creation_context(scope) else {
+        return false;
+    };
+    let Some(n_context) = node.get_creation_context(scope) else {
+        return false;
+    };
+    if a_context != n_context {
+        return false;
+    }
+    let _dom = DomScope::for_object(scope, node);
+    let Some(ancestor) = handle_of(scope, ancestor) else {
+        return false;
+    };
+    let Some(node) = handle_of(scope, node) else {
+        return false;
+    };
+    with_tree(|tree| {
+        let mut current = Some(node);
+        while let Some(node) = current {
+            if node == ancestor {
+                return true;
+            }
+            current = tree.parent(node).or_else(|| tree.shadow_host(node));
+        }
+        false
+    })
+    .unwrap_or(false)
+}
+
 fn receiver_handle(
     scope: &mut v8::PinScope,
     args: &v8::FunctionCallbackArguments,
@@ -2974,269 +3029,56 @@ thread_local! {
     static STYLE: RefCell<HashMap<Handle, v8::Global<v8::Object>>> = RefCell::new(HashMap::new());
 }
 
-/// `element.style` → a cached plain JS object (CSSStyleDeclaration-lite). React sets `style.color`
-/// etc. as own props; `el.style.x === x` works. (Full CSSOM / attribute sync is a later refinement.)
+/// Inline declarations are cached by native node and use the context's shared
+/// CSSStyleDeclaration factory, which keeps values private and reflects mutations
+/// to this element's actual style content attribute.
 fn get_style(
     scope: &mut v8::PinScope,
     _name: v8::Local<v8::Name>,
     args: v8::PropertyCallbackArguments,
     mut rv: v8::ReturnValue<v8::Value>,
 ) {
-    let _dom = DomScope::for_object(scope, args.holder());
-    let Some(h) = handle_of(scope, args.holder()) else {
+    let receiver = args.holder();
+    let context = receiver
+        .get_creation_context(scope)
+        .unwrap_or_else(|| scope.get_current_context());
+    let scope = &mut v8::ContextScope::new(scope, context);
+    let _dom = DomScope::for_object(scope, receiver);
+    let Some(h) = handle_of(scope, receiver) else {
         return;
     };
     if let Some(g) = STYLE.with(|s| s.borrow().get(&h).cloned()) {
-        let o = v8::Local::new(scope, &g);
-        rv.set(o.into());
+        rv.set(v8::Local::new(scope, &g).into());
         return;
     }
-    let obj = v8::Object::new(scope);
-    // setProperty/getPropertyValue/removeProperty so libs using the CSSOM methods don't crash.
-    bind_method(scope, obj, "setProperty", style_set_property);
-    bind_method(scope, obj, "getPropertyValue", style_get_property);
-    bind_method(
-        scope,
-        obj,
-        "getPropertyPriority",
-        style_get_property_priority,
-    );
-    bind_method(scope, obj, "removeProperty", style_remove_property);
-    // stash the element handle so the proxy set-trap can reflect to the `style` content attribute.
-    if let Some(hk) = v8::String::new(scope, "__h") {
-        let hv = v8::Number::new(scope, f64::from(h.raw()));
-        obj.set(scope, hk.into(), hv.into());
-    }
-    // Wrap in a Proxy whose set-trap reflects every style mutation (React writes el.style.x = v) to
-    // the `style` content attribute in the tree, so attribute selectors (`[style]`) and
-    // getAttribute('style') see it. Reads/methods pass through to the target.
-    let handler = v8::Object::new(scope);
-    bind_method(scope, handler, "set", style_proxy_set);
-    let proxy = v8::Proxy::new(scope, obj, handler)
-        .map(|p| p.into())
-        .unwrap_or(obj);
-    let g = v8::Global::new(scope, proxy);
+    let global = context.global(scope);
+    let name = v8::String::new(scope, "ts").unwrap();
+    let key = v8::Symbol::for_key(scope, name);
+    let Some(namespace) = global
+        .get(scope, key.into())
+        .and_then(|v| v.to_object(scope))
+    else {
+        return;
+    };
+    let key = v8::String::new(scope, "makeInlineStyleDeclaration").unwrap();
+    let Some(factory) = namespace
+        .get(scope, key.into())
+        .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+    else {
+        return;
+    };
+    let node = wrap(scope, h);
+    let Some(declaration) = factory
+        .call(scope, namespace.into(), &[node.into()])
+        .and_then(|v| v.to_object(scope))
+    else {
+        return;
+    };
+    let saved = v8::Global::new(scope, declaration);
     STYLE.with(|s| {
-        s.borrow_mut().insert(h, g);
+        s.borrow_mut().insert(h, saved);
     });
-    rv.set(proxy.into());
-}
-
-/// Proxy `set` trap for `element.style`: set on the target, then serialize the declaration to the
-/// element's `style` content attribute so it's observable via attribute selectors / getAttribute.
-fn style_proxy_set(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _dom = DomScope::for_object(scope, args.this());
-    let target = match v8::Local::<v8::Object>::try_from(args.get(0)) {
-        Ok(o) => o,
-        Err(_) => {
-            rv.set_bool(false);
-            return;
-        }
-    };
-    let key = args.get(1);
-    let mut value = args.get(2);
-    // CSSOM values are always strings (jest-dom assigns numbers like `style.fontWeight = 600`; a
-    // browser stores "600"). Coerce to string, then normalize hex colors to rgb()/rgba() so
-    // el.style.X reads match getComputedStyle's normalized cascade values for jest-dom toHaveStyle.
-    if value.is_number() || value.is_boolean() {
-        if let Some(s) = value.to_string(scope) {
-            value = s.into();
-        }
-    }
-    if value.is_string() {
-        if let Some(n) = normalize_css_color(&value.to_rust_string_lossy(scope)) {
-            if let Some(s) = v8::String::new(scope, &n) {
-                value = s.into();
-            }
-        }
-    }
-    target.set(scope, key, value);
-    // element handle stashed as __h
-    let h = v8::String::new(scope, "__h")
-        .and_then(|k| target.get(scope, k.into()))
-        .and_then(|v| v.number_value(scope))
-        .map(|n| Handle::from_raw(n as u32));
-    if let Some(h) = h {
-        let css = serialize_style(scope, target);
-        with_tree_mut(|t| {
-            if css.is_empty() {
-                t.remove_attribute(h, "style");
-            } else {
-                t.set_attribute(h, "style", &css);
-            }
-        });
-    }
-    rv.set_bool(true);
-}
-
-/// Normalize a `#rgb`/`#rrggbb`/`#rrggbbaa` hex color to `rgb(r, g, b)` / `rgba(r, g, b, a)` (the form
-/// a browser's CSS parser stores), so a hex from one source matches a hex from another. Returns None
-/// for non-hex values (left untouched).
-fn normalize_css_color(v: &str) -> Option<String> {
-    let s = v.trim();
-    let hex = s.strip_prefix('#')?;
-    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let h = |a: u8, b: u8| -> Option<u8> {
-        u8::from_str_radix(&format!("{}{}", a as char, b as char), 16).ok()
-    };
-    let b = hex.as_bytes();
-    match hex.len() {
-        3 => {
-            let (r, g, bl) = (h(b[0], b[0])?, h(b[1], b[1])?, h(b[2], b[2])?);
-            Some(format!("rgb({}, {}, {})", r, g, bl))
-        }
-        6 => {
-            let (r, g, bl) = (h(b[0], b[1])?, h(b[2], b[3])?, h(b[4], b[5])?);
-            Some(format!("rgb({}, {}, {})", r, g, bl))
-        }
-        8 => {
-            let (r, g, bl, a) = (
-                h(b[0], b[1])?,
-                h(b[2], b[3])?,
-                h(b[4], b[5])?,
-                h(b[6], b[7])?,
-            );
-            let af = (a as f64 / 255.0 * 100.0).round() / 100.0;
-            Some(format!("rgba({}, {}, {}, {})", r, g, bl, af))
-        }
-        _ => None,
-    }
-}
-
-/// Serialize a style declaration object's own string properties to `prop: value;` cssText (camelCase
-/// names → kebab-case), skipping internals (`__*`) and methods.
-fn serialize_style(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>) -> String {
-    let mut out = String::new();
-    let Some(names) = obj.get_own_property_names(scope, Default::default()) else {
-        return out;
-    };
-    for i in 0..names.length() {
-        let Some(k) = names.get_index(scope, i) else {
-            continue;
-        };
-        let kn = k.to_rust_string_lossy(scope);
-        if kn.starts_with("__") {
-            continue;
-        }
-        let Some(v) = obj.get(scope, k) else { continue };
-        if v.is_function() || v.is_undefined() || v.is_null() {
-            continue;
-        }
-        let vs = v.to_rust_string_lossy(scope);
-        if vs.is_empty() {
-            continue;
-        }
-        // camelCase -> kebab-case
-        let mut prop = String::with_capacity(kn.len() + 4);
-        for ch in kn.chars() {
-            if ch.is_ascii_uppercase() {
-                prop.push('-');
-                prop.push(ch.to_ascii_lowercase());
-            } else {
-                prop.push(ch);
-            }
-        }
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(&prop);
-        out.push_str(": ");
-        out.push_str(&vs);
-        out.push(';');
-    }
-    out
-}
-
-fn style_set_property(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let _dom = DomScope::for_object(scope, args.this());
-    let name = arg_str(scope, &args, 0);
-    let value = args.get(1);
-    if let Some(key) = v8::String::new(scope, &name) {
-        args.this().set(scope, key.into(), value);
-    }
-    // 3rd arg = priority ("important" | ""). Track it in a non-style `__prio` map for
-    // getPropertyPriority (the `__`-prefixed key is skipped by getComputedStyle's inline overlay).
-    let prio = arg_str(scope, &args, 2);
-    if let Some(pmap) = style_prio_map(scope, args.this()) {
-        if let Some(nk) = v8::String::new(scope, &name) {
-            if prio.eq_ignore_ascii_case("important") {
-                let pv = v8::String::new(scope, "important").unwrap();
-                pmap.set(scope, nk.into(), pv.into());
-            } else {
-                pmap.delete(scope, nk.into());
-            }
-        }
-    }
-}
-
-/// the `__prio` object on a style declaration (created on first use) holding per-property priorities.
-fn style_prio_map<'s>(
-    scope: &mut v8::PinScope<'s, '_>,
-    style: v8::Local<v8::Object>,
-) -> Option<v8::Local<'s, v8::Object>> {
-    let key = v8::String::new(scope, "__prio")?;
-    let existing = style.get(scope, key.into())?;
-    if let Ok(o) = v8::Local::<v8::Object>::try_from(existing) {
-        return Some(o);
-    }
-    let o = v8::Object::new(scope);
-    style.set(scope, key.into(), o.into());
-    Some(o)
-}
-
-fn style_get_property_priority(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _dom = DomScope::for_object(scope, args.this());
-    let name = arg_str(scope, &args, 0);
-    let prio = style_prio_map(scope, args.this())
-        .and_then(|m| v8::String::new(scope, &name).and_then(|k| m.get(scope, k.into())))
-        .filter(|v| v.is_string())
-        .map(|v| v.to_rust_string_lossy(scope))
-        .unwrap_or_default();
-    rv.set(v8::String::new(scope, &prio).unwrap().into());
-}
-
-fn style_get_property(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _dom = DomScope::for_object(scope, args.this());
-    let name = arg_str(scope, &args, 0);
-    if let Some(key) = v8::String::new(scope, &name) {
-        if let Some(v) = args.this().get(scope, key.into()) {
-            if !v.is_undefined() {
-                rv.set(v);
-                return;
-            }
-        }
-    }
-    rv.set(v8::String::new(scope, "").unwrap().into());
-}
-
-fn style_remove_property(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let _dom = DomScope::for_object(scope, args.this());
-    let name = arg_str(scope, &args, 0);
-    if let Some(key) = v8::String::new(scope, &name) {
-        args.this().delete(scope, key.into());
-    }
+    rv.set(declaration.into());
 }
 
 // ---- document methods ------------------------------------------------------------------------
@@ -3606,6 +3448,10 @@ fn parse_css_native(
 ) {
     let _dom = DomScope::for_object(scope, args.this());
     let source = args.get(0).to_rust_string_lossy(scope);
+    if args.get(1).is_true() {
+        rv.set_bool(cssom_parser::is_supported_property(&source));
+        return;
+    }
     let parsed = cssom_parser::parse(&source);
     if let Some(text) = v8::String::new(scope, &parsed) {
         rv.set(text.into());
@@ -3990,6 +3836,41 @@ mod tests {
     }
 
     #[test]
+    fn host_frame_membership_uses_native_light_document_connections() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_with_html(
+            scope,
+            "<body><iframe id=light></iframe><div id=host></div></body>",
+        );
+        let code = v8::String::new(scope,"const detached=document.createElement('iframe');const shadow=document.getElementById('host').attachShadow({mode:'closed'});const inner=document.createElement('iframe');shadow.append(inner);[document.getElementById('light'),detached,inner]").unwrap();
+        let value = v8::Script::compile(scope, code, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let nodes = v8::Local::<v8::Array>::try_from(value).unwrap();
+        for (index, expected) in [(0, true), (1, false), (2, false)] {
+            let node = nodes
+                .get_index(scope, index)
+                .unwrap()
+                .to_object(scope)
+                .unwrap();
+            assert_eq!(is_light_document_node(scope, node), expected);
+            let key = v8::String::new(scope, "isConnected").unwrap();
+            node.set(scope, key.into(), v8::Boolean::new(scope, !expected).into());
+            assert_eq!(is_light_document_node(scope, node), expected);
+            let document = with_tree(|tree| tree.root())
+                .map(|handle| wrap(scope, handle))
+                .unwrap();
+            assert_eq!(composed_contains_node(scope, document, node), index != 1);
+        }
+        reset();
+    }
+
+    #[test]
     fn event_records_preserve_readonly_descriptors_and_dispatch_phases() {
         init_v8();
         let isolate = &mut v8::Isolate::new(Default::default());
@@ -4238,8 +4119,8 @@ mod tests {
               document.head.appendChild(style);
               const rules=style.sheet.cssRules;
               globalThis.retainedSheets=globalThis.retainedSheets||[];
-              if(retainedSheets.some(sheet=>sheet.cssRules.length!==1||sheet.cssRules.item(0).selectorText!=='.retained'))return false;
-              const constructed=new CSSStyleSheet();constructed.replaceSync('.retained {}');retainedSheets.push(constructed);
+              if(retainedSheets.some(sheet=>sheet.cssRules.length!==1||sheet.cssRules.item(0).selectorText!=='.retained'||sheet.cssRules.item(0).style.getPropertyValue('color')!=='red'||sheet.cssRules.item(0).cssText!=='.retained { color: red; }'))return false;
+              const constructed=new CSSStyleSheet();constructed.replaceSync('.retained { color: red; }');retainedSheets.push(constructed);
               return document.body.querySelector('span')===node &&
                 node.appendChild===Node.prototype.appendChild &&
                 node.ownerDocument===document && rules.length===1 &&

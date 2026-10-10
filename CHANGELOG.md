@@ -6,6 +6,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Share CSSStyleDeclaration native prototype callbacks across private inline, rule and
+  read-only computed records; synchronize inline mutations and external attribute edits,
+  retain stable identity and validate supported properties with the stylesheet parser.
 - Reflect editing and accessibility attributes with native branded accessors, including enum
   normalization, hidden union conversion, spellcheck/translation inheritance, associated-form
   auto-capitalization/correction and draggable image/link defaults.

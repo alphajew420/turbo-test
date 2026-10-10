@@ -11,6 +11,32 @@ use lightningcss::properties::{
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, StyleSheet};
 
+pub fn is_supported_property(name: &str) -> bool {
+    !matches!(PropertyId::from(name), PropertyId::Custom(_))
+        || matches!(
+            name,
+            "content"
+                | "float"
+                | "clear"
+                | "direction"
+                | "unicode-bidi"
+                | "table-layout"
+                | "caption-side"
+                | "empty-cells"
+                | "cursor"
+                | "user-select"
+                | "-webkit-user-select"
+                | "vertical-align"
+                | "z-index"
+                | "visibility"
+                | "pointer-events"
+                | "touch-action"
+                | "will-change"
+                | "appearance"
+                | "-webkit-appearance"
+        )
+}
+
 fn deferred_value(tokens: &TokenList<'_>) -> bool {
     tokens.0.iter().any(|token| match token {
         TokenOrValue::Var(_) | TokenOrValue::Env(_) => true,
