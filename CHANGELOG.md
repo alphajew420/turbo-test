@@ -1,9 +1,21 @@
 # Changelog
 
 All notable changes to `@miaskiewicz/turbo-test`. Format based on
-[Keep a Changelog](https://keepachangelog.com/); this project uses semver-ish `0.2.x`.
+[Keep a Changelog](https://keepachangelog.com/); this project uses semantic versioning.
 
-## [Unreleased]
+## [0.4.5] — 2026-10-10
+
+### Fixed
+- Parse style-element and constructed stylesheet rule lists, retain CSSStyleRule identity and selectors,
+  refresh after text mutations, and track only connected style elements in document.styleSheets.
+- Replacing style text creates a new stylesheet and detaches the previous sheet while retaining its rules.
+- Parser-created form controls now receive their interface prototypes and populated IDL values.
+- Frame construction accepts a host-provided window factory for engines with independent V8 contexts.
+
+## [0.4.4] — hide internal window state
+
+### Changed
+- Move internal iframe/event state to the shared Symbol namespace.
 
 ## [0.4.3] — bump turbo-dom to 0.5.1 (faster cascade)
 
