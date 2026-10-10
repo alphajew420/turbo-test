@@ -32,3 +32,13 @@ it('document createElement is a nonconstructible method', () => {
   expect(()=>Reflect.construct(function(){}, [], document.createElement)).toThrow();
   expect(document.createElement('input').tagName).toBe('INPUT');
 });
+
+it('event constructors require a type and retain optional-init arities', () => {
+  expect(Event.length).toBe(1); expect(CustomEvent.length).toBe(1);
+  expect(CustomEvent.name).toBe('CustomEvent');
+  expect(()=>new Event()).toThrow(); expect(()=>Event('click')).toThrow();
+  expect(()=>new CustomEvent()).toThrow();
+  expect(new Event(3).type).toBe('3');
+  expect(new CustomEvent('test').detail).toBe(null);
+  expect(new CustomEvent('test', {detail:42}).detail).toBe(42);
+});

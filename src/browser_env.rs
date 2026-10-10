@@ -384,6 +384,17 @@ fn wrap<'s>(scope: &mut v8::PinScope<'s, '_>, handle: Handle) -> v8::Local<'s, v
             s.cache.insert(handle, g);
         }
     });
+    // Projection runs after caching, since accessors such as ownerDocument and
+    // childNodes may synchronously wrap this node again.
+    let global = context.global(scope);
+    let name = v8::String::new(scope, "ts").unwrap();
+    let key = v8::Symbol::for_key(scope, name);
+    if let Some(namespace) = global.get(scope, key.into()).and_then(|v| v.to_object(scope)) {
+        let key = v8::String::new(scope, "projectNativeNode").unwrap();
+        if let Some(function) = namespace.get(scope, key.into()).and_then(|v| v8::Local::<v8::Function>::try_from(v).ok()) {
+            function.call(scope, namespace.into(), &[obj.into()]);
+        }
+    }
     obj
 }
 
@@ -2462,7 +2473,11 @@ fn get_owner_document(
     mut rv: v8::ReturnValue<v8::Value>,
 ) {
     let _dom = DomScope::for_object(scope, args.holder());
-    // every node's ownerDocument is the single document (root).
+    let Some(handle) = handle_of(scope, args.holder()) else { return; };
+    if with_tree(|tree| tree.node_type_id(handle)) == Some(9) {
+        rv.set_null();
+        return;
+    }
     if let Some(root) = with_tree(|t| t.root()) {
         let doc = wrap(scope, root);
         rv.set(doc.into());
@@ -3059,6 +3074,77 @@ fn parse_css_native(
 }
 
 /// Register the native stylesheet grammar parser before running the JS bootstrap.
+// A projected prototype accessor must keep using the native tree, rather than
+// capturing the instance's initial descriptor value. The uncached view retains
+// the original ObjectTemplate callbacks without inheriting projected JS APIs.
+fn dom_accessor_dispatch(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let receiver = args.this();
+    let _dom = DomScope::for_object(scope, receiver);
+    let descriptor = args.data().to_rust_string_lossy(scope);
+    let mut fields = descriptor.split('\0');
+    let setter = fields.next() == Some("set");
+    let owner = fields.next().unwrap_or("Node");
+    let property = fields.next().unwrap_or("");
+    let handle = handle_of(scope, receiver);
+    let valid = handle.and_then(|h| with_tree(|tree| {
+        let kind = tree.node_type_id(h);
+        match owner {
+            "Node" => true,
+            "Element" => kind == 1,
+            "HTMLElement" => kind == 1 && tree.namespace_id(h) == 0,
+            "CharacterData" => matches!(kind, 3 | 4 | 8),
+            "Document" => kind == 9,
+            "DocumentFragment" => kind == 11,
+            _ => false,
+        }
+    })).unwrap_or(false);
+    if !valid {
+        let message = v8::String::new(scope, "Illegal invocation").unwrap();
+        let error = v8::Exception::type_error(scope, message);
+        scope.throw_exception(error);
+        return;
+    }
+    let handle = handle.unwrap();
+    let Some(context) = receiver.get_creation_context(scope) else { return; };
+    let scope = &mut v8::ContextScope::new(scope, context);
+    let template = DOM.with(|d| d.borrow().as_ref().unwrap().el_template.clone());
+    let template = v8::Local::new(scope, template);
+    let raw = template.new_instance(scope).unwrap();
+    let handle = v8::Integer::new_from_unsigned(scope, handle.raw());
+    raw.set_internal_field(0, handle.into());
+    let key = v8::String::new(scope, property).unwrap();
+    if setter {
+        raw.set(scope, key.into(), args.get(0));
+    } else if let Some(value) = raw.get(scope, key.into()) {
+        rv.set(value);
+    }
+}
+
+fn make_dom_accessor(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let property = args.get(0).to_rust_string_lossy(scope);
+    let setter = args.get(1).boolean_value(scope);
+    let owner = args.get(2).to_rust_string_lossy(scope);
+    let operation = if setter { "set" } else { "get" };
+    let data = v8::String::new(scope, &format!("{operation}\0{owner}\0{property}")).unwrap();
+    let template = v8::FunctionTemplate::builder(dom_accessor_dispatch)
+        .data(data.into())
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .length(i32::from(setter))
+        .build(scope);
+    let name = v8::String::new(scope, &format!("{operation} {property}")).unwrap();
+    template.set_class_name(name);
+    template.remove_prototype();
+    if let Some(function) = template.get_function(scope) { rv.set(function.into()); }
+}
+
 pub fn register_css_parser(scope: &mut v8::PinScope) {
     let global = scope.get_current_context().global(scope);
     bind_method(scope, global, "__parseCssNative", parse_css_native);
@@ -3101,6 +3187,8 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     // exist on globalThis. Plain-data / stub surface (refined natively as the logger surfaces hot
     // members); document extras that are pure JS go here too.
     register_css_parser(scope);
+    let global = scope.get_current_context().global(scope);
+    bind_method(scope, global, "__domAccessor", make_dom_accessor);
     run_js(scope, BOOTSTRAP);
 }
 
@@ -3234,6 +3322,37 @@ mod tests {
         let script = v8::Script::compile(scope, source, None).unwrap();
         let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
         assert_eq!(result, r#"[true,true,[["createTextNode",1],["setAttribute",2],["getAttribute",1],["setProperty",2]],"kept","red","preserved",[false,false,true]]"#);
+        reset();
+    }
+
+    #[test]
+    fn projected_native_accessors_are_shared_live_and_receiver_checked() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install(scope);
+        let source = v8::String::new(scope, r#"
+          const element=document.createElement('div');
+          const id=Object.getOwnPropertyDescriptor(Element.prototype,'id');
+          const type=Object.getOwnPropertyDescriptor(Node.prototype,'nodeType');
+          const rejected=[{},document,document.createTextNode('text')].every(receiver=>{
+            try{id.get.call(receiver);return false}catch(error){return error instanceof TypeError}
+          });
+          id.set.call(element,'live');
+          element.innerHTML='<span>child</span>';
+          const clone=element.cloneNode(true);
+          JSON.stringify([!Object.hasOwn(element,'id'),element.getAttribute('id'),id.get.call(element),
+            id.get.name,id.get.length,id.set.name,id.set.length,!Object.hasOwn(id.get,'prototype'),
+            rejected,type.get.call(element),document.ownerDocument===null,
+            Object.getPrototypeOf(element)===HTMLDivElement.prototype,
+            element.firstChild.parentNode===element,clone.textContent,
+            clone.appendChild===Node.prototype.appendChild]);
+        "#).unwrap();
+        let script = v8::Script::compile(scope, source, None).unwrap();
+        let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
+        assert_eq!(result, r#"[true,"live","live","get id",0,"set id",1,true,true,1,true,true,true,"child",true]"#);
         reset();
     }
 

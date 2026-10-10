@@ -5,6 +5,7 @@
   // not as `__*` string globals. Reachable from every realm via globalThis[Symbol.for('ts')].
   var __ns = g[Symbol.for('ts')] || (Object.defineProperty(g, Symbol.for('ts'), { value: {}, configurable: true, enumerable: false }), g[Symbol.for('ts')]);
   if (typeof g.__parseCssNative === 'function') { __ns.parseCssNative = g.__parseCssNative; delete g.__parseCssNative; }
+  if (typeof g.__domAccessor === 'function') { __ns.domAccessor = g.__domAccessor; delete g.__domAccessor; }
   if (typeof g.navigator === 'undefined') g.navigator = { userAgent: 'turbo-test', platform: 'rust', language: 'en-US', languages: ['en-US'], clipboard: {}, maxTouchPoints: 0 };
   // Top-level window self-references (browsers + jsdom + vitest): a non-framed window is its own
   // parent/top, and `self`/`frames` alias the window. `window === globalThis` here, so point them at
@@ -172,18 +173,18 @@
   // DOM interface constructors (for `instanceof` / global presence). Stubs; identity not enforced.
   // Real Event base class (dispatch in browser_env.rs reads type/bubbles/defaultPrevented/__stop*).
   if (!__ns.ttEvent) {
-    function Event(type, init){ init = init || {}; this.type = type; this.bubbles = !!init.bubbles; this.cancelable = !!init.cancelable; this.composed = !!init.composed; this.defaultPrevented = false; this.target = null; this.currentTarget = null; this.__stop = false; this.__stopImmediate = false; this.eventPhase = 0; this.timeStamp = Date.now(); this.isTrusted = false; this.detail = init.detail; }
+    function Event(type, init = {}){ if (!new.target && !(this instanceof Event)) throw new TypeError('Event requires new'); if (arguments.length === 0) throw new TypeError('Event requires a type'); init = init || {}; this.type = String(type); this.bubbles = !!init.bubbles; this.cancelable = !!init.cancelable; this.composed = !!init.composed; this.defaultPrevented = false; this.target = null; this.currentTarget = null; this.__stop = false; this.__stopImmediate = false; this.eventPhase = 0; this.timeStamp = Date.now(); this.isTrusted = false; this.detail = init.detail; }
     Event.prototype.preventDefault = function(){ if (this.cancelable) this.defaultPrevented = true; };
     Event.prototype.stopPropagation = function(){ this.__stop = true; };
     Event.prototype.stopImmediatePropagation = function(){ this.__stop = true; this.__stopImmediate = true; };
     Event.prototype.initEvent = function(type, bubbles, cancelable){ this.type = type; this.bubbles = !!bubbles; this.cancelable = !!cancelable; };
     Event.NONE = 0; Event.CAPTURING_PHASE = 1; Event.AT_TARGET = 2; Event.BUBBLING_PHASE = 3;
     g.Event = Event;
-    function mkSub(extra){ return function(type, init){ init = init || {}; Event.call(this, type, init); if (extra) extra(this, init); for (var k in init){ if (!(k in this)) this[k] = init[k]; } }; }
-    function sub(name, extra){ var C = mkSub(extra); C.prototype = Object.create(Event.prototype); C.prototype.constructor = C; g[name] = C; }
+    function mkSub(extra){ return function(type, init = {}){ if (arguments.length === 0) throw new TypeError('Event requires a type'); init = init || {}; Event.call(this, type, init); if (extra) extra(this, init); for (var k in init){ if (!(k in this)) this[k] = init[k]; } }; }
+    function sub(name, extra){ var C = mkSub(extra); Object.defineProperty(C, 'name', {value: name, configurable: true}); C.prototype = Object.create(Event.prototype); C.prototype.constructor = C; g[name] = C; }
     var keyExtra = function(self, init){ self.key = init.key||''; self.code = init.code||''; self.keyCode = init.keyCode||0; self.which = init.which||init.keyCode||0; self.altKey=!!init.altKey; self.ctrlKey=!!init.ctrlKey; self.metaKey=!!init.metaKey; self.shiftKey=!!init.shiftKey; self.repeat=!!init.repeat; };
     var mouseExtra = function(self, init){ self.button=init.button||0; self.buttons=init.buttons||0; self.clientX=init.clientX||0; self.clientY=init.clientY||0; self.pageX=init.pageX||0; self.pageY=init.pageY||0; self.altKey=!!init.altKey; self.ctrlKey=!!init.ctrlKey; self.metaKey=!!init.metaKey; self.shiftKey=!!init.shiftKey; self.relatedTarget=init.relatedTarget||null; };
-    sub('CustomEvent', function(self, init){ self.detail = init.detail; });
+    sub('CustomEvent', function(self, init){ self.detail = init.detail === undefined ? null : init.detail; });
     sub('UIEvent'); sub('MouseEvent', mouseExtra); sub('PointerEvent', mouseExtra); sub('KeyboardEvent', keyExtra);
     sub('InputEvent', function(self, init){ self.data = init.data; self.inputType = init.inputType||''; });
     sub('FocusEvent', function(self, init){ self.relatedTarget = init.relatedTarget||null; });
@@ -1389,4 +1390,124 @@
       return el;
     } }).createElement;
   })();
+  // Native ObjectTemplate accessors expose value descriptors. Project through
+  // real native getter/setter functions so values stay backed by the same tree.
+  (function(){
+    if (typeof __ns.domAccessor !== 'function') return;
+    var oldBase=g.HTMLElement.prototype,oldDocument=g.Document.prototype;
+    var prototypes={};
+    function defineInterface(name,parent,existing){
+      var ctor=g[name],proto=existing||Object.create(parent);
+      if(existing)Object.setPrototypeOf(proto,parent);
+      Object.defineProperty(proto,'constructor',{value:ctor,writable:true,configurable:true});
+      Object.defineProperty(proto,Symbol.toStringTag,{value:name,configurable:true});
+      ctor.prototype=proto;
+      try{delete ctor[Symbol.hasInstance];}catch(e){}
+      prototypes[name]=proto;
+      return proto;
+    }
+    Object.defineProperty(g.EventTarget.prototype,Symbol.toStringTag,{value:'EventTarget',configurable:true});
+    var nodeProto=defineInterface('Node',g.EventTarget.prototype);
+    var elementProto=defineInterface('Element',nodeProto);
+    var htmlProto=defineInterface('HTMLElement',elementProto);
+    var documentProto=defineInterface('Document',nodeProto);
+    defineInterface('HTMLDocument',documentProto);
+    var characterProto=defineInterface('CharacterData',nodeProto);
+    defineInterface('Text',characterProto);
+    defineInterface('Comment',characterProto);
+    defineInterface('CDATASection',characterProto);
+    defineInterface('DocumentFragment',nodeProto);
+    defineInterface('SVGElement',elementProto);
+    defineInterface('SVGSVGElement',g.SVGElement.prototype);
+    Object.keys(g).forEach(function(name){
+      if(!/^HTML.*Element$/.test(name)||name==='HTMLElement'||typeof g[name]!=='function')return;
+      var proto=g[name].prototype;
+      defineInterface(name,htmlProto,proto===oldBase?null:proto);
+    });
+    ['HTMLAudioElement','HTMLVideoElement'].forEach(function(name){Object.setPrototypeOf(prototypes[name],prototypes.HTMLMediaElement);});
+    // Keep existing compatibility behavior while separating the base interfaces;
+    // the native members below replace these descriptors on their proper owner.
+    Reflect.ownKeys(oldBase).forEach(function(key){
+      if(key==='constructor'||key===Symbol.toStringTag)return;
+      var descriptor=Object.getOwnPropertyDescriptor(oldBase,key);
+      if(descriptor)Object.defineProperty(htmlProto,key,descriptor);
+    });
+    Reflect.ownKeys(oldDocument).forEach(function(key){
+      if(key!=='exitFullscreen'&&key!=='cookie')return;
+      var descriptor=Object.getOwnPropertyDescriptor(oldDocument,key);
+      if(descriptor)Object.defineProperty(documentProto,key,descriptor);
+    });
+    var accessorOwners={
+      Node:['nodeType','nodeName','isConnected','ownerDocument','parentNode','parentElement','childNodes','firstChild','nextSibling','nodeValue','textContent'],
+      Element:['namespaceURI','localName','tagName','id','className','attributes','innerHTML','outerHTML','children','firstElementChild'],
+      HTMLElement:['style','dataset','contentEditable','isContentEditable'],
+      CharacterData:['data']
+    };
+    var writable={nodeValue:1,textContent:1,id:1,className:1,innerHTML:1,contentEditable:1,data:1};
+    var nativeKeys=['constructor'];
+    Object.keys(accessorOwners).forEach(function(owner){
+      accessorOwners[owner].forEach(function(name){
+        nativeKeys.push(name);
+        var descriptor={enumerable:true,configurable:true,get:__ns.domAccessor(name,false,owner)};
+        if(writable[name])descriptor.set=__ns.domAccessor(name,true,owner);
+        Object.defineProperty(prototypes[owner],name,descriptor);
+      });
+    });
+    var getType=Object.getOwnPropertyDescriptor(nodeProto,'nodeType').get;
+    var getTag=Object.getOwnPropertyDescriptor(elementProto,'tagName').get;
+    var getNamespace=Object.getOwnPropertyDescriptor(elementProto,'namespaceURI').get;
+    var probe=d.createElement('div');
+    var methodOwners={
+      Node:['appendChild','removeChild','insertBefore','contains','hasChildNodes','cloneNode','getRootNode'],
+      Element:['setAttribute','getAttribute','getAttributeNode','setAttributeNode','removeAttributeNode','hasAttribute','removeAttribute','querySelector','querySelectorAll','matches','closest','append','prepend','remove','before','after','replaceWith','replaceChildren','insertAdjacentElement','insertAdjacentHTML','toggleAttribute','getAttributeNS','scrollIntoView','scrollTo','scrollBy','getBoundingClientRect'],
+      HTMLElement:['focus','blur','click'],
+      CharacterData:['insertData','deleteData','appendData','replaceData','substringData'],
+      Text:['splitText']
+    };
+    Object.keys(methodOwners).forEach(function(owner){
+      methodOwners[owner].forEach(function(name){
+        var descriptor=Object.getOwnPropertyDescriptor(probe,name);
+        if(descriptor&&typeof descriptor.value==='function'){
+          Object.defineProperty(prototypes[owner],name,{value:descriptor.value,writable:true,configurable:true,enumerable:true});
+          nativeKeys.push(name);
+        }
+      });
+    });
+    ['querySelector','querySelectorAll','append','prepend','replaceChildren'].forEach(function(name){
+      var descriptor=Object.getOwnPropertyDescriptor(d,name)||Object.getOwnPropertyDescriptor(elementProto,name);
+      if(descriptor)Object.defineProperty(documentProto,name,descriptor);
+      if(name!=='getElementById')Object.defineProperty(prototypes.DocumentFragment,name,Object.getOwnPropertyDescriptor(elementProto,name));
+    });
+    ['before','after','remove','replaceWith'].forEach(function(name){
+      Object.defineProperty(characterProto,name,Object.getOwnPropertyDescriptor(elementProto,name));
+    });
+    ['isEqualNode'].forEach(function(name){
+      var descriptor=Object.getOwnPropertyDescriptor(htmlProto,name);
+      if(descriptor){Object.defineProperty(nodeProto,name,descriptor);delete htmlProto[name];}
+    });
+    var tags={DIV:'HTMLDivElement',SPAN:'HTMLSpanElement',P:'HTMLParagraphElement',INPUT:'HTMLInputElement',TEXTAREA:'HTMLTextAreaElement',SELECT:'HTMLSelectElement',OPTION:'HTMLOptionElement',BUTTON:'HTMLButtonElement',LABEL:'HTMLLabelElement',CANVAS:'HTMLCanvasElement',A:'HTMLAnchorElement',FORM:'HTMLFormElement',STYLE:'HTMLStyleElement',SCRIPT:'HTMLScriptElement',IFRAME:'HTMLIFrameElement',IMG:'HTMLImageElement',UL:'HTMLUListElement',LI:'HTMLLIElement',TABLE:'HTMLTableElement'};
+    Object.keys(htmlByTag).forEach(function(tag){tags[tag]=htmlByTag[tag];});
+    Object.assign(tags,{TD:'HTMLTableCellElement',TH:'HTMLTableCellElement',THEAD:'HTMLTableSectionElement',TBODY:'HTMLTableSectionElement',TFOOT:'HTMLTableSectionElement',COLGROUP:'HTMLTableColElement',Q:'HTMLQuoteElement',BLOCKQUOTE:'HTMLQuoteElement'});
+    for(var heading=1;heading<=6;heading++)tags['H'+heading]='HTMLHeadingElement';
+    var projected=new WeakSet();
+    __ns.projectNativeNode=function(obj){
+      if(projected.has(obj))return obj;
+      var type=getType.call(obj),name;
+      if(type===1){
+        var tag=getTag.call(obj),namespace=getNamespace.call(obj);
+        name=String(namespace||'').indexOf('svg')>=0?(tag==='svg'?'SVGSVGElement':'SVGElement'):(tags[String(tag).toUpperCase()]||'HTMLElement');
+      }else name=({3:'Text',4:'CDATASection',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
+      Object.setPrototypeOf(obj,prototypes[name]);
+      projected.add(obj);
+      nativeKeys.forEach(function(key){if(Object.prototype.hasOwnProperty.call(obj,key))delete obj[key];});
+      return obj;
+    };
+    __ns.projectNativeNode(d);
+    var roots=[d.documentElement,d.head,d.body];
+    roots.forEach(function(node){if(node)__ns.projectNativeNode(node);});
+    var all=d.querySelectorAll('*');
+    for(var i=0;i<all.length;i++)__ns.projectNativeNode(all[i]);
+    __ns.projectNativeNode(probe);
+  })();
+
 })();

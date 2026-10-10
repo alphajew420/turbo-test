@@ -15,6 +15,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   and detach stylesheet ownership when their link leaves the document.
 - Expose CSSRuleList and StyleSheetList as branded indexed collections rather than arrays;
   rule-list identity survives replacement and the document stylesheet list tracks tree changes.
+- Separate native Node/Element/HTMLElement/Document and character-data interface prototypes;
+  shared native accessors remain live and reject invalid receivers. Document-specific instance
+  properties and compatibility APIs still have partial Web IDL coverage.
+- Normalize Event constructor required arguments, string types and optional initialization,
+  including CustomEvent's default detail.
 
 ## [0.4.5] — 2026-10-10
 
