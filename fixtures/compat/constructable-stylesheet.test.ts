@@ -16,12 +16,12 @@ describe('constructable CSSStyleSheet + adoptedStyleSheets', () => {
     const s = new CSSStyleSheet();
     const i0 = s.insertRule('.a { color: red }');
     expect(i0).toBe(0);
-    const i1 = s.insertRule('.b { color: blue }');
+    const i1 = s.insertRule('.b { color: blue }', s.cssRules.length);
     expect(i1).toBe(1);
     expect(s.cssRules.length).toBe(2);
     s.deleteRule(0);
     expect(s.cssRules.length).toBe(1);
-    expect(s.cssRules[0].cssText).toBe('.b { color: blue }');
+    expect(s.cssRules[0].cssText).toBe('.b { color: blue; }');
   });
 
   it('replace returns a Promise<this>; replaceSync is synchronous', async () => {
@@ -29,9 +29,9 @@ describe('constructable CSSStyleSheet + adoptedStyleSheets', () => {
     const r = s.replace('.x { display: none }');
     expect(typeof r.then).toBe('function');
     await expect(r).resolves.toBe(s);
-    s.replaceSync('.y { display: block }');
+    s.replaceSync('.y { display: block; }');
     expect(s.cssRules.length).toBe(1);
-    expect(s.cssRules[0].cssText).toBe('.y { display: block }');
+    expect(s.cssRules[0].cssText).toBe('.y { display: block; }');
   });
 
   it('document.adoptedStyleSheets is a settable array (read-modify-write spread)', () => {

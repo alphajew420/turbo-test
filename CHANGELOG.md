@@ -5,6 +5,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+### Fixed
+- Parse style-element and constructed stylesheet rule lists, retain CSSStyleRule identity and selectors,
+  refresh after text mutations, and track only connected style elements in document.styleSheets.
+- Parser-created form controls now receive their interface prototypes and populated IDL values.
+- Frame construction accepts a host-provided window factory for engines with independent V8 contexts.
+
 ## [0.4.2] — browser_env: iframe realm, SwiftShader WebGL, content-dependent canvas
 
 Fidelity additions to the rtdom↔V8 `browser_env` DOM binding (consumed by turbo-surf's
