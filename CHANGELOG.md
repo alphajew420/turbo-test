@@ -1,9 +1,9 @@
 # Changelog
 
 All notable changes to `@miaskiewicz/turbo-test`. Format based on
-[Keep a Changelog](https://keepachangelog.com/); this project uses semver-ish `0.2.x`.
+[Keep a Changelog](https://keepachangelog.com/); this project uses semantic versioning.
 
-## [Unreleased]
+## [0.4.5] — 2026-10-10
 
 ### Fixed
 - Parse style-element and constructed stylesheet rule lists, retain CSSStyleRule identity and selectors,
@@ -11,6 +11,24 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - Replacing style text creates a new stylesheet and detaches the previous sheet while retaining its rules.
 - Parser-created form controls now receive their interface prototypes and populated IDL values.
 - Frame construction accepts a host-provided window factory for engines with independent V8 contexts.
+
+## [0.4.4] — hide internal window state
+
+### Changed
+- Move internal iframe/event state to the shared Symbol namespace.
+
+## [0.4.3] — bump turbo-dom to 0.5.1 (faster cascade)
+
+### Performance
+- Upgraded the native DOM engine `turbo-dom` `0.4.0` → `0.5.1`. The headline win is a cascade
+  fix: `getComputedStyle` no longer re-parses every `<style>` sheet on each DOM mutation. The
+  parsed rule index used to be keyed on the DOM version (bumped by *any* mutation), so a React
+  re-render — which restructures nodes but leaves the injected CSS untouched — forced a full
+  re-parse of all stylesheets on the next `getComputedStyle`. `turbo-dom` 0.5.1 keys the index on
+  the `<style>` sources, reusing it across version bumps whose CSS is unchanged. Measured ~3–5%
+  faster wall on a 457-file / 7324-test React component suite, identical pass counts.
+- Also picks up 0.5.0's rtdom internal-consistency fixes (stale parent pointers, unset event
+  target) — neither reachable through `query_selector*`/serialize, so no behavior change here.
 
 ## [0.4.2] — browser_env: iframe realm, SwiftShader WebGL, content-dependent canvas
 

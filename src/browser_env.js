@@ -1,6 +1,8 @@
 (function(){
   var g = globalThis;
-  // The renderer shares the binding; keep cross-context host state off string globals.
+  // turbo-surf shares this binding; its internal cross-context state lives on a Symbol-keyed
+  // namespace (absent from getOwnPropertyNames(window) — real Chrome has no such __* globals),
+  // not as `__*` string globals. Reachable from every realm via globalThis[Symbol.for('ts')].
   var __ns = g[Symbol.for('ts')] || (Object.defineProperty(g, Symbol.for('ts'), { value: {}, configurable: true, enumerable: false }), g[Symbol.for('ts')]);
   if (typeof g.navigator === 'undefined') g.navigator = { userAgent: 'turbo-test', platform: 'rust', language: 'en-US', languages: ['en-US'], clipboard: {}, maxTouchPoints: 0 };
   // Top-level window self-references (browsers + jsdom + vitest): a non-framed window is its own
