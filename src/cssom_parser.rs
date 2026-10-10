@@ -4,12 +4,16 @@ use cssparser::{
     ParserInput, ParserState, QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser,
     StyleSheetParser,
 };
+use lightningcss::media_query::MediaList;
 use lightningcss::properties::{
     custom::{Token, TokenList, TokenOrValue},
     Property, PropertyId,
 };
 use lightningcss::rules::CssRule;
+use lightningcss::stylesheet::PrinterOptions;
 use lightningcss::stylesheet::{ParserOptions, StyleSheet};
+use lightningcss::targets::{Features, Targets};
+use lightningcss::traits::ToCss;
 
 pub fn is_supported_property(name: &str) -> bool {
     !matches!(PropertyId::from(name), PropertyId::Custom(_))
@@ -223,9 +227,49 @@ pub fn parse(source: &str) -> String {
         .join("\n")
 }
 
+/// Serialize a query using the media grammar rather than stylesheet prelude text.
+pub fn parse_media(source: &str) -> String {
+    // The typed AST normalizes min/max features into ranges. Preserve the common
+    // authored legacy form instead of introducing a new range syntax in CSSOM.
+    let legacy =
+        (source.contains("min-") || source.contains("max-")) && !source.contains(['<', '>']);
+    let options = PrinterOptions {
+        targets: Targets {
+            include: if legacy {
+                Features::MediaRangeSyntax
+            } else {
+                Features::empty()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut source = ParserInput::new(source);
+    let mut input = Parser::new(&mut source);
+    MediaList::parse(&mut input, &ParserOptions::default())
+        .ok()
+        .filter(|_| input.expect_exhausted().is_ok())
+        .and_then(|media| media.to_css_string(options).ok())
+        .unwrap_or_else(|| "not all".to_string())
+}
+
+/// Parse a single rule without dropping invalid neighboring rules. Declaration
+/// recovery remains CSSOM-compatible inside a syntactically valid rule.
+pub fn parse_one(source: &str) -> Option<String> {
+    let mut source = ParserInput::new(source);
+    let mut input = Parser::new(&mut source);
+    let mut parser = CssParser::default();
+    let mut rules = StyleSheetParser::new(&mut input, &mut parser);
+    let rule = rules.next()?.ok()?;
+    if rules.next().is_some() {
+        return None;
+    }
+    Some(rule)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::{parse, parse_media, parse_one};
 
     #[test]
     fn recovers_bad_selectors_and_declarations_without_losing_valid_neighbors() {
@@ -245,5 +289,23 @@ mod tests {
         assert!(parsed.contains("a[data-x="), "{parsed}");
         assert!(parsed.contains("a;b}"), "{parsed}");
         assert!(parsed.contains("--token"), "{parsed}");
+    }
+    #[test]
+    fn single_rule_parsing_does_not_recover_invalid_neighbors() {
+        assert!(parse_one("??? {} a {}").is_none());
+        assert!(parse_one("a {} b {}").is_none());
+        assert!(parse_one("a { width: nonsense; color: blue }")
+            .unwrap()
+            .contains("color: blue"));
+    }
+
+    #[test]
+    fn media_queries_use_their_typed_grammar() {
+        assert_eq!(parse_media("SCREEN"), "screen");
+        assert_eq!(
+            parse_media("screen and (min-width:10px)"),
+            "screen and (min-width: 10px)"
+        );
+        assert_eq!(parse_media("???"), "not all");
     }
 }

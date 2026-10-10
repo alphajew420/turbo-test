@@ -14,6 +14,9 @@
 #[path = "cssom_parser.rs"]
 mod cssom_parser;
 
+#[path = "html_documents.rs"]
+mod html_documents;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -214,7 +217,7 @@ struct DomState {
     tree: Tree,
     /// handle → JS node object, for identity (`el === el`).
     cache: HashMap<Handle, v8::Global<v8::Object>>,
-    /// shared element object template (internal_field_count = 1).
+    /// shared element object template (internal_field_count = 2).
     el_template: v8::Global<v8::ObjectTemplate>,
     shadow_modes: HashMap<Handle, String>,
 }
@@ -277,10 +280,7 @@ impl DomScope {
     }
 
     fn for_object(scope: &mut v8::PinScope, object: v8::Local<v8::Object>) -> Self {
-        let context = object
-            .get_creation_context(scope)
-            .unwrap_or_else(|| scope.get_current_context());
-        Self::enter(context.get_slot::<DomContextId>().map_or(0, |id| id.0))
+        Self::enter(dom_id_of(scope, object))
     }
 }
 impl Drop for DomScope {
@@ -319,6 +319,152 @@ pub fn install_independent_html(scope: &mut v8::PinScope, html: &str) {
     install_with_html(scope, html);
 }
 
+fn dom_id_of(scope: &mut v8::PinScope, object: v8::Local<v8::Object>) -> u64 {
+    if let Some(value) = object
+        .get_internal_field(scope, 1)
+        .and_then(|field| v8::Local::<v8::Value>::try_from(field).ok())
+        .and_then(|value| v8::Local::<v8::BigInt>::try_from(value).ok())
+    {
+        return value.u64_value().0;
+    }
+    object
+        .get_creation_context(scope)
+        .and_then(|context| context.get_slot::<DomContextId>())
+        .map_or(0, |id| id.0)
+}
+
+/// Parse an inert document into its own native Tree in the caller's realm.
+/// Internal node ownership distinguishes independent documents in one context.
+pub fn parse_html_document<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    html: &str,
+    sanitize: bool,
+) -> v8::Local<'s, v8::Object> {
+    let id = NEXT_DOM_ID.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    });
+    let _dom = DomScope::enter(id);
+    let mut tree = Tree::parse(html);
+    if sanitize {
+        html_documents::sanitize(&mut tree);
+    }
+    let template = build_el_template(scope);
+    let template = v8::Global::new(scope, template);
+    DOM.with(|dom| {
+        *dom.borrow_mut() = Some(DomState {
+            tree,
+            cache: HashMap::new(),
+            el_template: template,
+            shadow_modes: HashMap::new(),
+        })
+    });
+    let context = scope.get_current_context();
+    let context = v8::Global::new(scope, context);
+    DOM_CONTEXTS.with(|contexts| {
+        contexts.borrow_mut().insert(id, context);
+    });
+    let root = with_tree(|tree| tree.root()).unwrap();
+    wrap(scope, root)
+}
+
+pub fn create_document_element<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    document: v8::Local<v8::Object>,
+    tag: &str,
+) -> Option<v8::Local<'s, v8::Object>> {
+    let _dom = DomScope::for_object(scope, document);
+    let root = handle_of(scope, document)?;
+    if with_tree(|tree| tree.node_type_id(root)) != Some(9) {
+        return None;
+    }
+    let node = with_tree_mut(|tree| tree.create_element(tag))?;
+    Some(wrap(scope, node))
+}
+
+/// Copy a native node between independent trees without serializing or evaluating
+/// markup. Unsupported tree kinds fail before destination mutation.
+pub fn import_document_node<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    document: v8::Local<v8::Object>,
+    node: v8::Local<v8::Object>,
+    deep: bool,
+) -> Result<v8::Local<'s, v8::Object>, &'static str> {
+    struct Snapshot {
+        kind: u8,
+        name: String,
+        value: String,
+        namespace: Namespace,
+        attributes: Vec<(String, String)>,
+        children: Vec<Snapshot>,
+    }
+    fn capture(tree: &Tree, node: Handle, deep: bool) -> Result<Snapshot, &'static str> {
+        let kind = tree.node_type_id(node);
+        if !matches!(kind, 1 | 3 | 8 | 11) {
+            return Err("Importing this node kind is unsupported");
+        }
+        if kind == 1 && tree.local_name(node) == Some("template") {
+            return Err("Importing template content is unsupported");
+        }
+        let mut attributes = Vec::new();
+        tree.for_each_attr_full(node, |prefix, name, value| {
+            attributes.push((
+                if prefix.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{prefix}:{name}")
+                },
+                value.to_string(),
+            ))
+        });
+        Ok(Snapshot {
+            kind,
+            name: tree.local_name(node).unwrap_or_default().to_string(),
+            value: tree.node_value(node).unwrap_or_default(),
+            namespace: tree.namespace(node),
+            attributes,
+            children: if deep {
+                tree.children(node)
+                    .into_iter()
+                    .map(|child| capture(tree, child, true))
+                    .collect::<Result<_, _>>()?
+            } else {
+                Vec::new()
+            },
+        })
+    }
+    fn materialize(tree: &mut Tree, snapshot: Snapshot) -> Handle {
+        let node = match snapshot.kind {
+            3 => tree.create_text_node(&snapshot.value),
+            8 => tree.create_comment(&snapshot.value),
+            11 => tree.create_document_fragment(),
+            _ => tree.create_element_ns(&snapshot.name, snapshot.namespace),
+        };
+        for (name, value) in snapshot.attributes {
+            tree.set_attribute(node, &name, &value);
+        }
+        for child in snapshot.children {
+            let child = materialize(tree, child);
+            tree.append_child(node, child);
+        }
+        node
+    }
+    let snapshot = {
+        let _source = DomScope::for_object(scope, node);
+        let handle = handle_of(scope, node).ok_or("Illegal invocation")?;
+        with_tree(|tree| capture(tree, handle, deep)).ok_or("Node tree unavailable")??
+    };
+    let _target = DomScope::for_object(scope, document);
+    let root = handle_of(scope, document).ok_or("Illegal invocation")?;
+    if with_tree(|tree| tree.node_type_id(root)) != Some(9) {
+        return Err("Illegal invocation");
+    }
+    let node =
+        with_tree_mut(|tree| materialize(tree, snapshot)).ok_or("Document tree unavailable")?;
+    Ok(wrap(scope, node))
+}
+
 /// Read a node object's handle from internal field 0.
 fn handle_of(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>) -> Option<Handle> {
     let f = obj.get_internal_field(scope, 0)?;
@@ -329,6 +475,17 @@ fn handle_of(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>) -> Option<Han
         return None;
     }
     v.uint32_value(scope).map(Handle::from_raw)
+}
+
+/// Read an actual native attribute without consulting guest overrides.
+pub fn node_attribute(
+    scope: &mut v8::PinScope,
+    node: v8::Local<v8::Object>,
+    name: &str,
+) -> Option<String> {
+    let _dom = DomScope::for_object(scope, node);
+    let handle = handle_of(scope, node)?;
+    with_tree(|tree| tree.get_attribute(handle, name).map(str::to_owned)).flatten()
 }
 
 /// Native light-document membership, used by hosts that enumerate child navigables.
@@ -424,6 +581,8 @@ fn wrap<'s>(scope: &mut v8::PinScope<'s, '_>, handle: Handle) -> v8::Local<'s, v
     let obj = tmpl.new_instance(scope).unwrap();
     let h = v8::Integer::new_from_unsigned(scope, handle.raw());
     obj.set_internal_field(0, h.into());
+    let owner = v8::BigInt::new_from_u64(scope, DOM_ID.with(|id| id.get()));
+    obj.set_internal_field(1, owner.into());
     // Parser-created controls bypass createElement's JS wrapper. Select their live
     // interface prototype here too, so IDL getters work for query/innerHTML results.
     let tag = with_tree(|t| t.tag_name(handle))
@@ -506,8 +665,7 @@ fn arg_handle(
         return None;
     }
     let object = v.to_object(scope)?;
-    let context = object.get_creation_context(scope)?;
-    let owner = context.get_slot::<DomContextId>().map_or(0, |id| id.0);
+    let owner = dom_id_of(scope, object);
     if owner != DOM_ID.with(|id| id.get()) {
         let message = v8::String::new(
             scope,
@@ -3289,7 +3447,7 @@ fn tmpl_accessor(
 /// Build the shared element template (methods + accessors).
 fn build_el_template<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::ObjectTemplate> {
     let tmpl = v8::ObjectTemplate::new(scope);
-    tmpl.set_internal_field_count(1);
+    tmpl.set_internal_field_count(2);
 
     tmpl_method(scope, tmpl, "attachShadow", el_attach_shadow);
     tmpl_getter(scope, tmpl, "shadowRoot", get_shadow_root);
@@ -3452,6 +3610,21 @@ fn parse_css_native(
         rv.set_bool(cssom_parser::is_supported_property(&source));
         return;
     }
+    if args.get(1).is_string() && args.get(1).to_rust_string_lossy(scope) == "media" {
+        if let Some(text) = v8::String::new(scope, &cssom_parser::parse_media(&source)) {
+            rv.set(text.into());
+        }
+        return;
+    }
+    if args.get(2).is_true() {
+        let parsed = cssom_parser::parse_one(&source);
+        if let Some(text) = parsed.and_then(|parsed| v8::String::new(scope, &parsed)) {
+            rv.set(text.into());
+        } else {
+            rv.set(v8::null(scope).into());
+        }
+        return;
+    }
     let parsed = cssom_parser::parse(&source);
     if let Some(text) = v8::String::new(scope, &parsed) {
         rv.set(text.into());
@@ -3508,6 +3681,8 @@ fn dom_accessor_dispatch(
     let raw = template.new_instance(scope).unwrap();
     let handle = v8::Integer::new_from_unsigned(scope, handle.raw());
     raw.set_internal_field(0, handle.into());
+    let owner = v8::BigInt::new_from_u64(scope, DOM_ID.with(|id| id.get()));
+    raw.set_internal_field(1, owner.into());
     let key = v8::String::new(scope, property).unwrap();
     if setter {
         raw.set(scope, key.into(), args.get(0));
@@ -3844,7 +4019,7 @@ mod tests {
         let scope = &mut v8::ContextScope::new(scope, context);
         install_with_html(
             scope,
-            "<body><iframe id=light></iframe><div id=host></div></body>",
+            "<body><iframe id=light sandbox='allow-scripts'></iframe><div id=host></div></body>",
         );
         let code = v8::String::new(scope,"const detached=document.createElement('iframe');const shadow=document.getElementById('host').attachShadow({mode:'closed'});const inner=document.createElement('iframe');shadow.append(inner);[document.getElementById('light'),detached,inner]").unwrap();
         let value = v8::Script::compile(scope, code, None)
@@ -3859,6 +4034,10 @@ mod tests {
                 .to_object(scope)
                 .unwrap();
             assert_eq!(is_light_document_node(scope, node), expected);
+            assert_eq!(
+                node_attribute(scope, node, "sandbox").as_deref(),
+                (index == 0).then_some("allow-scripts")
+            );
             let key = v8::String::new(scope, "isConnected").unwrap();
             node.set(scope, key.into(), v8::Boolean::new(scope, !expected).into());
             assert_eq!(is_light_document_node(scope, node), expected);
@@ -4219,6 +4398,44 @@ mod tests {
         let script = v8::Script::compile(scope, source, None).unwrap();
         let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
         assert_eq!(result, "[true,true,true,true,true]");
+        reset();
+    }
+
+    #[test]
+    fn inert_same_realm_documents_keep_native_tree_ownership_and_imports() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install(scope);
+        let parsed=parse_html_document(scope,"<html><head><title>parsed</title></head><body><p id='source'>native</p><script>throw new Error('inert')</script></body></html>",false);
+        let global = context.global(scope);
+        let key = v8::String::new(scope, "parsed").unwrap();
+        global.set(scope, key.into(), parsed.into());
+        let key = v8::String::new(scope, "document").unwrap();
+        let doc = global
+            .get(scope, key.into())
+            .unwrap()
+            .to_object(scope)
+            .unwrap();
+        let source = {
+            let _parsed = DomScope::for_object(scope, parsed);
+            let node = with_tree(|tree| {
+                NodeRef::new(tree, tree.root())
+                    .query_selector("#source")
+                    .unwrap()
+                    .handle()
+            })
+            .unwrap();
+            wrap(scope, node)
+        };
+        let imported = import_document_node(scope, doc, source, true).unwrap();
+        let key = v8::String::new(scope, "imported").unwrap();
+        global.set(scope, key.into(), imported.into());
+        let src=v8::String::new(scope,r#"(() => {const p=parsed.querySelector('#source');p.textContent='changed';return parsed!==document&&Object.getPrototypeOf(parsed)===HTMLDocument.prototype&&p.ownerDocument===parsed&&document.querySelector('#source')===null&&imported.ownerDocument===document&&imported.textContent==='native'&&imported!==p&&parsed.querySelector('head').textContent==='parsed';})()"#).unwrap();
+        let script = v8::Script::compile(scope, src, None).unwrap();
+        assert!(script.run(scope).unwrap().boolean_value(scope));
         reset();
     }
 

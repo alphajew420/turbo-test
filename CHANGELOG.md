@@ -6,6 +6,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Back CSSStyleSheet, StyleSheet and MediaList interfaces with private records and native branded
+  callbacks; retain live lists, owner/import metadata and media mutations, detach removed rules,
+  reject invalid single-rule insertions, and filter imports from constructed replacements.
 - Share CSSStyleDeclaration native prototype callbacks across private inline, rule and
   read-only computed records; synchronize inline mutations and external attribute edits,
   retain stable identity and validate supported properties with the stylesheet parser.
