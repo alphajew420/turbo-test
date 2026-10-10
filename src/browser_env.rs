@@ -4033,6 +4033,31 @@ mod tests {
             "true",
             "host Window dispatch must use private captured registry"
         );
+        let source=v8::String::new(scope,"globalThis.loadSeen=null;window.addEventListener('load',e=>loadSeen=[e.target===document,e.currentTarget===window,e.eventPhase,e.isTrusted]);globalThis.loadEvent=new Event('load');loadEvent").unwrap();
+        let event = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let event = v8::Local::<v8::Object>::try_from(event).unwrap();
+        dispatch_host_event(scope, event, target);
+        let source=v8::String::new(scope,"JSON.stringify([loadSeen,loadEvent.currentTarget===window,loadEvent.eventPhase,loadEvent.composedPath().length])").unwrap();
+        let value = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        assert_eq!(
+            value.to_rust_string_lossy(scope),
+            "[[true,true,2,true],true,2,0]"
+        );
+        let source=v8::String::new(scope,"window.dispatchEvent(loadEvent);JSON.stringify([loadSeen,loadEvent.currentTarget,loadEvent.eventPhase])").unwrap();
+        let value = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        assert_eq!(
+            value.to_rust_string_lossy(scope),
+            "[[false,true,2,false],null,0]"
+        );
         install_with_html(scope, "<body><button>new document</button></body>");
         let source=v8::String::new(scope,r#"(() => {const bus=new EventTarget(),e=new Event('x',{cancelable:true});let phase;bus.addEventListener('x',ev=>{phase=ev.eventPhase;ev.returnValue=false;});return JSON.stringify([bus.dispatchEvent(e),phase,e.currentTarget,e.defaultPrevented]);})()"#).unwrap();
         let value = v8::Script::compile(scope, source, None)

@@ -395,12 +395,15 @@
   // Captured privately by the host before page scripts can run.
   g.__captureHostEventDispatch=function(event,target){
     var state=beginEventDispatch(event,target,[target],true);
+    // Navigation lifecycle events retain Chrome's legacy Window target override.
+    var legacyWindow=target===g&&(state.type==='load'||state.type==='pageshow');
+    if(legacyWindow)state.target=g.document;
     var registry=target===g?__ns.winListeners:(target.__etl||target.__listeners);
     var list=registry&&registry[state.type];
     try{if(list)for(var listener of list.slice()){
       if(state.stopImmediate)break;
       try{typeof listener==='function'?listener.call(target,event):listener.handleEvent(event);}catch(e){}
-    }}finally{endEventDispatch(state);}
+    }}finally{endEventDispatch(state);if(legacyWindow){state.currentTarget=target;state.eventPhase=2;}}
     return !state.defaultPrevented;
   };
   // document extras (pure-JS shims over the native tree).
