@@ -3,6 +3,17 @@
 All notable changes to `@miaskiewicz/turbo-test`. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project uses semantic versioning.
 
+## [Unreleased]
+
+### Fixed
+- Isolate DOM trees, native node ownership, style state and listeners by V8 context.
+- Separate input/textarea live values from defaults; retain reflected hidden values, default select
+  selection and intentional empty selections.
+- Validate CSS selectors and supported property values with Lightning CSS, recover malformed rules,
+  and retain strings, custom properties, grouping rules, and deferred `var()`/`env()` values.
+- Represent fetched linked stylesheets in document order, preserve their URL and import rules,
+  and detach stylesheet ownership when their link leaves the document.
+
 ## [0.4.5] — 2026-10-10
 
 ### Fixed

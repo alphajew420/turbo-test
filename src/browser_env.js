@@ -4,6 +4,7 @@
   // namespace (absent from getOwnPropertyNames(window) — real Chrome has no such __* globals),
   // not as `__*` string globals. Reachable from every realm via globalThis[Symbol.for('ts')].
   var __ns = g[Symbol.for('ts')] || (Object.defineProperty(g, Symbol.for('ts'), { value: {}, configurable: true, enumerable: false }), g[Symbol.for('ts')]);
+  if (typeof g.__parseCssNative === 'function') { __ns.parseCssNative = g.__parseCssNative; delete g.__parseCssNative; }
   if (typeof g.navigator === 'undefined') g.navigator = { userAgent: 'turbo-test', platform: 'rust', language: 'en-US', languages: ['en-US'], clipboard: {}, maxTouchPoints: 0 };
   // Top-level window self-references (browsers + jsdom + vitest): a non-framed window is its own
   // parent/top, and `self`/`frames` alias the window. `window === globalThis` here, so point them at
@@ -320,8 +321,8 @@
   // document extras (pure-JS shims over the native tree).
   var d = g.document;
   d.defaultView = g;
-  // Parse text once per mutation, retaining rule identity until its source changes.
-  // The scanner respects strings/comments and nested blocks (regex splitting does not).
+  // Native Lightning CSS validates selectors/declarations and recovers invalid rules.
+  // This scanner builds the facade's mutable object graph from that parsed CSS.
   var cssList = function(){ var a=[]; a.item=function(i){ return this[i] || null; }; return a; };
   var cssParts = function(text, separator){
     var out=[], start=0, depth=0, quote='', escaped=false, comment=false;
@@ -351,8 +352,9 @@
   g.CSSRule.STYLE_RULE=1;
   g.CSSStyleRule.prototype=Object.create(g.CSSRule.prototype);
   g.CSSStyleRule.prototype.constructor=g.CSSStyleRule;
-  var parseCssRules = function(text, sheet, parent){
-    text=String(text); var out=cssList(), start=0, depth=0, quote='', escaped=false, comment=false, open=-1;
+  var parseCssRules = function(text, sheet, parent, validated){
+    text=String(text);if(!validated&&typeof __ns.parseCssNative==='function')text=__ns.parseCssNative(text);
+    var out=cssList(), start=0, depth=0, quote='', escaped=false, comment=false, open=-1;
     for(var i=0;i<text.length;i++){
       var c=text[i],next=text[i+1];
       if(comment){if(c==='*'&&next==='/'){comment=false;i++;}continue;}
@@ -364,12 +366,15 @@
         if(head){
           var isAt=head[0]==='@',rule=Object.create(isAt?g.CSSRule.prototype:g.CSSStyleRule.prototype);
           rule.parentStyleSheet=sheet;rule.parentRule=parent||null;
-          if(isAt){rule.type=/^@media\b/i.test(head)?4:/^@supports\b/i.test(head)?12:/^@font-face\b/i.test(head)?5:0;rule.cssRules=parseCssRules(body,sheet,rule);rule.cssText=head+' { '+body.trim()+' }';}
+          if(isAt){rule.type=/^@media\b/i.test(head)?4:/^@supports\b/i.test(head)?12:/^@font-face\b/i.test(head)?5:/^@keyframes\b/i.test(head)?7:0;rule.cssText=head+' { '+body.trim()+' }';if(rule.type===5)rule.style=cssDeclaration(body);else rule.cssRules=parseCssRules(body,sheet,rule,true);}
           else {rule.type=1;rule.selectorText=head.replace(/\s*,\s*/g,', ');rule.style=cssDeclaration(body);Object.defineProperty(rule,'cssText',{get:function(){var t=this.style.cssText;return this.selectorText+' {'+(t?' '+t+' ':' ')+'}';}});}
           out.push(rule);
         }
         start=i+1;
-      } else if(c===';'&&depth===0){start=i+1;}
+      } else if(c===';'&&depth===0){
+        var statement=text.slice(start,i).trim(),imported=/^@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?\s*(.*)$/i.exec(statement);
+        if(imported){var rule=Object.create(g.CSSRule.prototype);rule.type=3;rule.href=imported[1];rule.media={mediaText:imported[2]||'',length:imported[2]?1:0};rule.styleSheet=null;rule.parentStyleSheet=sheet;rule.parentRule=parent||null;rule.cssText=statement+';';out.push(rule);}start=i+1;
+      }
     }
     return out;
   };
@@ -381,6 +386,7 @@
   g.CSSStyleSheet.prototype.deleteRule=function(index){var list=this.cssRules,i=Number(index);if(!Number.isInteger(i)||i<0||i>=list.length)throw cssError('IndexSizeError');list.splice(i,1);};
   g.CSSStyleSheet.prototype.replaceSync=function(text){if(!this.__constructed)throw cssError('NotAllowedError');this.__rules=parseCssRules(text,this,null);};
   g.CSSStyleSheet.prototype.replace=function(text){try{this.replaceSync(text);return Promise.resolve(this);}catch(e){return Promise.reject(e);}};
+  __ns.attachLinkedStyleSheet=function(el,text,url){var sheet=new g.CSSStyleSheet();sheet.ownerNode=el;sheet.href=url;sheet.__constructed=false;sheet.__rules=parseCssRules(text,sheet,null);if(el.__tcSheet)el.__tcSheet.ownerNode=null;el.__tcSheet=sheet;return sheet;};
   // adoptedStyleSheets — must be a real, settable ARRAY (a non-iterable getter or
   // absent prop both break the read-modify-write spread above).
   if (!Array.isArray(d.adoptedStyleSheets)) {
@@ -457,10 +463,29 @@
       if (t === 'number') return (v === '' || /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(v)) ? v : '';
       return v;
     };
-    // The `value` IDL accessor, backed by the `value` content attribute (defaultValue==value here,
-    // which suffices for getByDisplayValue/[value]); the value-change tracker (attachValueTracker)
-    // layers the dirty-since-last-seen signal on top for framework change detection.
-    var valDesc = { configurable: true, get: function(){ var v = this.getAttribute('value'); return v == null ? (String(this.tagName).toLowerCase()==='textarea' ? this.textContent || '' : '') : v; }, set: function(v){ this.setAttribute('value', validForType(this, v == null ? '' : String(v))); } };
+    // Live input/textarea values have a dirty flag, separate from their defaults.
+    // Hidden/button values remain reflected attributes as required by HTML.
+    var controlValues = new WeakMap();
+    var isTextarea = function(el){ return String(el.tagName).toUpperCase() === 'TEXTAREA'; };
+    var reflectedValue = function(el){ return /^(hidden|button|submit|reset|image|checkbox|radio)$/.test(el.type || ''); };
+    var defaultValueOf = function(el){ return isTextarea(el) ? el.textContent || '' : el.getAttribute('value') || ''; };
+    var valDesc = { configurable: true,
+      get: function(){
+        if (controlValues.has(this) && !reflectedValue(this)) return validForType(this, controlValues.get(this));
+        var value = defaultValueOf(this);
+        if (!isTextarea(this) && /^(checkbox|radio)$/.test(this.type || '') && !this.hasAttribute('value')) return 'on';
+        return validForType(this, value);
+      },
+      set: function(v){
+        v = v == null ? '' : String(v);
+        if (reflectedValue(this)) this.setAttribute('value', v);
+        else controlValues.set(this, validForType(this, v));
+      }
+    };
+    var defaultValueDesc = { configurable: true, get: function(){ return defaultValueOf(this); }, set: function(v){
+      if (isTextarea(this)) this.textContent = String(v);
+      else this.setAttribute('value', String(v));
+    } };
     // Reflect the live `checked` property to the `checked` content attribute so rtdom's `:checked`
     // pseudo (which matches on the attribute) finds controlled checkboxes/radios React toggles.
     var checkedDesc = { configurable: true, get: function(){ return this.__checked === undefined ? this.hasAttribute('checked') : !!this.__checked; }, set: function(v){ v = !!v; this.__checked = v; try { if (v) this.setAttribute('checked', ''); else this.removeAttribute('checked'); } catch(e){} } };
@@ -585,6 +610,7 @@
       // attribute; reading returns hasAttribute. Tests read el.disabled / [disabled] / multiple.
       [['disabled','disabled'],['multiple','multiple'],['required','required'],['readOnly','readonly'],['autoFocus','autofocus']].forEach(function(pair){ Object.defineProperty(p, pair[0], { configurable: true, get: function(){ return this.hasAttribute(pair[1]); }, set: function(v){ if (v) this.setAttribute(pair[1], ''); else this.removeAttribute(pair[1]); } }); });
       if (n === 'HTMLInputElement' || n === 'HTMLTextAreaElement') {
+        Object.defineProperty(p, 'defaultValue', defaultValueDesc);
         Object.defineProperty(p, 'selectionStart', selStartDesc); Object.defineProperty(p, 'selectionEnd', selEndDesc); Object.defineProperty(p, 'selectionDirection', selDirDesc);
         p.setSelectionRange = function(s, e, dir){ this.__selStart = s; this.__selEnd = e; this.__selDir = dir || 'none'; };
         p.select = function(){ this.__selStart = 0; this.__selEnd = String(this.value||'').length; };
@@ -613,14 +639,35 @@
     // <option>: `value` falls back to text content (HTML spec), `selected`/`defaultSelected` track
     // the live + attribute state. React-DOM's updateOptions reads option.value and writes
     // option.selected for every option of a controlled <select>.
+    var selection;
     (function(){
       var op = protoFor.HTMLOptionElement;
       Object.defineProperty(op, 'value', { configurable: true, get: function(){ var v = this.getAttribute('value'); return v == null ? (this.textContent || '') : v; }, set: function(v){ this.setAttribute('value', v == null ? '' : String(v)); } });
-      // Setting selected=true on a single (non-multiple) <select> deselects its siblings — the
-      // browser enforces the single-selection invariant. Without this, an option marked during the
-      // detached commit stays selected after userEvent.selectOptions marks another, and select.value
-      // (first selected) returns the stale one.
-      Object.defineProperty(op, 'selected', { configurable: true, get: function(){ return this.__selected === undefined ? this.hasAttribute('selected') : !!this.__selected; }, set: function(v){ v = !!v; this.__selected = v; if (v){ var s = ownerSelect(this); if (s && !s.multiple){ var os = optionsOf(s); for (var i=0;i<os.length;i++) if (os[i] !== this) os[i].__selected = false; } } } });
+      var optionStates = new WeakMap(), emptySelects = new WeakSet();
+      var isSelected = function(o){ return optionStates.has(o) ? optionStates.get(o) : o.hasAttribute('selected'); };
+      var selectionOf = function(sel){
+        var os = optionsOf(sel), chosen = [];
+        for (var i=0;i<os.length;i++) if (isSelected(os[i])) chosen.push(os[i]);
+        if (!sel.multiple && chosen.length > 1) chosen = [chosen[chosen.length-1]];
+        if (!chosen.length && !sel.multiple && Number(sel.getAttribute('size') || 0) <= 1 && !emptySelects.has(sel)) {
+          for (var j=0;j<os.length;j++) {
+            var group = os[j].parentNode;
+            if (!os[j].disabled && !(group && String(group.tagName).toUpperCase() === 'OPTGROUP' && group.hasAttribute('disabled'))) { chosen.push(os[j]); break; }
+          }
+        }
+        return chosen;
+      };
+      Object.defineProperty(op, 'selected', { configurable: true, get: function(){
+        var sel = ownerSelect(this); return sel ? selectionOf(sel).indexOf(this) >= 0 : isSelected(this);
+      }, set: function(v){
+        v = !!v; optionStates.set(this, v);
+        var sel = ownerSelect(this);
+        if (sel && v) {
+          emptySelects.delete(sel);
+          if (!sel.multiple) optionsOf(sel).forEach(function(o){ if (o !== this) optionStates.set(o, false); }, this);
+        }
+      } });
+      selection = { selectionOf: selectionOf, optionStates: optionStates, emptySelects: emptySelects };
       Object.defineProperty(op, 'defaultSelected', { configurable: true, get: function(){ return this.hasAttribute('selected'); }, set: function(v){ if (v) this.setAttribute('selected',''); else this.removeAttribute('selected'); } });
       Object.defineProperty(op, 'disabled', { configurable: true, get: function(){ return this.hasAttribute('disabled'); }, set: function(v){ if (v) this.setAttribute('disabled',''); else this.removeAttribute('disabled'); } });
       Object.defineProperty(op, 'text', { configurable: true, get: function(){ return this.textContent || ''; }, set: function(v){ this.textContent = v; } });
@@ -631,14 +678,32 @@
       var sp = protoFor.HTMLSelectElement;
       var opts = optionsOf;
       Object.defineProperty(sp, 'options', { configurable: true, get: function(){ return opts(this); } });
-      Object.defineProperty(sp, 'selectedOptions', { configurable: true, get: function(){ return opts(this).filter(function(o){ return o.selected; }); } });
+
+      Object.defineProperty(sp, 'selectedOptions', { configurable: true, get: function(){ var list = selection.selectionOf(this); list.item = function(i){ return this[i] || null; }; return list; } });
       Object.defineProperty(sp, 'selectedIndex', { configurable: true,
-        get: function(){ var o = opts(this); for (var i=0;i<o.length;i++) if (o[i].selected) return i; return o.length ? -1 : -1; },
-        set: function(idx){ var o = opts(this); for (var i=0;i<o.length;i++) o[i].selected = (i === idx); } });
+        get: function(){ var chosen = selection.selectionOf(this); return chosen.length ? opts(this).indexOf(chosen[0]) : -1; },
+        set: function(idx){ var o = opts(this), index = Number(idx) >> 0;
+          selection.emptySelects.add(this);
+          for (var i=0;i<o.length;i++) { selection.optionStates.set(o[i], i === index); }
+          if (index >= 0 && index < o.length) selection.emptySelects.delete(this);
+        } });
       Object.defineProperty(sp, 'value', { configurable: true,
-        get: function(){ var o = opts(this); for (var i=0;i<o.length;i++) if (o[i].selected) return o[i].value; return o.length ? o[0].value : ''; },
-        set: function(v){ var o = opts(this); var s = String(v); var hit = false; for (var i=0;i<o.length;i++){ var m = (o[i].value === s); o[i].selected = m; if (m) hit = true; } if (!hit) for (var j=0;j<o.length;j++) o[j].selected = false; } });
+        get: function(){ var chosen = selection.selectionOf(this); return chosen.length ? chosen[0].value : ''; },
+        set: function(v){ var o = opts(this), s = String(v), hit = false;
+          selection.emptySelects.add(this);
+          for (var i=0;i<o.length;i++){ var m = !hit && o[i].value === s; selection.optionStates.set(o[i], m); if (m) hit = true; }
+          if (hit) selection.emptySelects.delete(this);
+        } });
     })();
+    __ns.cloneControlState = function(source, clone, deep){
+      if (controlValues.has(source)) clone.value = controlValues.get(source);
+      if (selection.optionStates.has(source)) selection.optionStates.set(clone, selection.optionStates.get(source));
+      if (selection.emptySelects.has(source)) selection.emptySelects.add(clone);
+      if (deep) {
+        var originals = source.childNodes || [], copies = clone.childNodes || [];
+        for (var i=0;i<originals.length && i<copies.length;i++) __ns.cloneControlState(originals[i], copies[i], true);
+      }
+    };
     // <label>: htmlFor + control resolution. testing-library's getByLabelText filters
     // querySelectorAll('label') by `label.control === element`, so without `control` NO label ever
     // associates and every form field fails with "no form control was found associated to that label".
@@ -952,7 +1017,7 @@
     // prototype to the clone), so a cloned <input>/<select> keeps its type/value/checked accessors
     // (userEvent's isValidDateOrTimeValue clones a date input, assigns, and checks the value stuck).
     void applyControlProto;
-    try { Object.defineProperty(d, 'styleSheets', { configurable: true, get: function(){ var list=cssList();var els=d.querySelectorAll('style');for(var i=0;i<els.length;i++){var sheet=els[i].sheet;if(sheet)list.push(sheet);}return list; } }); } catch(e){}
+    try { Object.defineProperty(d, 'styleSheets', { configurable: true, get: function(){ var list=cssList();var els=d.querySelectorAll('style,link');for(var i=0;i<els.length;i++){var sheet=els[i].sheet;if(sheet)list.push(sheet);}return list; } }); } catch(e){}
 
     // Alias the shim interface-constructor `.prototype`s onto the REAL element/document prototypes,
     // so a test patching HTMLElement.prototype.requestFullscreen / Document.prototype.exitFullscreen
@@ -975,8 +1040,10 @@
         configurable: true,
         get: function(){
           var tag = this.tagName;
-          if (!tag || String(tag).toUpperCase() !== 'STYLE') return null;
+          if (!tag) return null;
+          tag=String(tag).toUpperCase();if(tag!=='STYLE'&&tag!=='LINK')return null;
           if (!this.isConnected) {if(this.__tcSheet)this.__tcSheet.ownerNode=null;this.__tcSheet=null;return null;}
+          if(tag==='LINK')return this.__tcSheet||null;
           var text=String(this.textContent||'');
           if (!this.__tcSheet || this.__tcSheetText!==text) {
             if(this.__tcSheet)this.__tcSheet.ownerNode=null;
