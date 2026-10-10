@@ -1335,11 +1335,44 @@ fn get_namespace_uri(
     mut rv: v8::ReturnValue<v8::Value>,
 ) {
     let _dom = DomScope::for_object(scope, args.holder());
-    rv.set(
-        v8::String::new(scope, "http://www.w3.org/1999/xhtml")
-            .unwrap()
-            .into(),
-    );
+    let Some(h) = handle_of(scope, args.holder()) else {
+        return;
+    };
+    let namespace = with_tree(|tree| {
+        if tree.node_type_id(h) != 1 {
+            return None;
+        }
+        Some(match tree.namespace_id(h) {
+            1 => "http://www.w3.org/2000/svg",
+            2 => "http://www.w3.org/1998/Math/MathML",
+            _ => "http://www.w3.org/1999/xhtml",
+        })
+    })
+    .flatten();
+    match namespace {
+        Some(namespace) => rv.set(v8::String::new(scope, namespace).unwrap().into()),
+        None => rv.set(v8::null(scope).into()),
+    }
+}
+
+fn get_prefix(
+    scope: &mut v8::PinScope,
+    _name: v8::Local<v8::Name>,
+    args: v8::PropertyCallbackArguments,
+    mut rv: v8::ReturnValue<v8::Value>,
+) {
+    let _dom = DomScope::for_object(scope, args.holder());
+    let prefix = handle_of(scope, args.holder()).and_then(|h| {
+        with_tree(|tree| {
+            tree.local_name(h)
+                .and_then(|name| name.split_once(':').map(|(prefix, _)| prefix.to_string()))
+        })
+        .flatten()
+    });
+    match prefix {
+        Some(prefix) => rv.set(v8::String::new(scope, &prefix).unwrap().into()),
+        None => rv.set(v8::null(scope).into()),
+    }
 }
 
 /// `value`/`checked`/`disabled` etc — stored on the element as expandos by default (React's
@@ -1598,7 +1631,7 @@ fn clone_subtree(t: &mut Tree, h: Handle, deep: bool) -> Handle {
         11 => t.create_document_fragment(),
         _ => {
             let tag = t.tag_name(h).unwrap_or_else(|| "div".into());
-            let e = t.create_element(&tag);
+            let e = t.create_element_ns(&tag, t.namespace(h));
             for (k, v) in t.attributes(h) {
                 t.set_attribute(e, &k, &v);
             }
@@ -1989,10 +2022,7 @@ fn get_tag_name(
     let Some(h) = handle_of(scope, args.holder()) else {
         return;
     };
-    let tag = with_tree(|t| t.tag_name(h))
-        .flatten()
-        .unwrap_or_default()
-        .to_uppercase();
+    let tag = with_tree(|t| t.tag_name(h)).flatten().unwrap_or_default();
     rv.set(v8::String::new(scope, &tag).unwrap().into());
 }
 
@@ -2847,7 +2877,12 @@ fn get_local_name(
     let Some(h) = handle_of(scope, args.holder()) else {
         return;
     };
-    match with_tree(|t| t.local_name(h).map(|s| s.to_string())).flatten() {
+    match with_tree(|t| {
+        t.local_name(h)
+            .map(|s| s.rsplit(':').next().unwrap_or(s).to_string())
+    })
+    .flatten()
+    {
         Some(ln) => rv.set(v8::String::new(scope, &ln).unwrap().into()),
         None => rv.set(v8::null(scope).into()),
     }
@@ -2869,7 +2904,7 @@ fn get_node_name(
         8 => "#comment".to_string(),
         9 => "#document".to_string(),
         11 => "#document-fragment".to_string(),
-        _ => tag.unwrap_or_default().to_uppercase(),
+        _ => tag.unwrap_or_default(),
     };
     rv.set(v8::String::new(scope, &name).unwrap().into());
 }
@@ -3508,6 +3543,7 @@ fn build_el_template<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
     tmpl_getter(scope, tmpl, "parentElement", get_parent_element);
     tmpl_getter(scope, tmpl, "firstElementChild", get_first_element_child);
     tmpl_getter(scope, tmpl, "namespaceURI", get_namespace_uri);
+    tmpl_getter(scope, tmpl, "prefix", get_prefix);
     tmpl_getter(scope, tmpl, "isConnected", get_is_connected);
     tmpl_getter(scope, tmpl, "attributes", get_attributes);
     tmpl_getter(scope, tmpl, "dataset", get_dataset);

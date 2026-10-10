@@ -1609,7 +1609,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     });
     var accessorOwners={
       Node:['nodeType','nodeName','isConnected','ownerDocument','parentNode','parentElement','childNodes','firstChild','nextSibling','nodeValue','textContent'],
-      Element:['namespaceURI','localName','tagName','id','className','attributes','innerHTML','outerHTML','children','firstElementChild','shadowRoot'],
+      Element:['namespaceURI','prefix','localName','tagName','id','className','attributes','innerHTML','outerHTML','children','firstElementChild','shadowRoot'],
       HTMLElement:['style','dataset','contentEditable','isContentEditable'],
       CharacterData:['data'],
       Document:['activeElement','children','firstElementChild'],
@@ -1706,7 +1706,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     projectCompatibility('Document',['getElementsByTagName','getElementsByClassName','getElementsByName'],htmlProto);
     projectCompatibility('Node',['isEqualNode','isSameNode','lastChild','previousSibling','replaceChild'],htmlProto);
     projectCompatibility('Element',['classList','getClientRects','getElementsByTagName','getElementsByClassName','nextElementSibling','previousElementSibling','requestFullscreen'],htmlProto);
-    ['isEqualNode','isSameNode','lastChild','previousSibling','replaceChild','classList','getClientRects','getElementsByTagName','getElementsByClassName','getElementsByName','nextElementSibling','previousElementSibling','requestFullscreen','lastElementChild'].forEach(function(name){delete htmlProto[name];});
+    ['isEqualNode','isSameNode','lastChild','previousSibling','replaceChild','classList','getClientRects','getElementsByTagName','getElementsByClassName','getElementsByName','nextElementSibling','previousElementSibling','requestFullscreen','lastElementChild','cookie','exitFullscreen'].forEach(function(name){delete htmlProto[name];});
     ['createTextNode','createComment','createDocumentFragment','createElementNS','getElementById'].forEach(function(name){
       var descriptor=Object.getOwnPropertyDescriptor(d,name);
       if(descriptor&&typeof descriptor.value==='function'){
@@ -1732,6 +1732,9 @@ if(typeof __ns.makeNativeFunction==='function'){
         },'set '+name,1)});
     });
     var nodeOperations={
+      lookupNamespaceURI(prefix){prefix=prefix==null||prefix===''?null:String(prefix);var element=this.nodeType===9?this.documentElement:this.nodeType===1?this:this.parentElement;while(element){if(element.namespaceURI&&element.prefix===prefix)return element.namespaceURI;element=element.parentElement;}return null;},
+      lookupPrefix(namespace){namespace=namespace==null||namespace===''?null:String(namespace);if(namespace===null)return null;var element=this.nodeType===9?this.documentElement:this.nodeType===1?this:this.parentElement;while(element){if(element.prefix&&element.namespaceURI===namespace&&this.lookupNamespaceURI(element.prefix)===namespace)return element.prefix;element=element.parentElement;}return null;},
+      isDefaultNamespace(namespace){namespace=namespace==null||namespace===''?null:String(namespace);return this.lookupNamespaceURI(null)===namespace;},
       replaceChild(node,old){getType.call(node);getType.call(old);if(old.parentNode!==this)throw new g.DOMException('The node is not a child.','NotFoundError');if(node!==old){this.insertBefore(node,old);this.removeChild(old);}return old;},
       normalize(){var nodes=this.childNodes;for(var index=0;index<nodes.length;){var node=nodes[index];if(node.nodeType!==3){node.normalize();index++;continue;}while(index+1<nodes.length&&nodes[index+1].nodeType===3){node.data+=nodes[index+1].data;this.removeChild(nodes[index+1]);nodes=this.childNodes;}if(!node.data){this.removeChild(node);nodes=this.childNodes;}else index++;}},
       compareDocumentPosition(other){getType.call(other);if(this===other)return 0;var root=this.getRootNode(),otherRoot=other.getRootNode();if(root!==otherRoot){var order=__ns.nodeComparisonOrder||(__ns.nodeComparisonOrder=new WeakMap());var next=__ns.nodeComparisonNext||1;[this,other].forEach(function(node){if(!order.has(node))order.set(node,next++);});__ns.nodeComparisonNext=next;return 33|(order.get(this)<order.get(other)?4:2);}if(this.contains(other))return 20;if(other.contains(this))return 10;var before=false,found=false;(function visit(node){if(found)return;if(node===this)before=true;if(node===other){found=true;return;}var children=node.childNodes;for(var i=0;i<children.length;i++)visit.call(this,children[i]);}).call(this,root);return before?4:2;}
@@ -1747,7 +1750,7 @@ if(typeof __ns.makeNativeFunction==='function'){
       var type=getType.call(obj),name;
       if(type===1){
         var tag=getTag.call(obj),namespace=getNamespace.call(obj);
-        name=String(namespace||'').indexOf('svg')>=0?(tag==='svg'?'SVGSVGElement':'SVGElement'):(tags[String(tag).toUpperCase()]||'HTMLElement');
+        name=String(namespace||'').indexOf('svg')>=0?(String(tag).split(':').pop()==='svg'?'SVGSVGElement':'SVGElement'):(tags[String(tag).toUpperCase()]||'HTMLElement');
       }else name=type===11&&isShadowRoot.call(obj)?'ShadowRoot':({3:'Text',4:'CDATASection',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
       Object.setPrototypeOf(obj,prototypes[name]);
       projected.add(obj);

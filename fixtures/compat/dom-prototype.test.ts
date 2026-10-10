@@ -220,3 +220,26 @@ it('stores element property handlers privately and dispatches them once with liv
   ordered.onclick=null;ordered.onclick=()=>order.push('last');ordered.dispatchEvent(new Event('click'));expect(order.slice(2)).toEqual(['second','last']);
   const stopped=document.createElement('span');let called=false;stopped.addEventListener('click',event=>event.stopImmediatePropagation());stopped.onclick=()=>{called=true;};stopped.dispatchEvent(new Event('click'));expect(called).toBe(false);
 });
+it('reads parsed and created SVG and MathML namespace identity from the native tree',()=>{
+  document.body.innerHTML='<svg><circle id="round"/></svg><math><mi>x</mi></math>';
+  const svg=document.body.firstElementChild,circle=svg.firstElementChild,math=svg.nextElementSibling;
+  expect(svg.namespaceURI).toBe('http://www.w3.org/2000/svg');expect(circle.namespaceURI).toBe(svg.namespaceURI);
+  expect(Object.getPrototypeOf(svg)).toBe(SVGSVGElement.prototype);expect(Object.getPrototypeOf(circle)).toBe(SVGElement.prototype);
+  expect(math.namespaceURI).toBe('http://www.w3.org/1998/Math/MathML');
+  const created=document.createElementNS('http://www.w3.org/2000/svg','path');created.setAttribute('viewBox','0 0 2 2');
+  expect(created.namespaceURI).toBe(svg.namespaceURI);expect(Object.getPrototypeOf(created)).toBe(SVGElement.prototype);
+  expect(created.getAttribute('viewBox')).toBe('0 0 2 2');expect(created.cloneNode(true).namespaceURI).toBe(svg.namespaceURI);
+  expect(document.body.namespaceURI).toBe('http://www.w3.org/1999/xhtml');
+});
+it('resolves native namespace prefixes through ancestors without treating plain xmlns attributes as namespaced declarations',()=>{
+  const ns='http://www.w3.org/2000/svg',root=document.createElementNS(ns,'s:svg'),child=document.createElementNS(ns,'s:g');root.appendChild(child);
+  expect(root.prefix).toBe('s');expect(root.localName).toBe('svg');expect(root.tagName).toBe('s:svg');expect(root.nodeName).toBe('s:svg');
+  root.setAttribute('xmlns:other','urn:example');
+  expect(child.lookupNamespaceURI('s')).toBe(ns);expect(child.lookupPrefix(ns)).toBe('s');
+  expect(child.lookupNamespaceURI('other')).toBe(null);expect(child.lookupPrefix('urn:example')).toBe(null);
+  child.setAttribute('xmlns:other','urn:replacement');expect(child.lookupPrefix('urn:example')).toBe(null);
+  const text=document.createTextNode('x');child.appendChild(text);expect(text.lookupNamespaceURI('other')).toBe(null);expect(text.lookupNamespaceURI('s')).toBe(ns);
+  expect(document.isDefaultNamespace('http://www.w3.org/1999/xhtml')).toBe(true);expect(root.isDefaultNamespace(ns)).toBe(false);
+  expect(document.createDocumentFragment().lookupNamespaceURI(null)).toBe(null);
+  expect(()=>Node.prototype.lookupNamespaceURI.call({},null)).toThrow(TypeError);
+});

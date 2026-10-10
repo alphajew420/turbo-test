@@ -37,6 +37,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   replace children and compare actual native tree positions through Node methods.
 - Store element event-handler properties privately and invoke them during native event dispatch;
   preserve measured legacy Window load/pageshow state and real DOMException errors.
+- Read HTML/SVG/MathML namespace identity from the native tree, retain foreign-element case and
+  namespaces during cloning, and resolve native namespace prefixes through ancestor elements.
 
 ## [0.4.5] — 2026-10-10
 
