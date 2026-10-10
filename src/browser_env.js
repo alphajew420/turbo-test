@@ -97,9 +97,9 @@
     try {
       var sheets = el && el.ownerDocument ? (el.ownerDocument.styleSheets || []) : [];
       for (var si=0; si<sheets.length; si++) {
-        var rules = sheets[si].cssRules || [];
+        var rules = __ns.readStyleSheetRules(sheets[si]) || [];
         for (var ri=0; ri<rules.length; ri++) {
-          var txt = String(rules[ri].cssText || ''); var br = txt.indexOf('{'); if (br < 0) continue;
+          var txt = String(__ns.readCssRuleText(rules[ri]) || ''); var br = txt.indexOf('{'); if (br < 0) continue;
           var sel = txt.slice(0, br).trim(); var body = txt.slice(br+1, txt.lastIndexOf('}'));
           var matched = false;
           var parts = sel.split(',');
@@ -521,10 +521,22 @@ if(typeof __ns.makeNativeFunction==='function'){
     var parse=function(t){cssParts(String(t),';').forEach(function(part){var i=part.indexOf(':');if(i>0){var n=part.slice(0,i).trim(),v=part.slice(i+1).trim();if(n&&v)st.setProperty(n,v);}});};
     parse(text); return st;
   };
-  if (typeof g.CSSStyleRule !== 'function') g.CSSStyleRule=function CSSStyleRule(){};
-  g.CSSRule.STYLE_RULE=1;
-  g.CSSStyleRule.prototype=Object.create(g.CSSRule.prototype);
-  g.CSSStyleRule.prototype.constructor=g.CSSStyleRule;
+  var cssRuleStates=new WeakMap();
+  var cssRuleRecord=function(rule,type){var record=cssRuleStates.get(rule);if(!record||type&&record.type!==type)throw new TypeError('Illegal invocation');return record;};
+  function cssRuleInterface(name,parent){var ctor=__ns.makeNativeFunction(function(){throw new TypeError('Illegal constructor');},name,0,true);ctor.prototype=Object.create(parent||Object.prototype);Object.defineProperty(ctor.prototype,'constructor',{value:ctor,writable:true,configurable:true});Object.defineProperty(ctor.prototype,Symbol.toStringTag,{value:name,configurable:true});Object.defineProperty(ctor,'prototype',{writable:false});if(parent)Object.setPrototypeOf(ctor,parent.constructor);Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});}
+  cssRuleInterface('CSSRule');cssRuleInterface('CSSStyleRule',g.CSSRule.prototype);cssRuleInterface('CSSImportRule',g.CSSRule.prototype);
+  function cssRuleMember(owner,name,get,set){var descriptor={enumerable:true,configurable:true,get:__ns.makeNativeFunction(get,'get '+name,0)};if(set)descriptor.set=__ns.makeNativeFunction(set,'set '+name,1);Object.defineProperty(g[owner].prototype,name,descriptor);}
+  ['type','parentRule','parentStyleSheet'].forEach(function(name){cssRuleMember('CSSRule',name,function(){return cssRuleRecord(this)[name];});});
+  function cssRuleText(record){if(record.type===1){var text=record.style.cssText;return record.selectorText+' {'+(text?' '+text+' ':' ')+'}';}return record.cssText;}
+  __ns.readCssRuleText=function(rule){return cssRuleText(cssRuleRecord(rule));};
+  cssRuleMember('CSSRule','cssText',function(){return cssRuleText(cssRuleRecord(this));},function(value){cssRuleRecord(this);if(typeof value==='symbol')throw new TypeError('Cannot convert a Symbol to a string');String(value);});
+  cssRuleMember('CSSStyleRule','selectorText',function(){return cssRuleRecord(this,1).selectorText;},function(value){var record=cssRuleRecord(this,1);if(typeof value==='symbol')throw new TypeError('Cannot convert a Symbol to a string');var parsed=parseCssRules(String(value)+' {}',record.parentStyleSheet,record.parentRule);if(parsed.length===1&&cssRuleRecord(parsed[0]).type===1)record.selectorText=cssRuleRecord(parsed[0],1).selectorText;});
+  cssRuleMember('CSSStyleRule','style',function(){return cssRuleRecord(this,1).style;},function(value){var record=cssRuleRecord(this,1);if(typeof value==='symbol')throw new TypeError('Cannot convert a Symbol to a string');record.style.cssText=String(value);});
+  ['href','media','styleSheet'].forEach(function(name){cssRuleMember('CSSImportRule',name,function(){return cssRuleRecord(this,3)[name];});});
+  var cssRuleConstants={STYLE_RULE:1,CHARSET_RULE:2,IMPORT_RULE:3,MEDIA_RULE:4,FONT_FACE_RULE:5,PAGE_RULE:6,KEYFRAMES_RULE:7,KEYFRAME_RULE:8,MARGIN_RULE:9,NAMESPACE_RULE:10,COUNTER_STYLE_RULE:11,SUPPORTS_RULE:12,FONT_FEATURE_VALUES_RULE:14};
+  Object.keys(cssRuleConstants).forEach(function(name){[g.CSSRule,g.CSSRule.prototype].forEach(function(owner){Object.defineProperty(owner,name,{value:cssRuleConstants[name],enumerable:true});});});
+  function finishCssRule(rule){var record={};['type','parentRule','parentStyleSheet','cssText','selectorText','href','media','styleSheet'].forEach(function(name){if(Object.hasOwn(rule,name)){record[name]=rule[name];delete rule[name];}});if(record.type===1){record.style=rule.style;delete rule.style;}cssRuleStates.set(rule,record);Object.setPrototypeOf(rule,record.type===1?g.CSSStyleRule.prototype:record.type===3?g.CSSImportRule.prototype:g.CSSRule.prototype);return rule;}
+  __ns.attachImportStyleSheet=function(rule,sheet){cssRuleRecord(rule,3).styleSheet=sheet;};
   var parseCssRules = function(text, sheet, parent, validated){
     text=String(text);if(!validated&&typeof __ns.parseCssNative==='function')text=__ns.parseCssNative(text);
     var out=cssList(), start=0, depth=0, quote='', escaped=false, comment=false, open=-1;
@@ -537,23 +549,25 @@ if(typeof __ns.makeNativeFunction==='function'){
       else if(c==='}'&&depth>0&&--depth===0){
         var head=text.slice(start,open).replace(/\/\*[\s\S]*?\*\//g,'').trim(),body=text.slice(open+1,i);
         if(head){
-          var isAt=head[0]==='@',rule=Object.create(isAt?g.CSSRule.prototype:g.CSSStyleRule.prototype);
+          var isAt=head[0]==='@',rule={};
           rule.parentStyleSheet=sheet;rule.parentRule=parent||null;
           if(isAt){rule.type=/^@media\b/i.test(head)?4:/^@supports\b/i.test(head)?12:/^@font-face\b/i.test(head)?5:/^@keyframes\b/i.test(head)?7:0;rule.cssText=head+' { '+body.trim()+' }';if(rule.type===5)rule.style=cssDeclaration(body);else rule.cssRules=parseCssRules(body,sheet,rule,true);}
-          else {rule.type=1;rule.selectorText=head.replace(/\s*,\s*/g,', ');rule.style=cssDeclaration(body);Object.defineProperty(rule,'cssText',{get:function(){var t=this.style.cssText;return this.selectorText+' {'+(t?' '+t+' ':' ')+'}';}});}
-          cssItems(out).push(rule);
+          else {rule.type=1;rule.selectorText=head.replace(/\s*,\s*/g,', ');rule.style=cssDeclaration(body);rule.cssText=head+' { '+body.trim()+' }';}
+          cssItems(out).push(finishCssRule(rule));
         }
         start=i+1;
       } else if(c===';'&&depth===0){
         var statement=text.slice(start,i).trim(),imported=/^@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?\s*(.*)$/i.exec(statement);
-        if(imported){var rule=Object.create(g.CSSRule.prototype);rule.type=3;rule.href=imported[1];rule.media={mediaText:imported[2]||'',length:imported[2]?1:0};rule.styleSheet=null;rule.parentStyleSheet=sheet;rule.parentRule=parent||null;rule.cssText=statement+';';cssItems(out).push(rule);}start=i+1;
+        if(imported){var rule={};rule.type=3;rule.href=imported[1];rule.media={mediaText:imported[2]||'',length:imported[2]?1:0};rule.styleSheet=null;rule.parentStyleSheet=sheet;rule.parentRule=parent||null;rule.cssText=statement+';';cssItems(out).push(finishCssRule(rule));}start=i+1;
       }
     }
     return out;
   };
   var cssError=function(name){var e=new Error(name);e.name=name;return e;};
   g.CSSStyleSheet=function CSSStyleSheet(){this.ownerNode=null;this.__rules=cssList();this.__constructed=true;};
-  Object.defineProperty(g.CSSStyleSheet.prototype,'cssRules',{configurable:true,get:function(){return this.__rules;}});
+  var cssStyleSheetRulesGetter=function(){return this.__rules;};
+  __ns.readStyleSheetRules=function(sheet){return cssStyleSheetRulesGetter.call(sheet);};
+  Object.defineProperty(g.CSSStyleSheet.prototype,'cssRules',{configurable:true,get:cssStyleSheetRulesGetter});
   Object.defineProperty(g.CSSStyleSheet.prototype,'rules',{get:function(){return this.cssRules;}});
   g.CSSStyleSheet.prototype.insertRule=function(text,index){var list=this.cssRules,i=index==null?0:Number(index);if(!Number.isInteger(i)||i<0||i>list.length)throw cssError('IndexSizeError');var parsed=parseCssRules(text,this,null);if(parsed.length!==1)throw cssError('SyntaxError');cssItems(list).splice(i,0,parsed[0]);return i;};
   g.CSSStyleSheet.prototype.deleteRule=function(index){var list=this.cssRules,i=Number(index);if(!Number.isInteger(i)||i<0||i>=list.length)throw cssError('IndexSizeError');cssItems(list).splice(i,1);};

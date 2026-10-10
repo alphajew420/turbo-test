@@ -81,3 +81,23 @@ describe('CSSOM grammar and stylesheet ownership', () => {
     style.remove();
   });
 });
+it('stores style/import rule state privately behind native interface accessors',()=>{
+  const sheet=new CSSStyleSheet();sheet.replaceSync('sentinel { color: red; }');const rule=sheet.cssRules[0];
+  expect(Reflect.ownKeys(rule)).toEqual([]);expect(Object.getPrototypeOf(rule)).toBe(CSSStyleRule.prototype);
+  expect(rule.parentStyleSheet).toBe(sheet);expect(rule.parentRule).toBe(null);expect(rule.type).toBe(1);
+  expect(rule.cssText).toBe('sentinel { color: red; }');rule.cssText='ignored { color: blue; }';expect(rule.selectorText).toBe('sentinel');
+  rule.selectorText='changed';rule.style='color: blue';expect(rule.cssText).toBe('changed { color: blue; }');
+  rule.selectorText='[';expect(rule.selectorText).toBe('changed');
+  const descriptor=Object.getOwnPropertyDescriptor(CSSRule.prototype,'cssText');expect(descriptor.enumerable).toBe(true);expect(descriptor.configurable).toBe(true);expect(descriptor.get.name).toBe('get cssText');expect(descriptor.get.length).toBe(0);
+  expect(()=>descriptor.get.call({})).toThrow(TypeError);expect(()=>new descriptor.get()).toThrow(TypeError);expect(()=>new CSSStyleRule()).toThrow(TypeError);
+  const linked=document.createElement('style');linked.textContent='@import "child.css";';document.head.appendChild(linked);
+  const imported=linked.sheet.cssRules[0];expect(Object.getPrototypeOf(imported)).toBe(CSSImportRule.prototype);expect(Reflect.ownKeys(imported)).toEqual([]);expect(imported.href).toBe('child.css');expect(imported.styleSheet).toBe(null);linked.remove();
+});
+it('keeps internal computed-style CSS reads out of target-installed accessor instrumentation',()=>{
+  const style=document.createElement('style');style.textContent='.computed { color: red; }';document.head.appendChild(style);
+  const element=document.createElement('div');element.className='computed';document.body.appendChild(element);
+  const rules=Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype,'cssRules'),text=Object.getOwnPropertyDescriptor(CSSRule.prototype,'cssText');let reads=0;
+  Object.defineProperty(CSSStyleSheet.prototype,'cssRules',{...rules,get(){reads++;return rules.get.call(this);}});Object.defineProperty(CSSRule.prototype,'cssText',{...text,get(){reads++;return text.get.call(this);}});
+  try{expect(getComputedStyle(element).getPropertyValue('color')).toBe('red');expect(reads).toBe(0);expect(style.sheet.cssRules[0].cssText).toBe('.computed { color: red; }');expect(reads).toBe(2);}
+  finally{Object.defineProperty(CSSStyleSheet.prototype,'cssRules',rules);Object.defineProperty(CSSRule.prototype,'cssText',text);element.remove();style.remove();}
+});

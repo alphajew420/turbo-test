@@ -42,6 +42,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - Reflect scalar ARIA and basic HTML attributes through native node storage; expose attribute
   enumeration and adjacent text insertion on Element, and move link/script/control properties
   onto their HTML interfaces without copying them onto unrelated elements.
+- Put style/import rule fields behind native, branded prototype accessors with private state;
+  selector/style setters update serialization, and import ownership uses an internal loader seam.
 
 ## [0.4.5] — 2026-10-10
 
