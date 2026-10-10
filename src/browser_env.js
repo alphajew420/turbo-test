@@ -372,12 +372,12 @@
     return out;
   };
   var cssError=function(name){var e=new Error(name);e.name=name;return e;};
-  g.CSSStyleSheet=function CSSStyleSheet(){this.ownerNode=null;this.__rules=cssList();};
-  Object.defineProperty(g.CSSStyleSheet.prototype,'cssRules',{configurable:true,get:function(){if(this.ownerNode){var text=String(this.ownerNode.textContent||'');if(text!==this.__source){this.__source=text;this.__rules=parseCssRules(text,this,null);}}return this.__rules;}});
+  g.CSSStyleSheet=function CSSStyleSheet(){this.ownerNode=null;this.__rules=cssList();this.__constructed=true;};
+  Object.defineProperty(g.CSSStyleSheet.prototype,'cssRules',{configurable:true,get:function(){return this.__rules;}});
   Object.defineProperty(g.CSSStyleSheet.prototype,'rules',{get:function(){return this.cssRules;}});
   g.CSSStyleSheet.prototype.insertRule=function(text,index){var list=this.cssRules,i=index==null?0:Number(index);if(!Number.isInteger(i)||i<0||i>list.length)throw cssError('IndexSizeError');var parsed=parseCssRules(text,this,null);if(parsed.length!==1)throw cssError('SyntaxError');list.splice(i,0,parsed[0]);return i;};
   g.CSSStyleSheet.prototype.deleteRule=function(index){var list=this.cssRules,i=Number(index);if(!Number.isInteger(i)||i<0||i>=list.length)throw cssError('IndexSizeError');list.splice(i,1);};
-  g.CSSStyleSheet.prototype.replaceSync=function(text){if(this.ownerNode)throw cssError('NotAllowedError');this.__rules=parseCssRules(text,this,null);};
+  g.CSSStyleSheet.prototype.replaceSync=function(text){if(!this.__constructed)throw cssError('NotAllowedError');this.__rules=parseCssRules(text,this,null);};
   g.CSSStyleSheet.prototype.replace=function(text){try{this.replaceSync(text);return Promise.resolve(this);}catch(e){return Promise.reject(e);}};
   // adoptedStyleSheets — must be a real, settable ARRAY (a non-iterable getter or
   // absent prop both break the read-modify-write spread above).
@@ -435,7 +435,7 @@
   // getOwnPropertyDescriptor(element)) AND on the interface .prototype (React's value-tracker reads
   // node.constructor.prototype). No setPrototypeOf — avoids touching the native proto chain.
   (function(){
-    var mkSheet = function(el){var sheet=new g.CSSStyleSheet();sheet.ownerNode=el;return sheet;};
+    var mkSheet = function(el){var sheet=new g.CSSStyleSheet();sheet.ownerNode=el;sheet.__constructed=false;sheet.__rules=parseCssRules(el.textContent||'',sheet,null);return sheet;};
     var orig = d.createElement.bind(d);
     // value/checked live ONLY on the interface .prototype (NOT own — React's value-tracker bails on
     // node.hasOwnProperty('value')). Each control's actual proto is set to that interface prototype
@@ -974,9 +974,11 @@
         get: function(){
           var tag = this.tagName;
           if (!tag || String(tag).toUpperCase() !== 'STYLE') return null;
-          if (!this.isConnected) return null;
-          if (!this.__tcSheet) {
-            try { this.__tcSheet = mkSheet(this); }
+          if (!this.isConnected) {if(this.__tcSheet)this.__tcSheet.ownerNode=null;this.__tcSheet=null;return null;}
+          var text=String(this.textContent||'');
+          if (!this.__tcSheet || this.__tcSheetText!==text) {
+            if(this.__tcSheet)this.__tcSheet.ownerNode=null;
+            try { this.__tcSheet = mkSheet(this); this.__tcSheetText=text; }
             catch (e) { return mkSheet(this); }
           }
           return this.__tcSheet;

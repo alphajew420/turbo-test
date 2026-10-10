@@ -2943,8 +2943,9 @@ mod tests {
             sheet.insertRule('a { color: blue; }',1);
             const inserted=sheet.cssRules.length===3 && sheet.cssRules[1].selectorText==='a' && style.textContent===text;
             style.textContent='/*comment*/ h1 { content: "}"; } @media screen { p { color: red; } }';
-            const updated=sheet.cssRules.length===2 && sheet.cssRules[0].style.getPropertyValue('content')==='"}"' && sheet.cssRules[1].cssRules[0].selectorText==='p';
-            const registered=document.styleSheets.length===1 && document.styleSheets[0]===sheet;
+            const replacement=style.sheet;
+            const updated=replacement!==sheet && sheet.cssRules.length===3 && sheet.ownerNode===null && replacement.cssRules.length===2 && replacement.cssRules[0].style.getPropertyValue('content')==='"}"' && replacement.cssRules[1].cssRules[0].selectorText==='p';
+            const registered=document.styleSheets.length===1 && document.styleSheets[0]===replacement;
             style.remove();
             const removed=document.styleSheets.length===0 && style.sheet===null;
             JSON.stringify({parsed,value,inserted,updated,registered,removed});

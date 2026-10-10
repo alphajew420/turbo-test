@@ -8,6 +8,7 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ### Fixed
 - Parse style-element and constructed stylesheet rule lists, retain CSSStyleRule identity and selectors,
   refresh after text mutations, and track only connected style elements in document.styleSheets.
+- Replacing style text creates a new stylesheet and detaches the previous sheet while retaining its rules.
 - Parser-created form controls now receive their interface prototypes and populated IDL values.
 - Frame construction accepts a host-provided window factory for engines with independent V8 contexts.
 
