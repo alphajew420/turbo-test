@@ -6,6 +6,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Reflect editing and accessibility attributes with native branded accessors, including enum
+  normalization, hidden union conversion, spellcheck/translation inheritance, associated-form
+  auto-capitalization/correction and draggable image/link defaults.
 - Isolate DOM trees, native node ownership, style state and listeners by V8 context.
 - Separate input/textarea live values from defaults; retain reflected hidden values, default select
   selection and intentional empty selections.
