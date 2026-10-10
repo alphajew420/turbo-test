@@ -55,6 +55,10 @@ cssparser = "0.37"
 # whitespace-normalized getByRole/getByText/toHaveText matching against a serialized DOM.
 turbo-dom-parser = { package = "turbo-dom", version = "0.5.1" }
 
+[patch.crates-io]
+# Additive DOM API, pinned for clean-checkout reproducibility; PR #8.
+turbo-dom = { git = "https://github.com/miaskiewicz/turbo-dom", rev = "ab52475ec4e067ced19eb309327701708c3293c0" }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

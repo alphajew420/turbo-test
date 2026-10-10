@@ -1,6 +1,25 @@
 import { describe, it, expect } from 'vitest';
 
 describe('CSSOM grammar and stylesheet ownership', () => {
+  it('exposes nonconstructible native-backed list members with Web IDL flags', () => {
+    for(const C of [CSSRuleList,StyleSheetList]){
+      const item=Object.getOwnPropertyDescriptor(C.prototype,'item');
+      const length=Object.getOwnPropertyDescriptor(C.prototype,'length');
+      expect(item.enumerable).toBe(true);expect(item.configurable).toBe(true);expect(item.writable).toBe(true);
+      expect(item.value.name).toBe('item');expect(item.value.length).toBe(1);
+      expect(length.get.name).toBe('get length');expect(length.get.length).toBe(0);
+      expect(length.enumerable).toBe(true);expect(length.configurable).toBe(true);
+      for(const fn of [item.value,length.get]){
+        expect(Object.hasOwn(fn,'prototype')).toBe(false);
+        expect(Function.prototype.toString.call(fn).includes('[native code]')).toBe(true);
+        expect(()=>new fn()).toThrow();
+        expect(()=>fn.call({})).toThrow();
+      }
+      expect(Object.getOwnPropertyDescriptor(C,'prototype').writable).toBe(false);
+      expect(Object.getOwnPropertyDescriptor(globalThis,C.name).enumerable).toBe(false);
+    }
+  });
+
   it('retains branded live list identity across replacement and tree changes', () => {
     const sheet=new CSSStyleSheet(),rules=sheet.cssRules;
     sheet.replaceSync('a {} b {}');

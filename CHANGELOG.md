@@ -20,6 +20,17 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   properties and compatibility APIs still have partial Web IDL coverage.
 - Normalize Event constructor required arguments, string types and optional initialization,
   including CustomEvent's default detail.
+- Back CSS list methods/accessors and DOM interface constructors with native V8 callbacks;
+  preserve constructor inheritance, read-only prototype properties and non-enumerable globals.
+  Rebuilding a document refreshes interface constructors without losing native tree bindings.
+- Preserve class construction, subclass `new.target`, live instance state and exceptions through
+  the native callable bridge used by host runtimes.
+- Create genuine native document fragments, flatten their children on insertion, and retain
+  fragment clone/query identity. Native shadow roots preserve host/mode and scoped tree queries.
+- Put Node constants, DOM event methods and form-control methods on their owning interfaces;
+  retain native DOM listeners and subclass EventTarget state without exposing cascade helpers.
+- Keep event state private, expose read-only event fields and distinguish host-generated trusted
+  dispatch from script dispatch across DOM, custom EventTarget and window listeners.
 
 ## [0.4.5] — 2026-10-10
 

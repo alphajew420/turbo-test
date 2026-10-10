@@ -6,6 +6,7 @@
   var __ns = g[Symbol.for('ts')] || (Object.defineProperty(g, Symbol.for('ts'), { value: {}, configurable: true, enumerable: false }), g[Symbol.for('ts')]);
   if (typeof g.__parseCssNative === 'function') { __ns.parseCssNative = g.__parseCssNative; delete g.__parseCssNative; }
   if (typeof g.__domAccessor === 'function') { __ns.domAccessor = g.__domAccessor; delete g.__domAccessor; }
+  if (typeof g.__nativeDOMFunction === 'function') { __ns.makeNativeFunction = g.__nativeDOMFunction; delete g.__nativeDOMFunction; }
   if (typeof g.navigator === 'undefined') g.navigator = { userAgent: 'turbo-test', platform: 'rust', language: 'en-US', languages: ['en-US'], clipboard: {}, maxTouchPoints: 0 };
   // Top-level window self-references (browsers + jsdom + vitest): a non-framed window is its own
   // parent/top, and `self`/`frames` alias the window. `window === globalThis` here, so point them at
@@ -119,8 +120,8 @@
     // have propagated down. The JS cascade above only sees this element's own rules, so we defer to
     // rtdom's native cascade (cascade::computed_style) which resolves inheritance. display is NOT
     // inherited, so it is left as the element's own value.
-    if ((decl.visibility == null || decl.visibility === '') && el && typeof el.__cascadeProp === 'function') {
-      try { decl.visibility = el.__cascadeProp('visibility') || ''; } catch(e){}
+    if ((decl.visibility == null || decl.visibility === '') && el && typeof __ns.cascadeProp === 'function') {
+      try { decl.visibility = __ns.cascadeProp.call(el,'visibility') || ''; } catch(e){}
     }
     if (decl.visibility == null) decl.visibility = '';
     if (decl.opacity == null) decl.opacity = '';
@@ -171,27 +172,92 @@
     g.location = { href: 'http://localhost/', origin: 'http://localhost', protocol: 'http:', host: 'localhost', hostname: 'localhost', port: '', pathname: '/', search: '', hash: '', assign: function(){}, replace: function(){}, reload: function(){}, toString: function(){ return this.href; } };
   }
   // DOM interface constructors (for `instanceof` / global presence). Stubs; identity not enforced.
-  // Real Event base class (dispatch in browser_env.rs reads type/bubbles/defaultPrevented/__stop*).
+  // Event records stay private: readonly Web-IDL getters and native dispatch
+  // share this state without exposing writable bookkeeping to page scripts.
+  var eventRecords = new WeakMap();
+  var eventClockOrigin = Date.now();
+  var nativeEventRecord = g.__nativeEventRecord;
+  delete g.__nativeEventRecord;
+  function eventRecord(event) {
+    var record = eventRecords.get(event);
+    if (!record && nativeEventRecord) record = nativeEventRecord(event);
+    if (!record) throw new TypeError('Illegal invocation');
+    return record;
+  }
   if (!__ns.ttEvent) {
-    function Event(type, init = {}){ if (!new.target && !(this instanceof Event)) throw new TypeError('Event requires new'); if (arguments.length === 0) throw new TypeError('Event requires a type'); init = init || {}; this.type = String(type); this.bubbles = !!init.bubbles; this.cancelable = !!init.cancelable; this.composed = !!init.composed; this.defaultPrevented = false; this.target = null; this.currentTarget = null; this.__stop = false; this.__stopImmediate = false; this.eventPhase = 0; this.timeStamp = Date.now(); this.isTrusted = false; this.detail = init.detail; }
-    Event.prototype.preventDefault = function(){ if (this.cancelable) this.defaultPrevented = true; };
-    Event.prototype.stopPropagation = function(){ this.__stop = true; };
-    Event.prototype.stopImmediatePropagation = function(){ this.__stop = true; this.__stopImmediate = true; };
-    Event.prototype.initEvent = function(type, bubbles, cancelable){ this.type = type; this.bubbles = !!bubbles; this.cancelable = !!cancelable; };
-    Event.NONE = 0; Event.CAPTURING_PHASE = 1; Event.AT_TARGET = 2; Event.BUBBLING_PHASE = 3;
+    function eventString(value) {
+      if (typeof value === 'symbol') throw new TypeError('Cannot convert a Symbol to a string');
+      return String(value);
+    }
+    function Event(type, init = {}) {
+      if (!new.target && !(this instanceof Event)) throw new TypeError('Event requires new');
+      if (!arguments.length) throw new TypeError('Event requires a type');
+      if (init != null && typeof init !== 'object' && typeof init !== 'function') throw new TypeError('EventInit must be a dictionary');
+      init = init || {};
+      var state = {type:eventString(type), bubbles:!!init.bubbles, cancelable:!!init.cancelable,
+        composed:!!init.composed, defaultPrevented:false, target:null, currentTarget:null,
+        stop:false, stopImmediate:false, eventPhase:0, timeStamp:g.performance&&typeof g.performance.now==='function'?g.performance.now():Date.now()-eventClockOrigin,
+        trusted:false, dispatching:false, path:[]};
+      eventRecords.set(this,state);
+      var get = ({get isTrusted(){return eventRecord(this).trusted;}});
+      var trustedGetter=Object.getOwnPropertyDescriptor(get,'isTrusted').get;
+      if(__ns.makeNativeFunction)trustedGetter=__ns.makeNativeFunction(trustedGetter,'get isTrusted',0);
+      Object.defineProperty(this,'isTrusted',{get:trustedGetter,enumerable:true});
+    }
+    function eventMember(name, descriptor) {
+      descriptor.enumerable=true;descriptor.configurable=true;
+      if(descriptor.get&&__ns.makeNativeFunction)descriptor.get=__ns.makeNativeFunction(descriptor.get,'get '+name,0);
+      if(descriptor.set&&__ns.makeNativeFunction)descriptor.set=__ns.makeNativeFunction(descriptor.set,'set '+name,1);
+      if(descriptor.value){descriptor.writable=true;if(__ns.makeNativeFunction)descriptor.value=__ns.makeNativeFunction(descriptor.value,name,descriptor.value.length);}
+      Object.defineProperty(Event.prototype,name,descriptor);
+    }
+    ['type','target','currentTarget','eventPhase','bubbles','cancelable','defaultPrevented','composed','timeStamp'].forEach(function(name){
+      var getter=Object.getOwnPropertyDescriptor({get [name](){return eventRecord(this)[name];}},name).get;
+      eventMember(name,{get:getter});
+    });
+    eventMember('srcElement',{get:Object.getOwnPropertyDescriptor({get srcElement(){return eventRecord(this).target;}},'srcElement').get});
+    eventMember('returnValue',Object.getOwnPropertyDescriptor({get returnValue(){return !eventRecord(this).defaultPrevented;},set returnValue(value){var state=eventRecord(this);if(!value&&state.cancelable)state.defaultPrevented=true;}},'returnValue'));
+    eventMember('cancelBubble',Object.getOwnPropertyDescriptor({get cancelBubble(){return eventRecord(this).stop;},set cancelBubble(value){var state=eventRecord(this);if(value)state.stop=true;}},'cancelBubble'));
+    var methods={
+      preventDefault(){var state=eventRecord(this);if(state.cancelable)state.defaultPrevented=true;},
+      stopPropagation(){eventRecord(this).stop=true;},
+      stopImmediatePropagation(){var state=eventRecord(this);state.stop=true;state.stopImmediate=true;},
+      composedPath(){return eventRecord(this).path.slice();},
+      initEvent(type,bubbles=false,cancelable=false){
+        var state=eventRecord(this);if(!arguments.length)throw new TypeError('A type is required');if(state.dispatching)return;
+        state.type=eventString(type);state.bubbles=!!bubbles;state.cancelable=!!cancelable;
+        state.defaultPrevented=false;state.stop=false;state.stopImmediate=false;state.trusted=false;state.target=null;
+      }
+    };
+    Object.keys(methods).forEach(function(name){eventMember(name,{value:methods[name]});});
+    Object.defineProperty(Event.prototype,Symbol.toStringTag,{value:'Event',configurable:true});
+    ['NONE','CAPTURING_PHASE','AT_TARGET','BUBBLING_PHASE'].forEach(function(name,value){
+      [Event,Event.prototype].forEach(function(object){Object.defineProperty(object,name,{value:value,enumerable:true});});
+    });
     g.Event = Event;
     function mkSub(extra){ return function(type, init = {}){ if (arguments.length === 0) throw new TypeError('Event requires a type'); init = init || {}; Event.call(this, type, init); if (extra) extra(this, init); for (var k in init){ if (!(k in this)) this[k] = init[k]; } }; }
-    function sub(name, extra){ var C = mkSub(extra); Object.defineProperty(C, 'name', {value: name, configurable: true}); C.prototype = Object.create(Event.prototype); C.prototype.constructor = C; g[name] = C; }
+    function sub(name, extra){ var C = mkSub(extra); Object.defineProperty(C, 'name', {value: name, configurable: true}); C.prototype = Object.create(Event.prototype); C.prototype.constructor = C; Object.defineProperty(C.prototype,Symbol.toStringTag,{value:name,configurable:true});g[name] = C; }
     var keyExtra = function(self, init){ self.key = init.key||''; self.code = init.code||''; self.keyCode = init.keyCode||0; self.which = init.which||init.keyCode||0; self.altKey=!!init.altKey; self.ctrlKey=!!init.ctrlKey; self.metaKey=!!init.metaKey; self.shiftKey=!!init.shiftKey; self.repeat=!!init.repeat; };
     var mouseExtra = function(self, init){ self.button=init.button||0; self.buttons=init.buttons||0; self.clientX=init.clientX||0; self.clientY=init.clientY||0; self.pageX=init.pageX||0; self.pageY=init.pageY||0; self.altKey=!!init.altKey; self.ctrlKey=!!init.ctrlKey; self.metaKey=!!init.metaKey; self.shiftKey=!!init.shiftKey; self.relatedTarget=init.relatedTarget||null; };
     sub('CustomEvent', function(self, init){ self.detail = init.detail === undefined ? null : init.detail; });
+    sub('MessageEvent',function(self,init){self.data=init.data===undefined?null:init.data;self.origin=init.origin===undefined?'':eventString(init.origin);self.lastEventId=init.lastEventId===undefined?'':eventString(init.lastEventId);self.source=init.source||null;self.ports=init.ports||[];});
     sub('UIEvent'); sub('MouseEvent', mouseExtra); sub('PointerEvent', mouseExtra); sub('KeyboardEvent', keyExtra);
     sub('InputEvent', function(self, init){ self.data = init.data; self.inputType = init.inputType||''; });
     sub('FocusEvent', function(self, init){ self.relatedTarget = init.relatedTarget||null; });
     sub('CompositionEvent'); sub('WheelEvent', mouseExtra); sub('DragEvent', mouseExtra); sub('TouchEvent'); sub('ClipboardEvent');
     g.document.createEvent = function(){ return new Event('', {}); };
-    __ns.ttEvent = true;
+    // The installer captures and deletes this function before guest execution.
+    g.__captureEventRecord=function(event){return eventRecords.get(event);};
+    __ns.ttEvent=true;
   }
+  function beginEventDispatch(event,target,path,host=false){
+    var state=eventRecord(event);
+    if(state.dispatching||!state.type)throw new g.DOMException('The event is already being dispatched or uninitialized.','InvalidStateError');
+    state.dispatching=true;state.trusted=host;
+    state.target=target;state.currentTarget=target;state.eventPhase=2;state.path=path;
+    return state;
+  }
+  function endEventDispatch(state){state.currentTarget=null;state.eventPhase=0;state.path=[];state.dispatching=false;state.stop=false;state.stopImmediate=false;}
   var ctors = ['Node','Element','HTMLElement','HTMLDivElement','HTMLInputElement','HTMLButtonElement','HTMLAnchorElement','HTMLSelectElement','HTMLTextAreaElement','HTMLFormElement','HTMLImageElement','HTMLLabelElement','HTMLOptionElement','HTMLUListElement','HTMLLIElement','HTMLSpanElement','HTMLParagraphElement','HTMLHeadingElement','HTMLTableElement','HTMLIFrameElement','HTMLCanvasElement','HTMLStyleElement','HTMLScriptElement','HTMLDocument','Document','DocumentFragment','ShadowRoot','Text','Comment','SVGElement','SVGSVGElement','DOMParser','EventTarget','AbortController','AbortSignal','DOMException',
     'UIEvent','MouseEvent','KeyboardEvent','FocusEvent','InputEvent','TouchEvent','PointerEvent','WheelEvent','DragEvent','ClipboardEvent','AnimationEvent','TransitionEvent','MessageEvent','ProgressEvent','CompositionEvent','PopStateEvent','HashChangeEvent','StorageEvent','ErrorEvent','CloseEvent',
     // DOM node/collection/CSS interfaces app bundles do `instanceof` against (an
@@ -219,14 +285,17 @@
         var m = this.__etl; if (!m || !m[type]) return;
         var i = m[type].indexOf(cb); if (i >= 0) m[type].splice(i, 1);
       };
-      ET.prototype.dispatchEvent = function(ev){
-        var m = this.__etl, type = ev && ev.type, list = m && type && m[type];
-        if (list) { try { if (!ev.target) ev.target = this; ev.currentTarget = this; } catch(e){}
-          for (var i = 0; i < list.length; i++){ var cb = list[i];
-            try { typeof cb === "function" ? cb.call(this, ev) : cb.handleEvent(ev); } catch(e){} } }
-        return !(ev && ev.defaultPrevented);
-      };
+
     }
+    if(ET&&ET.prototype)ET.prototype.dispatchEvent=function(ev){
+      var state=beginEventDispatch(ev,this,[this]);
+      var registry=this.__etl||this.__listeners,list=registry&&registry[state.type];
+      try{if(list)for(var cb of list.slice()){
+        if(state.stopImmediate)break;
+        try{typeof cb==='function'?cb.call(this,ev):cb.handleEvent(ev);}catch(e){}
+      }}finally{endEventDispatch(state);}
+      return !state.defaultPrevented;
+    };
   })();
   // make `node instanceof HTMLElement/Element/Node/...` work for native DOM nodes (jest-dom's
   // checkHtmlElement + many libs rely on it) via Symbol.hasInstance keyed on nodeType.
@@ -317,8 +386,23 @@
     var winL = __ns.winListeners = {};
     g.addEventListener = function(type, fn){ if (typeof fn !== 'function') return; (winL[type] = winL[type] || []).push(fn); };
     g.removeEventListener = function(type, fn){ var a = winL[type]; if (a){ var i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); } };
-    g.dispatchEvent = function(ev){ if (!ev) return true; if (ev.target == null) { try { ev.target = g; } catch(e){} } var a = winL[ev.type]; if (a) a.slice().forEach(function(fn){ try { fn.call(g, ev); } catch(e){} }); return !ev.defaultPrevented; };
+    g.dispatchEvent = function(ev){
+      var state=beginEventDispatch(ev,g,[g]),listeners=winL[state.type];
+      try{if(listeners)for(var fn of listeners.slice()){if(state.stopImmediate)break;try{fn.call(g,ev);}catch(e){}}}
+      finally{endEventDispatch(state);}return !state.defaultPrevented;
+    };
   }
+  // Captured privately by the host before page scripts can run.
+  g.__captureHostEventDispatch=function(event,target){
+    var state=beginEventDispatch(event,target,[target],true);
+    var registry=target===g?__ns.winListeners:(target.__etl||target.__listeners);
+    var list=registry&&registry[state.type];
+    try{if(list)for(var listener of list.slice()){
+      if(state.stopImmediate)break;
+      try{typeof listener==='function'?listener.call(target,event):listener.handleEvent(event);}catch(e){}
+    }}finally{endEventDispatch(state);}
+    return !state.defaultPrevented;
+  };
   // document extras (pure-JS shims over the native tree).
   var d = g.document;
   d.defaultView = g;
@@ -327,14 +411,20 @@
   var cssStores=new WeakMap();
   var cssRecord=function(list){var record=cssStores.get(list);if(!record)throw new TypeError('Illegal invocation');if(record.refresh&&!record.refreshing){record.refreshing=true;try{record.items=record.refresh();}finally{record.refreshing=false;}}return record;};
   ['CSSRuleList','StyleSheetList'].forEach(function(name){
-    var ctor=function(){throw new TypeError('Illegal constructor');};Object.defineProperty(ctor,'name',{value:name});
+    var illegalConstructor=function(){throw new TypeError('Illegal constructor');};
+    var ctor=__ns.makeNativeFunction?__ns.makeNativeFunction(illegalConstructor,name,0,true):illegalConstructor;Object.defineProperty(ctor,'name',{value:name});
     ctor.prototype={};
     Object.defineProperty(ctor.prototype,Symbol.toStringTag,{value:name,configurable:true});
-    Object.defineProperty(ctor.prototype,'length',{configurable:true,enumerable:true,get:function(){return cssRecord(this).items.length;}});
-    Object.defineProperty(ctor.prototype,'item',{configurable:true,enumerable:true,writable:true,value:function item(index){if(!arguments.length)throw new TypeError("Failed to execute 'item': 1 argument required");return cssRecord(this).items[Number(index)>>>0]||null;}});
+    var lengthGetter=Object.getOwnPropertyDescriptor({get length(){return cssRecord(this).items.length;}},'length').get;
+    if(__ns.makeNativeFunction)lengthGetter=__ns.makeNativeFunction(lengthGetter,'get length',0);
+    Object.defineProperty(ctor.prototype,'length',{configurable:true,enumerable:true,get:lengthGetter});
+    var item=({item(index){if(!arguments.length)throw new TypeError("Failed to execute 'item': 1 argument required");return cssRecord(this).items[Number(index)>>>0]||null;}}).item;
+    if(__ns.makeNativeFunction)item=__ns.makeNativeFunction(item,'item',1);
+    Object.defineProperty(ctor.prototype,'item',{configurable:true,enumerable:true,writable:true,value:item});
     Object.defineProperty(ctor.prototype,'constructor',{configurable:true,writable:true,value:ctor});
     Object.defineProperty(ctor.prototype,Symbol.iterator,{configurable:true,writable:true,value:Array.prototype.values});
-    g[name]=ctor;
+    Object.defineProperty(ctor,'prototype',{writable:false});
+    Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});
   });
   var cssIndex=function(key){return typeof key==='string'&&/^(0|[1-9]\d*)$/.test(key)?Number(key):-1;};
   var cssList=function(name,refresh){
@@ -459,7 +549,6 @@
   if (!d.head) { try { d.head = d.createElement('head'); if (d.documentElement) d.documentElement.appendChild(d.head); } catch(e){} }
   // NOTE: document.createElementNS uses the native binding (namespace-aware: SVG/MathML elements keep
   // their namespace + case-preserved attributes like viewBox). Previously aliased to createElement.
-  d.createDocumentFragment = function(){ return d.createElement('#document-fragment'); };
   // NOTE: document.addEventListener/removeEventListener/dispatchEvent use the native binding (the
   // document is a wrapped node) so document-level listeners — click-outside handlers, global
   // keydown — register and fire via the bubble path. (Previously stubbed to no-ops.)
@@ -1170,7 +1259,7 @@
   (function(){
     var ranges = [];
     var firing = false;
-    function fireSelectionChange(){ if(firing) return; firing=true; try { var ev = { type:'selectionchange', bubbles:false, cancelable:false, target:d, currentTarget:null }; if (d.dispatchEvent) d.dispatchEvent(ev); } catch(e){} firing=false; }
+    function fireSelectionChange(){ if(firing) return; firing=true; try { var ev = new g.Event('selectionchange');eventRecord(ev).trusted=true;if (d.dispatchEvent) d.dispatchEvent(ev); } catch(e){} firing=false; }
     var sel = {
       get rangeCount(){ return ranges.length; },
       get anchorNode(){ return ranges.length?ranges[0].startContainer:null; },
@@ -1223,10 +1312,9 @@
   (function(){
     // A `message` event shaped like the fields cross-frame protocols read.
     var mkMsgEvent = function(data, origin, source, ports){
-      return { type:'message', data:data, origin: origin||'', lastEventId:'', source: source||null,
-        ports: ports||[], bubbles:false, cancelable:false, composed:false, defaultPrevented:false,
-        target:null, currentTarget:null, eventPhase:0, isTrusted:false, timeStamp: Date.now(),
-        preventDefault:function(){}, stopPropagation:function(){}, stopImmediatePropagation:function(){} };
+      var event=new g.MessageEvent('message',{data:data,origin:origin||'',source:source||null,ports:ports||[]});
+      eventRecord(event).trusted=true;
+      return event;
     };
     // Deliver a message event to a window-like target's `message` listeners + onmessage.
     // Async via setTimeout when present (matches the real message-loop ordering + the
@@ -1234,9 +1322,10 @@
     var deliver = function(win, ev){
       var st = g.setTimeout || function(f){ return f(); };
       st(function(){
-        ev.target = win; ev.currentTarget = win;
+        var state=eventRecord(ev);state.target=win;state.currentTarget=win;state.trusted=true;state.eventPhase=2;
         try { if (typeof win.onmessage === 'function') win.onmessage(ev); } catch(e){}
         try { if (typeof win.dispatchEvent === 'function') win.dispatchEvent(ev); } catch(e){}
+        finally{endEventDispatch(state);}
       }, 0);
     };
     // Minimal child document: real (native) elements forming a subtree DETACHED from the
@@ -1344,7 +1433,7 @@
         atob: g.atob, btoa: g.btoa, crypto: g.crypto, performance: g.performance,
         addEventListener: function(t,f){ if(typeof f==='function') (wl[t]=wl[t]||[]).push(f); },
         removeEventListener: function(t,f){ var a=wl[t]; if(a){ var i=a.indexOf(f); if(i>=0) a.splice(i,1); } },
-        dispatchEvent: function(ev){ if(!ev) return true; if(ev.target==null){ try{ev.target=childWin;}catch(e){} } var a=wl[ev.type]; if(a) a.slice().forEach(function(f){ try{f.call(childWin,ev);}catch(e){} }); return !ev.defaultPrevented; },
+        dispatchEvent: function(ev){var state=beginEventDispatch(ev,childWin,[childWin]),a=wl[state.type];try{if(a)a.slice().forEach(function(f){try{f.call(childWin,ev);}catch(e){}});}finally{endEventDispatch(state);}return !state.defaultPrevented;},
         focus:function(){}, blur:function(){}, close:function(){ childWin.closed = true; },
         // parent → child: fire the CHILD's listeners; source is the parent view.
         postMessage: function(msg, targetOrigin, transfer){
@@ -1395,6 +1484,9 @@
   (function(){
     if (typeof __ns.domAccessor !== 'function') return;
     var oldBase=g.HTMLElement.prototype,oldDocument=g.Document.prototype;
+    var nodeConstructors=['Node','Element','HTMLElement','Document','HTMLDocument','CharacterData','Text','Comment','CDATASection','DocumentFragment','ShadowRoot','SVGElement','SVGSVGElement'];
+    Object.getOwnPropertyNames(g).forEach(function(name){if(/^HTML.*Element$/.test(name)&&typeof g[name]==='function'&&nodeConstructors.indexOf(name)<0)nodeConstructors.push(name);});
+    nodeConstructors.forEach(function(name){var previous=g[name];var ctor=__ns.makeNativeFunction(function(){throw new TypeError('Illegal constructor');},name,0,true);ctor.prototype=previous.prototype;Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});});
     var prototypes={};
     function defineInterface(name,parent,existing){
       var ctor=g[name],proto=existing||Object.create(parent);
@@ -1402,11 +1494,29 @@
       Object.defineProperty(proto,'constructor',{value:ctor,writable:true,configurable:true});
       Object.defineProperty(proto,Symbol.toStringTag,{value:name,configurable:true});
       ctor.prototype=proto;
+      if(parent&&parent.constructor&&parent.constructor!==Object)Object.setPrototypeOf(ctor,parent.constructor);
+      Object.defineProperty(ctor,'prototype',{writable:false});
+      Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});
       try{delete ctor[Symbol.hasInstance];}catch(e){}
       prototypes[name]=proto;
       return proto;
     }
-    Object.defineProperty(g.EventTarget.prototype,Symbol.toStringTag,{value:'EventTarget',configurable:true});
+    var eventTargetProto=g.EventTarget.prototype;
+    var eventTargets=__ns.eventTargetInstances||(__ns.eventTargetInstances=new WeakSet());
+    var eventCallbacks=__ns.eventTargetCallbacks||(__ns.eventTargetCallbacks={});
+    var windowCallbacks=__ns.windowEventCallbacks||(__ns.windowEventCallbacks={});
+    ['addEventListener','removeEventListener','dispatchEvent'].forEach(function(name){
+      if(!eventCallbacks[name])eventCallbacks[name]=eventTargetProto[name];
+      if(!windowCallbacks[name])windowCallbacks[name]=g[name];
+    });
+    var PreviousEventTarget=g.EventTarget;
+    var eventTargetCtor=__ns.makeNativeFunction(class extends PreviousEventTarget{constructor(){super();eventTargets.add(this);}},'EventTarget',0,true,true);
+    eventTargetCtor.prototype=eventTargetProto;
+    Object.defineProperty(g,'EventTarget',{value:eventTargetCtor,writable:true,configurable:true,enumerable:false});
+    Object.defineProperty(eventTargetProto,'constructor',{value:eventTargetCtor,writable:true,configurable:true});
+    Object.defineProperty(eventTargetProto,Symbol.toStringTag,{value:'EventTarget',configurable:true});
+    Object.defineProperty(g.EventTarget,'prototype',{writable:false});
+    Object.defineProperty(g,'EventTarget',{value:g.EventTarget,writable:true,configurable:true,enumerable:false});
     var nodeProto=defineInterface('Node',g.EventTarget.prototype);
     var elementProto=defineInterface('Element',nodeProto);
     var htmlProto=defineInterface('HTMLElement',elementProto);
@@ -1417,14 +1527,15 @@
     defineInterface('Comment',characterProto);
     defineInterface('CDATASection',characterProto);
     defineInterface('DocumentFragment',nodeProto);
+    defineInterface('ShadowRoot',g.DocumentFragment.prototype);
     defineInterface('SVGElement',elementProto);
     defineInterface('SVGSVGElement',g.SVGElement.prototype);
-    Object.keys(g).forEach(function(name){
+    Object.getOwnPropertyNames(g).forEach(function(name){
       if(!/^HTML.*Element$/.test(name)||name==='HTMLElement'||typeof g[name]!=='function')return;
       var proto=g[name].prototype;
       defineInterface(name,htmlProto,proto===oldBase?null:proto);
     });
-    ['HTMLAudioElement','HTMLVideoElement'].forEach(function(name){Object.setPrototypeOf(prototypes[name],prototypes.HTMLMediaElement);});
+    ['HTMLAudioElement','HTMLVideoElement'].forEach(function(name){Object.setPrototypeOf(prototypes[name],prototypes.HTMLMediaElement);Object.setPrototypeOf(g[name],g.HTMLMediaElement);});
     // Keep existing compatibility behavior while separating the base interfaces;
     // the native members below replace these descriptors on their proper owner.
     Reflect.ownKeys(oldBase).forEach(function(key){
@@ -1439,9 +1550,12 @@
     });
     var accessorOwners={
       Node:['nodeType','nodeName','isConnected','ownerDocument','parentNode','parentElement','childNodes','firstChild','nextSibling','nodeValue','textContent'],
-      Element:['namespaceURI','localName','tagName','id','className','attributes','innerHTML','outerHTML','children','firstElementChild'],
+      Element:['namespaceURI','localName','tagName','id','className','attributes','innerHTML','outerHTML','children','firstElementChild','shadowRoot'],
       HTMLElement:['style','dataset','contentEditable','isContentEditable'],
-      CharacterData:['data']
+      CharacterData:['data'],
+      Document:['activeElement','children','firstElementChild'],
+      DocumentFragment:['children','firstElementChild'],
+      ShadowRoot:['host','mode','innerHTML']
     };
     var writable={nodeValue:1,textContent:1,id:1,className:1,innerHTML:1,contentEditable:1,data:1};
     var nativeKeys=['constructor'];
@@ -1453,13 +1567,50 @@
         Object.defineProperty(prototypes[owner],name,descriptor);
       });
     });
+    ['Element','Document','DocumentFragment'].forEach(function(owner){
+      var children=Object.getOwnPropertyDescriptor(prototypes[owner],'children').get;
+      ['childElementCount','lastElementChild'].forEach(function(name){
+        var getter=__ns.makeNativeFunction(function(){var list=children.call(this);return name==='childElementCount'?list.length:list[list.length-1]||null;},'get '+name,0);
+        Object.defineProperty(prototypes[owner],name,{get:getter,enumerable:true,configurable:true});
+      });
+    });
     var getType=Object.getOwnPropertyDescriptor(nodeProto,'nodeType').get;
     var getTag=Object.getOwnPropertyDescriptor(elementProto,'tagName').get;
     var getNamespace=Object.getOwnPropertyDescriptor(elementProto,'namespaceURI').get;
+    var isShadowRoot=__ns.domAccessor('__isShadowRoot',false,'Node');
     var probe=d.createElement('div');
+    __ns.cascadeProp=Object.getOwnPropertyDescriptor(probe,'__cascadeProp').value;
+    nativeKeys.push('__cascadeProp','__isShadowRoot','host','mode','containsNode','activeElement');
+    var constants={ELEMENT_NODE:1,ATTRIBUTE_NODE:2,TEXT_NODE:3,CDATA_SECTION_NODE:4,ENTITY_REFERENCE_NODE:5,ENTITY_NODE:6,PROCESSING_INSTRUCTION_NODE:7,COMMENT_NODE:8,DOCUMENT_NODE:9,DOCUMENT_TYPE_NODE:10,DOCUMENT_FRAGMENT_NODE:11,NOTATION_NODE:12,DOCUMENT_POSITION_DISCONNECTED:1,DOCUMENT_POSITION_PRECEDING:2,DOCUMENT_POSITION_FOLLOWING:4,DOCUMENT_POSITION_CONTAINS:8,DOCUMENT_POSITION_CONTAINED_BY:16,DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC:32};
+    Object.keys(constants).forEach(function(name){
+      nativeKeys.push(name);
+      [g.Node,nodeProto].forEach(function(owner){Object.defineProperty(owner,name,{value:constants[name],enumerable:true});});
+    });
+    ['addEventListener','removeEventListener','dispatchEvent'].forEach(function(name){
+      var native=Object.getOwnPropertyDescriptor(probe,name).value;
+      var minimum=name==='dispatchEvent'?1:2;
+      var method=__ns.makeNativeFunction(function(){
+        if(arguments.length<minimum)throw new TypeError(name+' requires '+minimum+' arguments');
+        if(this===g)return windowCallbacks[name].apply(this,arguments);
+        var node=false;try{getType.call(this);node=true;}catch(e){}
+        if(node)return native.apply(this,arguments);
+        if(!eventTargets.has(this))throw new TypeError('Illegal invocation');
+        return eventCallbacks[name].apply(this,arguments);
+      },name,minimum);
+      Object.defineProperty(eventTargetProto,name,{value:method,writable:true,configurable:true,enumerable:true});
+      nativeKeys.push(name);
+    });
+    var controls=['HTMLInputElement','HTMLTextAreaElement','HTMLSelectElement','HTMLButtonElement','HTMLFieldSetElement','HTMLObjectElement','HTMLOutputElement'];
+    ['checkValidity','reportValidity','setCustomValidity','setSelectionRange','setRangeText','select'].forEach(function(name){
+      var descriptor=Object.getOwnPropertyDescriptor(probe,name);
+      nativeKeys.push(name);
+      var owners=/^(setSelectionRange|setRangeText|select)$/.test(name)?controls.slice(0,2):controls;
+      if(name!=='setCustomValidity'&&owners===controls)owners=owners.concat('HTMLFormElement');
+      owners.forEach(function(owner){var proto=prototypes[owner];if(proto&&!Object.hasOwn(proto,name)&&descriptor)Object.defineProperty(proto,name,{value:descriptor.value,writable:true,configurable:true,enumerable:true});});
+    });
     var methodOwners={
       Node:['appendChild','removeChild','insertBefore','contains','hasChildNodes','cloneNode','getRootNode'],
-      Element:['setAttribute','getAttribute','getAttributeNode','setAttributeNode','removeAttributeNode','hasAttribute','removeAttribute','querySelector','querySelectorAll','matches','closest','append','prepend','remove','before','after','replaceWith','replaceChildren','insertAdjacentElement','insertAdjacentHTML','toggleAttribute','getAttributeNS','scrollIntoView','scrollTo','scrollBy','getBoundingClientRect'],
+      Element:['setAttribute','getAttribute','getAttributeNode','setAttributeNode','removeAttributeNode','hasAttribute','removeAttribute','querySelector','querySelectorAll','matches','closest','append','prepend','remove','before','after','replaceWith','replaceChildren','insertAdjacentElement','insertAdjacentHTML','toggleAttribute','getAttributeNS','scrollIntoView','scrollTo','scrollBy','getBoundingClientRect','attachShadow'],
       HTMLElement:['focus','blur','click'],
       CharacterData:['insertData','deleteData','appendData','replaceData','substringData'],
       Text:['splitText']
@@ -1496,7 +1647,7 @@
       if(type===1){
         var tag=getTag.call(obj),namespace=getNamespace.call(obj);
         name=String(namespace||'').indexOf('svg')>=0?(tag==='svg'?'SVGSVGElement':'SVGElement'):(tags[String(tag).toUpperCase()]||'HTMLElement');
-      }else name=({3:'Text',4:'CDATASection',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
+      }else name=type===11&&isShadowRoot.call(obj)?'ShadowRoot':({3:'Text',4:'CDATASection',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
       Object.setPrototypeOf(obj,prototypes[name]);
       projected.add(obj);
       nativeKeys.forEach(function(key){if(Object.prototype.hasOwnProperty.call(obj,key))delete obj[key];});

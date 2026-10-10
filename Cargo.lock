@@ -2021,8 +2021,7 @@ dependencies = [
 [[package]]
 name = "turbo-dom"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eab7b244f89a3557d4d582b899b5a9f35c50802732f11ea48f1bd374451c94f"
+source = "git+https://github.com/miaskiewicz/turbo-dom?rev=ab52475ec4e067ced19eb309327701708c3293c0#ab52475ec4e067ced19eb309327701708c3293c0"
 dependencies = [
  "html5ever",
  "markup5ever_rcdom",
