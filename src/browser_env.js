@@ -1715,6 +1715,32 @@ if(typeof __ns.makeNativeFunction==='function'){
       }
     });
     ['accept','autoFocus','autocomplete','checked','disabled','form','max','min','multiple','name','pattern','placeholder','readOnly','required','step','value','getBoundingClientRect'].forEach(function(name){delete prototypes.HTMLCanvasElement[name];});
+    function reflectAttribute(owner,name,attribute,nullable){
+      var check=__ns.domAccessor('nodeType',false,owner);
+      Object.defineProperty(prototypes[owner],name,{configurable:true,enumerable:true,
+        get:__ns.makeNativeFunction(function(){check.call(this);var value=this.getAttribute(attribute);return nullable?value:value||'';},'get '+name,0),
+        set:__ns.makeNativeFunction(function(value){check.call(this);if(nullable&&value==null){this.removeAttribute(attribute);return;}if(typeof value==='symbol')throw new TypeError('Cannot convert a Symbol to a string');this.setAttribute(attribute,String(value));},'set '+name,1)});
+    }
+    ['title','lang','accessKey'].forEach(function(name){reflectAttribute('HTMLElement',name,name.toLowerCase(),false);});
+    var ariaNames='Atomic AutoComplete BrailleLabel BrailleRoleDescription Busy Checked ColCount ColIndex ColIndexText ColSpan Current Description Disabled Expanded HasPopup Hidden Invalid KeyShortcuts Label Level Live Modal MultiLine MultiSelectable Orientation Placeholder PosInSet Pressed ReadOnly Relevant Required RoleDescription RowCount RowIndex RowIndexText RowSpan Selected SetSize Sort ValueMax ValueMin ValueNow ValueText'.split(' ');
+    ariaNames.forEach(function(name){reflectAttribute('Element','aria'+name,'aria-'+name.toLowerCase(),true);});
+    reflectAttribute('Element','role','role',true);
+    var reflectedOwners={src:['HTMLScriptElement','HTMLImageElement','HTMLIFrameElement','HTMLMediaElement','HTMLInputElement','HTMLEmbedElement','HTMLSourceElement','HTMLTrackElement'],href:['HTMLAnchorElement','HTMLAreaElement','HTMLBaseElement','HTMLLinkElement'],rel:['HTMLAnchorElement','HTMLAreaElement','HTMLLinkElement'],as:['HTMLLinkElement'],media:['HTMLLinkElement','HTMLStyleElement','HTMLSourceElement'],type:['HTMLInputElement','HTMLButtonElement','HTMLScriptElement','HTMLLinkElement','HTMLStyleElement','HTMLEmbedElement','HTMLObjectElement','HTMLSourceElement'],valueAsNumber:['HTMLInputElement'],sheet:['HTMLStyleElement','HTMLLinkElement']};
+    Object.keys(reflectedOwners).forEach(function(name){
+      var descriptor=Object.getOwnPropertyDescriptor(htmlProto,name);if(!descriptor)return;
+      reflectedOwners[name].forEach(function(owner){
+        var proto=prototypes[owner];if(!proto||name!=='sheet'&&Object.hasOwn(proto,name))return;
+        var copy={configurable:true,enumerable:true},check=__ns.domAccessor('nodeType',false,'HTMLElement');
+        var ownerTags=Object.keys(htmlByTag).filter(function(tag){return htmlByTag[tag]===owner;});
+        var extraTags={HTMLInputElement:['INPUT'],HTMLButtonElement:['BUTTON'],HTMLAnchorElement:['A'],HTMLImageElement:['IMG'],HTMLIFrameElement:['IFRAME'],HTMLScriptElement:['SCRIPT'],HTMLStyleElement:['STYLE'],HTMLMediaElement:['AUDIO','VIDEO']};
+        if(extraTags[owner])ownerTags=ownerTags.concat(extraTags[owner]);
+        ['get','set'].forEach(function(kind){var delegate=descriptor[kind];if(!delegate)return;copy[kind]=__ns.makeNativeFunction(function(){check.call(this);if(ownerTags.indexOf(String(getTag.call(this)).toUpperCase())<0)throw new TypeError('Illegal invocation');var value=delegate.apply(this,arguments);if(kind==='get'&&(name==='src'||name==='href')&&value&&typeof g.URL==='function'){try{return new g.URL(value,this.ownerDocument.URL||g.location.href).href;}catch(e){}}return value;},kind+' '+name,kind==='get'?0:1);});
+        Object.defineProperty(proto,name,copy);
+      });
+      delete htmlProto[name];
+    });
+    var elementOperations={getAttributeNames(){return Array.from(this.attributes,function(attribute){return attribute.name;});},hasAttributes(){return this.attributes.length>0;},insertAdjacentText(position,text){if(typeof position==='symbol'||typeof text==='symbol')throw new TypeError('Cannot convert a Symbol to a string');position=String(position).toLowerCase();var node=this.ownerDocument.createTextNode(String(text));if(position==='beforebegin'){if(this.parentNode)this.parentNode.insertBefore(node,this);}else if(position==='afterend'){if(this.parentNode)this.parentNode.insertBefore(node,this.nextSibling);}else if(position==='afterbegin')this.insertBefore(node,this.firstChild);else if(position==='beforeend')this.appendChild(node);else throw new g.DOMException('Invalid adjacent position','SyntaxError');}};
+    Object.keys(elementOperations).forEach(function(name){var delegate=elementOperations[name],check=__ns.domAccessor('nodeType',false,'Element');Object.defineProperty(elementProto,name,{value:__ns.makeNativeFunction(function(){check.call(this);if(arguments.length<delegate.length)throw new TypeError(name+' requires '+delegate.length+' arguments');return delegate.apply(this,arguments);},name,delegate.length),writable:true,enumerable:true,configurable:true});});
     var eventHandlers=new WeakMap(),checkHandlerReceiver=__ns.domAccessor('nodeType',false,'HTMLElement');
     var handlerNames='abort animationcancel animationend animationiteration animationstart auxclick beforeinput beforematch beforetoggle beforexrselect blur cancel canplay canplaythrough change click close command contentvisibilityautostatechange contextlost contextmenu contextrestored copy cuechange cut dblclick drag dragend dragenter dragleave dragover dragstart drop durationchange emptied ended error focus formdata gotpointercapture input invalid keydown keypress keyup load loadeddata loadedmetadata loadstart lostpointercapture mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup mousewheel paste pause play playing pointercancel pointerdown pointerenter pointerleave pointermove pointerout pointerover pointerrawupdate pointerup progress ratechange reset resize scroll scrollend scrollsnapchange scrollsnapchanging securitypolicyviolation seeked seeking select selectionchange selectstart slotchange stalled submit suspend timeupdate toggle transitioncancel transitionend transitionrun transitionstart volumechange waiting webkitanimationend webkitanimationiteration webkitanimationstart webkittransitionend wheel'.split(' ');
     handlerNames.forEach(function(type){

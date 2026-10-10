@@ -145,8 +145,7 @@ thread_local! {
     static MISSING: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
 }
 
-/// Interceptor getter (debug only): fall through for known/symbol names; record + return undefined
-/// for anything unimplemented.
+/// Record unresolved property reads while preserving ordinary missing-property semantics.
 fn missing_getter(
     scope: &mut v8::PinScope,
     name: v8::Local<v8::Name>,
@@ -176,9 +175,9 @@ fn missing_getter(
     if log_enabled() {
         MISSING.with(|m| *m.borrow_mut().entry(key).or_insert(0) += 1);
     }
-    // graceful degradation: an unimplemented member reads as undefined (no crash).
-    rv.set(v8::undefined(scope).into());
-    v8::Intercepted::kYes
+    // Reporting an intercepted undefined makes V8's `in` operator claim the
+    // absent property exists. Normal lookup already yields undefined on a miss.
+    v8::Intercepted::kNo
 }
 
 /// Passthrough setter interceptor: NEVER intercept (kNo) → JS property sets create normal own
@@ -3708,10 +3707,10 @@ fn native_dom_function_dispatch(
     else {
         return;
     };
-    let constructor = data
+    let require_new = data
         .get_index(scope, 1)
         .is_some_and(|value| value.boolean_value(scope));
-    if constructor && !args.is_construct_call() {
+    if require_new && !args.is_construct_call() {
         let message = v8::String::new(scope, "Constructor requires 'new'").unwrap();
         let error = v8::Exception::type_error(scope, message);
         scope.throw_exception(error);
@@ -3764,9 +3763,14 @@ fn make_native_dom_function(
     let length = args.get(2).int32_value(scope).unwrap_or(0).max(0);
     let constructor = args.get(3).boolean_value(scope);
     let class_construct = args.get(4).boolean_value(scope);
+    let require_new = if args.get(5).is_undefined() {
+        constructor
+    } else {
+        args.get(5).boolean_value(scope)
+    };
     let data = v8::Array::new(scope, 4);
     data.set_index(scope, 0, delegate.into());
-    let flag = v8::Boolean::new(scope, constructor);
+    let flag = v8::Boolean::new(scope, require_new);
     data.set_index(scope, 1, flag.into());
     let flag = v8::Boolean::new(scope, class_construct);
     data.set_index(scope, 2, flag.into());
@@ -4278,6 +4282,30 @@ mod tests {
         })()"#;
         let src = v8::String::new(scope, code).unwrap();
         let script = v8::Script::compile(scope, src, None).unwrap();
+        assert!(script.run(scope).unwrap().boolean_value(scope));
+        reset();
+    }
+
+    #[test]
+    fn native_facade_constructor_can_preserve_date_call_and_subclass_contracts() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install(scope);
+        let source = v8::String::new(scope, r#"(() => {
+          const make=globalThis[Symbol.for('ts')].makeNativeFunction,RealDate=Date,construct=Reflect.construct;
+          function Clock(...args){if(!new.target)return new RealDate(1234).toString();return construct(RealDate,args.length?args:[1234],new.target);}
+          const Wrapped=make(Clock,'Date',7,true,true,false);Wrapped.prototype=RealDate.prototype;
+          class Child extends Wrapped {}
+          const value=new Child();
+          let method=false;try{new (make(()=>7,'method',0))()}catch(e){method=e instanceof TypeError;}
+          return Wrapped()===new RealDate(1234).toString()&&value.getTime()===1234&&new Wrapped(42).getTime()===42
+            &&value instanceof Child&&value instanceof RealDate&&method&&Wrapped.length===7
+            &&Function.prototype.toString.call(Wrapped)==='function Date() { [native code] }';
+        })()"#).unwrap();
+        let script = v8::Script::compile(scope, source, None).unwrap();
         assert!(script.run(scope).unwrap().boolean_value(scope));
         reset();
     }

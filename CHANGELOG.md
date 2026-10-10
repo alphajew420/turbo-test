@@ -39,6 +39,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   preserve measured legacy Window load/pageshow state and real DOMException errors.
 - Read HTML/SVG/MathML namespace identity from the native tree, retain foreign-element case and
   namespaces during cloning, and resolve native namespace prefixes through ancestor elements.
+- Reflect scalar ARIA and basic HTML attributes through native node storage; expose attribute
+  enumeration and adjacent text insertion on Element, and move link/script/control properties
+  onto their HTML interfaces without copying them onto unrelated elements.
 
 ## [0.4.5] — 2026-10-10
 

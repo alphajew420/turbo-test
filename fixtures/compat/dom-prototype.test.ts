@@ -243,3 +243,26 @@ it('resolves native namespace prefixes through ancestors without treating plain 
   expect(document.createDocumentFragment().lookupNamespaceURI(null)).toBe(null);
   expect(()=>Node.prototype.lookupNamespaceURI.call({},null)).toThrow(TypeError);
 });
+it('reflects real native attributes through shared ARIA and HTML properties',()=>{
+  const element=document.createElement('div');expect(element.role).toBe(null);expect(element.ariaLabel).toBe(null);
+  element.ariaLabel='named';expect(element.getAttribute('aria-label')).toBe('named');
+  element.setAttribute('aria-colindextext','column three');expect(element.ariaColIndexText).toBe('column three');
+  element.ariaLabel=null;expect(element.hasAttribute('aria-label')).toBe(false);element.role=undefined;expect(element.role).toBe(null);
+  element.title=null;expect(element.title).toBe('null');element.lang='EN';element.accessKey='x';
+  expect(element.getAttributeNames()).toEqual(['aria-colindextext','title','lang','accesskey']);expect(element.hasAttributes()).toBe(true);
+  const get=Object.getOwnPropertyDescriptor(Element.prototype,'ariaLabel').get;expect(()=>get.call({})).toThrow(TypeError);expect(()=>element.title=Symbol()).toThrow(TypeError);
+  element.innerHTML='<b>inside</b>';element.insertAdjacentText('afterbegin','<literal>');element.insertAdjacentText('beforeend','last');
+  expect(element.firstChild.nodeType).toBe(3);expect(element.firstChild.data).toBe('<literal>');expect(element.lastChild.data).toBe('last');
+  const fragment=document.createDocumentFragment();fragment.appendChild(element);element.insertAdjacentText('beforebegin','before');element.insertAdjacentText('afterend','after');
+  expect(fragment.firstChild.data).toBe('before');expect(fragment.lastChild.data).toBe('after');expect(()=>element.insertAdjacentText('bad','x')).toThrow();
+});
+it('keeps link, stylesheet, script and numeric-control properties on their actual interfaces',()=>{
+  const div=document.createElement('div'),script=document.createElement('script'),link=document.createElement('link'),input=document.createElement('input');
+  for(const name of ['src','href','rel','as','media','type','sheet','valueAsNumber'])if(name in div)throw new Error('Unexpected inherited property: '+name);
+  script.src='/asset.js';expect(script.getAttribute('src')).toBe('/asset.js');expect(Object.hasOwn(HTMLScriptElement.prototype,'src')).toBe(true);
+  link.rel='stylesheet';link.href='/asset.css';link.as='style';link.media='screen';expect(link.getAttribute('href')).toBe('/asset.css');expect(link.getAttribute('rel')).toBe('stylesheet');
+  expect(Object.hasOwn(HTMLLinkElement.prototype,'sheet')).toBe(true);expect(link.sheet).toBe(null);
+  const style=document.createElement('style');style.textContent='sentinel {}';document.head.appendChild(style);expect(style.sheet.cssRules[0].selectorText).toBe('sentinel');style.remove();
+  input.type='number';input.value='42';expect(input.valueAsNumber).toBe(42);input.valueAsNumber=7;expect(input.value).toBe('7');
+  const src=Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype,'src').get;expect(()=>src.call(div)).toThrow(TypeError);
+});
