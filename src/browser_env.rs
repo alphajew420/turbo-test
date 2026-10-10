@@ -2814,15 +2814,52 @@ fn doc_query_selector_all(
 
 // ---- install ---------------------------------------------------------------------------------
 
+fn method_arity(name: &str) -> i32 {
+    match name {
+        "appendChild" | "removeChild" | "getAttribute" | "getAttributeNode"
+        | "setAttributeNode" | "removeAttributeNode" | "hasAttribute" | "removeAttribute"
+        | "querySelector" | "querySelectorAll" | "dispatchEvent" | "matches" | "closest"
+        | "contains" | "setCustomValidity" | "setRangeText" | "appendData" | "splitText"
+        | "toggleAttribute" | "item" | "namedItem" | "getPropertyValue"
+        | "getPropertyPriority" | "removeProperty" | "createElement" | "createTextNode"
+        | "getElementById" | "createComment" | "__cascadeProp" | "__parseCssNative"
+        | "containsNode" => 1,
+        "insertBefore" | "setAttribute" | "addEventListener" | "removeEventListener"
+        | "setSelectionRange" | "insertData" | "deleteData" | "substringData"
+        | "insertAdjacentElement" | "insertAdjacentHTML" | "getAttributeNS"
+        | "setProperty" | "createElementNS" => 2,
+        "replaceData" | "set" => 3,
+        _ => 0,
+    }
+}
+
+fn method_template<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    name: &str,
+    f: impl v8::MapFnTo<v8::FunctionCallback>,
+) -> v8::Local<'s, v8::FunctionTemplate> {
+    // DOM operations are callable methods, not constructors. Enforce that in
+    // V8 itself rather than removing a property from a constructible function.
+    let template = v8::FunctionTemplate::builder(f)
+        .constructor_behavior(v8::ConstructorBehavior::Throw)
+        .length(method_arity(name))
+        .build(scope);
+    let name = v8::String::new(scope, name).unwrap();
+    template.set_class_name(name);
+    template.remove_prototype();
+    template
+}
+
 fn bind_method(
     scope: &mut v8::PinScope,
     obj: v8::Local<v8::Object>,
     name: &str,
     f: impl v8::MapFnTo<v8::FunctionCallback>,
 ) {
-    let tmpl = v8::FunctionTemplate::new(scope, f);
+    let tmpl = method_template(scope, name, f);
     let func = tmpl.get_function(scope).unwrap();
     let key = v8::String::new(scope, name).unwrap();
+    func.set_name(key);
     obj.set(scope, key.into(), func.into());
 }
 
@@ -2833,7 +2870,7 @@ fn tmpl_method(
     name: &str,
     f: impl v8::MapFnTo<v8::FunctionCallback>,
 ) {
-    let ft = v8::FunctionTemplate::new(scope, f);
+    let ft = method_template(scope, name, f);
     let key = v8::String::new(scope, name).unwrap();
     tmpl.set(key.into(), ft.into());
 }
@@ -3070,6 +3107,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
 fn bind_document(scope: &mut v8::PinScope) {
     let root = with_tree(|t| t.root()).unwrap();
     let body_h = with_tree(|t| t.query_selector("body")).flatten();
+    let head_h = with_tree(|t| t.query_selector("head")).flatten();
     let html_h = with_tree(|t| t.query_selector("html")).flatten();
 
     // document = the root node object + document methods.
@@ -3091,6 +3129,11 @@ fn bind_document(scope: &mut v8::PinScope) {
         let body = wrap(scope, b);
         let key = v8::String::new(scope, "body").unwrap();
         document.set(scope, key.into(), body.into());
+    }
+    if let Some(head) = head_h {
+        let head = wrap(scope, head);
+        let key = v8::String::new(scope, "head").unwrap();
+        document.set(scope, key.into(), head.into());
     }
     if let Some(html) = html_h {
         let de = wrap(scope, html);
@@ -3160,6 +3203,41 @@ mod tests {
     }
 
     #[test]
+    fn native_dom_methods_reject_construction_and_preserve_call_behavior() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install(scope);
+        let source = v8::String::new(scope, r#"
+          const element = document.createElement('div');
+          const methods = [document.createTextNode, element.setAttribute,
+            element.getAttribute, element.style.setProperty];
+          const notConstructible = methods.every(fn => {
+            if (Object.hasOwn(fn, 'prototype')) return false;
+            try { Reflect.construct(function(){}, [], fn); return false; }
+            catch (error) { return error instanceof TypeError; }
+          });
+          let rejectsNew = false;
+          try { new document.createTextNode('text'); }
+          catch (error) { rejectsNew = error instanceof TypeError; }
+          element.setAttribute('data-token', 'kept');
+          element.style.setProperty('color', 'red');
+          const attributes = Object.getOwnPropertyDescriptor(document.createTextNode, 'length');
+          JSON.stringify([notConstructible, rejectsNew,
+            methods.map(fn => [fn.name, fn.length]),
+            element.getAttribute('data-token'), element.style.getPropertyValue('color'),
+            new Event('preserved').type,
+            [attributes.writable, attributes.enumerable, attributes.configurable]]);
+        "#).unwrap();
+        let script = v8::Script::compile(scope, source, None).unwrap();
+        let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
+        assert_eq!(result, r#"[true,true,[["createTextNode",1],["setAttribute",2],["getAttribute",1],["setProperty",2]],"kept","red","preserved",[false,false,true]]"#);
+        reset();
+    }
+
+    #[test]
     fn independent_context_documents_route_native_nodes_and_reentrant_events() {
         init_v8();
         let isolate = &mut v8::Isolate::new(Default::default());
@@ -3185,6 +3263,8 @@ mod tests {
           const independent = document.getElementById('only-child') === null
             && child.document.getElementById('only-parent') === null;
           node.setAttribute('data-touched', 'yes');
+          if (child.document.head.querySelector('title').textContent !== 'child'
+              || child.document.querySelectorAll('head').length !== 1) throw new Error('parsed head was replaced');
           let nested = '';
           node.addEventListener('probe', () => {
             document.getElementById('only-parent').textContent = 'updated';

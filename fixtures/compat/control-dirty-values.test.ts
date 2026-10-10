@@ -25,3 +25,10 @@ it('uses default single selection and preserves explicit empty selection', () =>
   select.selectedIndex = -1; expect(select.selectedOptions.length).toBe(0);
   expect((document.getElementById('m') as HTMLSelectElement).selectedIndex).toBe(-1);
 });
+
+it('document createElement is a nonconstructible method', () => {
+  expect(document.createElement.length).toBe(1);
+  expect(document.createElement.name).toBe('createElement');
+  expect(()=>Reflect.construct(function(){}, [], document.createElement)).toThrow();
+  expect(document.createElement('input').tagName).toBe('INPUT');
+});

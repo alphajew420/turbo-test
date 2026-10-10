@@ -323,7 +323,31 @@
   d.defaultView = g;
   // Native Lightning CSS validates selectors/declarations and recovers invalid rules.
   // This scanner builds the facade's mutable object graph from that parsed CSS.
-  var cssList = function(){ var a=[]; a.item=function(i){ return this[i] || null; }; return a; };
+  var cssStores=new WeakMap();
+  var cssRecord=function(list){var record=cssStores.get(list);if(!record)throw new TypeError('Illegal invocation');if(record.refresh&&!record.refreshing){record.refreshing=true;try{record.items=record.refresh();}finally{record.refreshing=false;}}return record;};
+  ['CSSRuleList','StyleSheetList'].forEach(function(name){
+    var ctor=function(){throw new TypeError('Illegal constructor');};Object.defineProperty(ctor,'name',{value:name});
+    ctor.prototype={};
+    Object.defineProperty(ctor.prototype,Symbol.toStringTag,{value:name,configurable:true});
+    Object.defineProperty(ctor.prototype,'length',{configurable:true,enumerable:true,get:function(){return cssRecord(this).items.length;}});
+    Object.defineProperty(ctor.prototype,'item',{configurable:true,enumerable:true,writable:true,value:function item(index){if(!arguments.length)throw new TypeError("Failed to execute 'item': 1 argument required");return cssRecord(this).items[Number(index)>>>0]||null;}});
+    Object.defineProperty(ctor.prototype,'constructor',{configurable:true,writable:true,value:ctor});
+    Object.defineProperty(ctor.prototype,Symbol.iterator,{configurable:true,writable:true,value:Array.prototype.values});
+    g[name]=ctor;
+  });
+  var cssIndex=function(key){return typeof key==='string'&&/^(0|[1-9]\d*)$/.test(key)?Number(key):-1;};
+  var cssList=function(name,refresh){
+    var target=Object.create(g[name||'CSSRuleList'].prototype),record={items:[],refresh:refresh,refreshing:false},proxy;
+    proxy=new Proxy(target,{
+      get:function(obj,key,receiver){var index=cssIndex(key);return index>=0?cssRecord(proxy).items[index]:Reflect.get(obj,key,receiver);},
+      has:function(obj,key){var index=cssIndex(key);return index>=0?index<cssRecord(proxy).items.length:Reflect.has(obj,key);},
+      ownKeys:function(){return cssRecord(proxy).items.map(function(_,i){return String(i);}).concat(Reflect.ownKeys(target));},
+      getOwnPropertyDescriptor:function(obj,key){var index=cssIndex(key),items=cssRecord(proxy).items;return index>=0&&index<items.length?{value:items[index],writable:false,enumerable:true,configurable:true}:Reflect.getOwnPropertyDescriptor(obj,key);},
+      set:function(obj,key,value,receiver){return cssIndex(key)<0&&Reflect.set(obj,key,value,receiver);},
+      deleteProperty:function(obj,key){return cssIndex(key)<0&&Reflect.deleteProperty(obj,key);}
+    });cssStores.set(proxy,record);return proxy;
+  };
+  var cssItems=function(list){return cssStores.get(list).items;};
   var cssParts = function(text, separator){
     var out=[], start=0, depth=0, quote='', escaped=false, comment=false;
     for (var i=0;i<text.length;i++) {
@@ -368,12 +392,12 @@
           rule.parentStyleSheet=sheet;rule.parentRule=parent||null;
           if(isAt){rule.type=/^@media\b/i.test(head)?4:/^@supports\b/i.test(head)?12:/^@font-face\b/i.test(head)?5:/^@keyframes\b/i.test(head)?7:0;rule.cssText=head+' { '+body.trim()+' }';if(rule.type===5)rule.style=cssDeclaration(body);else rule.cssRules=parseCssRules(body,sheet,rule,true);}
           else {rule.type=1;rule.selectorText=head.replace(/\s*,\s*/g,', ');rule.style=cssDeclaration(body);Object.defineProperty(rule,'cssText',{get:function(){var t=this.style.cssText;return this.selectorText+' {'+(t?' '+t+' ':' ')+'}';}});}
-          out.push(rule);
+          cssItems(out).push(rule);
         }
         start=i+1;
       } else if(c===';'&&depth===0){
         var statement=text.slice(start,i).trim(),imported=/^@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?\s*(.*)$/i.exec(statement);
-        if(imported){var rule=Object.create(g.CSSRule.prototype);rule.type=3;rule.href=imported[1];rule.media={mediaText:imported[2]||'',length:imported[2]?1:0};rule.styleSheet=null;rule.parentStyleSheet=sheet;rule.parentRule=parent||null;rule.cssText=statement+';';out.push(rule);}start=i+1;
+        if(imported){var rule=Object.create(g.CSSRule.prototype);rule.type=3;rule.href=imported[1];rule.media={mediaText:imported[2]||'',length:imported[2]?1:0};rule.styleSheet=null;rule.parentStyleSheet=sheet;rule.parentRule=parent||null;rule.cssText=statement+';';cssItems(out).push(rule);}start=i+1;
       }
     }
     return out;
@@ -382,9 +406,9 @@
   g.CSSStyleSheet=function CSSStyleSheet(){this.ownerNode=null;this.__rules=cssList();this.__constructed=true;};
   Object.defineProperty(g.CSSStyleSheet.prototype,'cssRules',{configurable:true,get:function(){return this.__rules;}});
   Object.defineProperty(g.CSSStyleSheet.prototype,'rules',{get:function(){return this.cssRules;}});
-  g.CSSStyleSheet.prototype.insertRule=function(text,index){var list=this.cssRules,i=index==null?0:Number(index);if(!Number.isInteger(i)||i<0||i>list.length)throw cssError('IndexSizeError');var parsed=parseCssRules(text,this,null);if(parsed.length!==1)throw cssError('SyntaxError');list.splice(i,0,parsed[0]);return i;};
-  g.CSSStyleSheet.prototype.deleteRule=function(index){var list=this.cssRules,i=Number(index);if(!Number.isInteger(i)||i<0||i>=list.length)throw cssError('IndexSizeError');list.splice(i,1);};
-  g.CSSStyleSheet.prototype.replaceSync=function(text){if(!this.__constructed)throw cssError('NotAllowedError');this.__rules=parseCssRules(text,this,null);};
+  g.CSSStyleSheet.prototype.insertRule=function(text,index){var list=this.cssRules,i=index==null?0:Number(index);if(!Number.isInteger(i)||i<0||i>list.length)throw cssError('IndexSizeError');var parsed=parseCssRules(text,this,null);if(parsed.length!==1)throw cssError('SyntaxError');cssItems(list).splice(i,0,parsed[0]);return i;};
+  g.CSSStyleSheet.prototype.deleteRule=function(index){var list=this.cssRules,i=Number(index);if(!Number.isInteger(i)||i<0||i>=list.length)throw cssError('IndexSizeError');cssItems(list).splice(i,1);};
+  g.CSSStyleSheet.prototype.replaceSync=function(text){if(!this.__constructed)throw cssError('NotAllowedError');var list=cssItems(this.__rules),parsed=cssItems(parseCssRules(text,this,null));list.splice.apply(list,[0,list.length].concat(parsed));};
   g.CSSStyleSheet.prototype.replace=function(text){try{this.replaceSync(text);return Promise.resolve(this);}catch(e){return Promise.reject(e);}};
   __ns.attachLinkedStyleSheet=function(el,text,url){var sheet=new g.CSSStyleSheet();sheet.ownerNode=el;sheet.href=url;sheet.__constructed=false;sheet.__rules=parseCssRules(text,sheet,null);if(el.__tcSheet)el.__tcSheet.ownerNode=null;el.__tcSheet=sheet;return sheet;};
   // adoptedStyleSheets — must be a real, settable ARRAY (a non-iterable getter or
@@ -1005,19 +1029,20 @@
       };
       cp.getBoundingClientRect = function(){ return { x:0, y:0, top:0, left:0, right:0, bottom:0, width:0, height:0, toJSON:function(){ return this; } }; };
     })();
-    d.createElement = function(tag){
+    d.createElement = ({ createElement(tag){
       var el = orig(tag); var t = String(tag).toLowerCase();
       applyControlProto(el);
       // canvas: drop the own native getBoundingClientRect so it resolves to the (mockable)
       // HTMLCanvasElement.prototype version; getContext/toDataURL/toBlob are on the proto too.
       if (t === 'canvas') { try { if (Object.prototype.hasOwnProperty.call(el, 'getBoundingClientRect')) delete el.getBoundingClientRect; } catch(e){} }
       return el;
-    };
+    } }).createElement;
     // NOTE: cloneNode re-applies the control prototype natively (el_clone_node copies the source's
     // prototype to the clone), so a cloned <input>/<select> keeps its type/value/checked accessors
     // (userEvent's isValidDateOrTimeValue clones a date input, assigns, and checks the value stuck).
     void applyControlProto;
-    try { Object.defineProperty(d, 'styleSheets', { configurable: true, get: function(){ var list=cssList();var els=d.querySelectorAll('style,link');for(var i=0;i<els.length;i++){var sheet=els[i].sheet;if(sheet)list.push(sheet);}return list; } }); } catch(e){}
+    var documentSheets=cssList('StyleSheetList',function(){var list=[],els=d.querySelectorAll('style,link');for(var i=0;i<els.length;i++){var sheet=els[i].sheet;if(sheet)list.push(sheet);}return list;});
+    try { Object.defineProperty(d, 'styleSheets', { configurable: true, get: function(){return documentSheets;} }); } catch(e){}
 
     // Alias the shim interface-constructor `.prototype`s onto the REAL element/document prototypes,
     // so a test patching HTMLElement.prototype.requestFullscreen / Document.prototype.exitFullscreen
@@ -1347,7 +1372,7 @@
     // lazily on first access (or when src is set). Kept general so any consumer gets it;
     // the lazy build means an unused iframe costs nothing.
     var origCreateEl = d.createElement.bind(d);
-    d.createElement = function(tag){
+    d.createElement = ({ createElement(tag){
       var el = origCreateEl(tag);
       if (el && String(tag).toLowerCase() === 'iframe' && !el.__iframeWired) {
         el.__iframeWired = true;
@@ -1362,6 +1387,6 @@
         }
       }
       return el;
-    };
+    } }).createElement;
   })();
 })();

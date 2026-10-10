@@ -2,13 +2,14 @@ import { describe, it, expect } from 'vitest';
 
 // emotion/MUI construct stylesheets then adopt them:
 //   const s = new CSSStyleSheet(); document.adoptedStyleSheets = [...document.adoptedStyleSheets, s];
-// No layout engine here — the rule list is an inert store that satisfies the API surface so the
-// chunk doesn't abort mid-hydration.
+// The CSSOM facade exposes branded live lists; layout still uses the native cascade.
 
 describe('constructable CSSStyleSheet + adoptedStyleSheets', () => {
   it('new CSSStyleSheet() exposes cssRules/rules', () => {
     const s = new CSSStyleSheet();
-    expect(Array.isArray(s.cssRules)).toBe(true);
+    expect(Array.isArray(s.cssRules)).toBe(false);
+    expect(s.cssRules instanceof CSSRuleList).toBe(true);
+    expect(Object.prototype.toString.call(s.cssRules)).toBe('[object CSSRuleList]');
     expect(s.rules).toBe(s.cssRules);
   });
 

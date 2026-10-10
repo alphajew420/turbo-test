@@ -13,6 +13,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   and retain strings, custom properties, grouping rules, and deferred `var()`/`env()` values.
 - Represent fetched linked stylesheets in document order, preserve their URL and import rules,
   and detach stylesheet ownership when their link leaves the document.
+- Expose CSSRuleList and StyleSheetList as branded indexed collections rather than arrays;
+  rule-list identity survives replacement and the document stylesheet list tracks tree changes.
 
 ## [0.4.5] — 2026-10-10
 
