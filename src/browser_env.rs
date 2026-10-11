@@ -3815,6 +3815,211 @@ fn make_native_dom_function(
     }
 }
 
+// Named-property objects preserve Web IDL's non-masking lookup rules. The
+// dispatch closure owns its guest/host capability state and is only kept in V8
+// callback data; no backing map is projected as a JavaScript property.
+fn named_dispatch<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: &v8::PropertyCallbackArguments<'s>,
+    operation: &str,
+    name: Option<v8::Local<'s, v8::Name>>,
+    value: Option<v8::Local<'s, v8::Value>>,
+) -> Option<v8::Local<'s, v8::Value>> {
+    let callback = v8::Local::<v8::Function>::try_from(args.data()).ok()?;
+    let operation = v8::String::new(scope, operation)?;
+    let name = name
+        .map(Into::into)
+        .unwrap_or_else(|| v8::undefined(scope).into());
+    let value = value.unwrap_or_else(|| v8::undefined(scope).into());
+    callback.call(
+        scope,
+        args.holder().into(),
+        &[operation.into(), name, value],
+    )
+}
+fn named_getter<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    name: v8::Local<'s, v8::Name>,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) -> v8::Intercepted {
+    if let Some(value) = named_dispatch(scope, &args, "get", Some(name), None) {
+        if !value.is_undefined() {
+            rv.set(value);
+            return v8::Intercepted::kYes;
+        }
+    }
+    v8::Intercepted::kNo
+}
+fn named_query<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    name: v8::Local<'s, v8::Name>,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<v8::Integer>,
+) -> v8::Intercepted {
+    if named_dispatch(scope, &args, "has", Some(name), None).is_some_and(|value| value.is_true()) {
+        rv.set_int32(0);
+        return v8::Intercepted::kYes;
+    }
+    v8::Intercepted::kNo
+}
+fn named_descriptor<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    name: v8::Local<'s, v8::Name>,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) -> v8::Intercepted {
+    if let Some(value) = named_dispatch(scope, &args, "descriptor", Some(name), None) {
+        if value.is_object() {
+            rv.set(value);
+            return v8::Intercepted::kYes;
+        }
+    }
+    v8::Intercepted::kNo
+}
+fn named_enumerator<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<v8::Array>,
+) {
+    if let Some(value) = named_dispatch(scope, &args, "keys", None, None)
+        .and_then(|value| v8::Local::<v8::Array>::try_from(value).ok())
+    {
+        rv.set(value);
+    }
+}
+trait NamedMutationResult {
+    fn set_success(&mut self, success: bool);
+}
+impl NamedMutationResult for v8::ReturnValue<'_, ()> {
+    fn set_success(&mut self, success: bool) {
+        self.set_bool(success);
+    }
+}
+impl NamedMutationResult for v8::ReturnValue<'_, v8::Boolean> {
+    fn set_success(&mut self, success: bool) {
+        self.set_bool(success);
+    }
+}
+fn named_setter<'s, 'i, T: 'static>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    name: v8::Local<'s, v8::Name>,
+    value: v8::Local<'s, v8::Value>,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<T>,
+) -> v8::Intercepted
+where
+    for<'cb> v8::ReturnValue<'cb, T>: NamedMutationResult,
+{
+    if let Some(result) = named_dispatch(scope, &args, "set", Some(name), Some(value)) {
+        rv.set_success(result.is_true());
+        return v8::Intercepted::kYes;
+    }
+    v8::Intercepted::kYes
+}
+fn named_deleter<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    name: v8::Local<'s, v8::Name>,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<v8::Boolean>,
+) -> v8::Intercepted {
+    if let Some(result) = named_dispatch(scope, &args, "delete", Some(name), None) {
+        rv.set_bool(result.is_true());
+    }
+    v8::Intercepted::kYes
+}
+fn named_definer<'s, 'i, T: 'static>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    name: v8::Local<'s, v8::Name>,
+    descriptor: &v8::PropertyDescriptor,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<T>,
+) -> v8::Intercepted
+where
+    for<'cb> v8::ReturnValue<'cb, T>: NamedMutationResult,
+{
+    let object = v8::Object::new(scope);
+    let fields = [
+        (
+            "configurable",
+            descriptor.has_configurable(),
+            descriptor.configurable(),
+        ),
+        (
+            "enumerable",
+            descriptor.has_enumerable(),
+            descriptor.enumerable(),
+        ),
+        ("writable", descriptor.has_writable(), descriptor.writable()),
+    ];
+    for (name, present, value) in fields {
+        if present {
+            let key = v8::String::new(scope, name).unwrap();
+            let value = v8::Boolean::new(scope, value);
+            object.set(scope, key.into(), value.into());
+        }
+    }
+    for (name, present, value) in [
+        (
+            "value",
+            descriptor.has_value(),
+            descriptor.has_value().then(|| descriptor.value()),
+        ),
+        (
+            "get",
+            descriptor.has_get(),
+            descriptor.has_get().then(|| descriptor.get()),
+        ),
+        (
+            "set",
+            descriptor.has_set(),
+            descriptor.has_set().then(|| descriptor.set()),
+        ),
+    ] {
+        if present {
+            let key = v8::String::new(scope, name).unwrap();
+            object.set(scope, key.into(), value.unwrap());
+        }
+    }
+    if let Some(result) = named_dispatch(scope, &args, "define", Some(name), Some(object.into())) {
+        rv.set_success(result.is_true());
+    }
+    v8::Intercepted::kYes
+}
+fn make_native_named_object(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    if !(args.get(0).is_object() || args.get(0).is_null()) || !args.get(1).is_function() {
+        let message =
+            v8::String::new(scope, "Expected a prototype and named-property dispatcher").unwrap();
+        let error = v8::Exception::type_error(scope, message);
+        scope.throw_exception(error);
+        return;
+    }
+    let template = v8::ObjectTemplate::new(scope);
+    template.set_named_property_handler(
+        v8::NamedPropertyHandlerConfiguration::new()
+            .getter(named_getter)
+            .setter(named_setter)
+            .query(named_query)
+            .descriptor(named_descriptor)
+            .deleter(named_deleter)
+            .enumerator(named_enumerator)
+            .definer(named_definer)
+            .data(args.get(1))
+            .flags(
+                v8::PropertyHandlerFlags::NON_MASKING
+                    | v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS,
+            ),
+    );
+    if let Some(object) = template.new_instance(scope) {
+        object.set_prototype(scope, args.get(0));
+        rv.set(object.into());
+    }
+}
+
 pub fn register_css_parser(scope: &mut v8::PinScope) {
     let global = scope.get_current_context().global(scope);
     bind_method(scope, global, "__parseCssNative", parse_css_native);
@@ -3873,6 +4078,12 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     register_css_parser(scope);
     let global = scope.get_current_context().global(scope);
     bind_method(scope, global, "__domAccessor", make_dom_accessor);
+    bind_method(
+        scope,
+        global,
+        "__nativeNamedObject",
+        make_native_named_object,
+    );
     let reflect_key = v8::String::new(scope, "Reflect").unwrap();
     let construct_key = v8::String::new(scope, "construct").unwrap();
     let reflect = global.get(scope, reflect_key.into()).unwrap();
@@ -4272,6 +4483,43 @@ mod tests {
         assert_eq!(
             result,
             r#"[true,"live","live","get id",0,"set id",1,true,true,1,true,true,true,"child",true]"#
+        );
+        reset();
+    }
+
+    #[test]
+    fn native_named_objects_preserve_nonmasking_properties_and_private_mutations() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install(scope);
+        let source=v8::String::new(scope,r#"(()=>{
+          const data=new Map([['first','one'],['getItem','stored']]);
+          const proto={getItem(){return 'method'}};
+          const object=globalThis[Symbol.for('ts')].makeNamedObject(proto,(operation,key,value)=>{
+            if(operation==='get')return data.get(key);
+            if(operation==='has')return data.has(key);
+            if(operation==='keys')return Array.from(data.keys());
+            if(operation==='descriptor')return data.has(key)?{value:data.get(key),writable:true,enumerable:true,configurable:true}:undefined;
+            if(operation==='set'){data.set(key,String(value));return true;}
+            if(operation==='delete'){data.delete(key);return true;}
+            if(operation==='define'){if('get'in value||'set'in value)throw new TypeError('Named accessors unsupported');data.set(key,String(value.value));return true;}
+          });
+          const collisionBefore=[typeof object.getItem,Object.hasOwn(object,'getItem'),Object.getOwnPropertyDescriptor(object,'getItem')===undefined,Object.keys(object).includes('getItem')];
+          object.second='two';object.getItem='replacement';Object.defineProperty(object,'defined',{value:'value'});
+          const symbol=Symbol('expando');object[symbol]=42;
+          const before={collisionBefore,keys:Object.keys(object).sort(),method:typeof object.getItem,collision:data.get('getItem'),own:Object.hasOwn(object,'getItem'),descriptor:Object.getOwnPropertyDescriptor(object,'getItem'),first:object.first,defined:data.get('defined'),symbol:object[symbol],accessorThrows:false};
+          try{Object.defineProperty(object,'accessor',{get(){return 3}})}catch(e){before.accessorThrows=e instanceof TypeError;}
+          delete object.second;before.deleted=!data.has('second');
+          return JSON.stringify(before);
+        })()"#).unwrap();
+        let script = v8::Script::compile(scope, source, None).unwrap();
+        let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
+        assert_eq!(
+            result,
+            r#"{"collisionBefore":["function",false,true,true],"keys":["defined","first","getItem","second"],"method":"string","collision":"stored","own":true,"descriptor":{"value":"replacement","writable":true,"enumerable":true,"configurable":true},"first":"one","defined":"value","symbol":42,"accessorThrows":true,"deleted":true}"#
         );
         reset();
     }
