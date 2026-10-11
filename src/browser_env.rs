@@ -3857,6 +3857,22 @@ fn named_query<'s, 'i>(
     args: v8::PropertyCallbackArguments<'s>,
     mut rv: v8::ReturnValue<v8::Integer>,
 ) -> v8::Intercepted {
+    if let Some(descriptor) = named_dispatch(scope, &args, "descriptor", Some(name), None)
+        .and_then(|value| v8::Local::<v8::Object>::try_from(value).ok())
+    {
+        let mut attributes = 0;
+        for (field, flag) in [("writable", 1), ("enumerable", 2), ("configurable", 4)] {
+            let key = v8::String::new(scope, field).unwrap();
+            if descriptor
+                .get(scope, key.into())
+                .is_some_and(|value| !value.is_true())
+            {
+                attributes |= flag;
+            }
+        }
+        rv.set_int32(attributes);
+        return v8::Intercepted::kYes;
+    }
     if named_dispatch(scope, &args, "has", Some(name), None).is_some_and(|value| value.is_true()) {
         rv.set_int32(0);
         return v8::Intercepted::kYes;
@@ -3912,6 +3928,9 @@ where
     for<'cb> v8::ReturnValue<'cb, T>: NamedMutationResult,
 {
     if let Some(result) = named_dispatch(scope, &args, "set", Some(name), Some(value)) {
+        if result.is_undefined() {
+            return v8::Intercepted::kNo;
+        }
         rv.set_success(result.is_true());
         return v8::Intercepted::kYes;
     }
@@ -3924,6 +3943,9 @@ fn named_deleter<'s, 'i>(
     mut rv: v8::ReturnValue<v8::Boolean>,
 ) -> v8::Intercepted {
     if let Some(result) = named_dispatch(scope, &args, "delete", Some(name), None) {
+        if result.is_undefined() {
+            return v8::Intercepted::kNo;
+        }
         rv.set_bool(result.is_true());
     }
     v8::Intercepted::kYes
@@ -3982,9 +4004,88 @@ where
         }
     }
     if let Some(result) = named_dispatch(scope, &args, "define", Some(name), Some(object.into())) {
+        if result.is_undefined() {
+            return v8::Intercepted::kNo;
+        }
         rv.set_success(result.is_true());
     }
     v8::Intercepted::kYes
+}
+fn indexed_name<'s>(scope: &mut v8::PinScope<'s, '_>, index: u32) -> v8::Local<'s, v8::Name> {
+    v8::String::new(scope, &index.to_string()).unwrap().into()
+}
+fn indexed_getter<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    index: u32,
+    args: v8::PropertyCallbackArguments<'s>,
+    rv: v8::ReturnValue,
+) -> v8::Intercepted {
+    let name = indexed_name(scope, index);
+    named_getter(scope, name, args, rv)
+}
+fn indexed_query<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    index: u32,
+    args: v8::PropertyCallbackArguments<'s>,
+    rv: v8::ReturnValue<v8::Integer>,
+) -> v8::Intercepted {
+    let name = indexed_name(scope, index);
+    named_query(scope, name, args, rv)
+}
+fn indexed_descriptor<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    index: u32,
+    args: v8::PropertyCallbackArguments<'s>,
+    rv: v8::ReturnValue,
+) -> v8::Intercepted {
+    let name = indexed_name(scope, index);
+    named_descriptor(scope, name, args, rv)
+}
+fn indexed_setter<'s, 'i, T: 'static>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    index: u32,
+    value: v8::Local<'s, v8::Value>,
+    args: v8::PropertyCallbackArguments<'s>,
+    rv: v8::ReturnValue<T>,
+) -> v8::Intercepted
+where
+    for<'cb> v8::ReturnValue<'cb, T>: NamedMutationResult,
+{
+    let name = indexed_name(scope, index);
+    named_setter(scope, name, value, args, rv)
+}
+fn indexed_deleter<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    index: u32,
+    args: v8::PropertyCallbackArguments<'s>,
+    rv: v8::ReturnValue<v8::Boolean>,
+) -> v8::Intercepted {
+    let name = indexed_name(scope, index);
+    named_deleter(scope, name, args, rv)
+}
+fn indexed_definer<'s, 'i, T: 'static>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    index: u32,
+    descriptor: &v8::PropertyDescriptor,
+    args: v8::PropertyCallbackArguments<'s>,
+    rv: v8::ReturnValue<T>,
+) -> v8::Intercepted
+where
+    for<'cb> v8::ReturnValue<'cb, T>: NamedMutationResult,
+{
+    let name = indexed_name(scope, index);
+    named_definer(scope, name, descriptor, args, rv)
+}
+fn indexed_enumerator<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::PropertyCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<v8::Array>,
+) {
+    if let Some(value) = named_dispatch(scope, &args, "indices", None, None)
+        .and_then(|value| v8::Local::<v8::Array>::try_from(value).ok())
+    {
+        rv.set(value);
+    }
 }
 fn make_native_named_object(
     scope: &mut v8::PinScope,
@@ -4014,6 +4115,19 @@ fn make_native_named_object(
                     | v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS,
             ),
     );
+    if args.get(2).is_true() {
+        template.set_indexed_property_handler(
+            v8::IndexedPropertyHandlerConfiguration::new()
+                .getter(indexed_getter)
+                .setter(indexed_setter)
+                .query(indexed_query)
+                .descriptor(indexed_descriptor)
+                .deleter(indexed_deleter)
+                .enumerator(indexed_enumerator)
+                .definer(indexed_definer)
+                .data(args.get(1)),
+        );
+    }
     if let Some(object) = template.new_instance(scope) {
         object.set_prototype(scope, args.get(0));
         rv.set(object.into());
@@ -4520,6 +4634,43 @@ mod tests {
         assert_eq!(
             result,
             r#"{"collisionBefore":["function",false,true,true],"keys":["defined","first","getItem","second"],"method":"string","collision":"stored","own":true,"descriptor":{"value":"replacement","writable":true,"enumerable":true,"configurable":true},"first":"one","defined":"value","symbol":42,"accessorThrows":true,"deleted":true}"#
+        );
+        reset();
+    }
+
+    #[test]
+    fn native_indexed_objects_keep_live_readonly_entries_and_ordinary_expandos() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install(scope);
+        let source=v8::String::new(scope,r#"(()=>{
+          const entries=['first','second'];const proto={item(index){return this[index]??null}};
+          const named=new Map([['named','first']]);
+          const value=(key)=>/^\d+$/.test(key)?entries[Number(key)]:named.get(key);
+          const object=globalThis[Symbol.for('ts')].makeNamedObject(proto,(operation,key,argument)=>{
+            if(operation==='indices')return entries.map((_,index)=>index);
+            if(operation==='keys')return Array.from(named.keys());
+            const current=value(key);const supported=current!==undefined;
+            if(operation==='get')return current;
+            if(operation==='has')return supported;
+            if(operation==='descriptor')return supported?{value:current,writable:false,enumerable:/^\d+$/.test(key),configurable:true}:undefined;
+            if(operation==='set'||operation==='delete'||operation==='define')return supported?false:undefined;
+          },true);
+          const initial=[object[0],object.item(1),Object.keys(object).join(','),Object.getOwnPropertyDescriptor(object,'0').writable,Object.getOwnPropertyDescriptor(object,'named').enumerable];
+          object.expando='extra';Object.defineProperty(object,'defined',{value:3});object[9]='ordinary';
+          entries.shift();named.set('named','second');
+          const result=[initial,object[0],object.named,object.expando,object.defined,object[9],Object.hasOwn(object,'1'),Reflect.deleteProperty(object,'0')];
+          delete object.expando;result.push(Object.hasOwn(object,'expando'));
+          return JSON.stringify(result);
+        })()"#).unwrap();
+        let script = v8::Script::compile(scope, source, None).unwrap();
+        let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
+        assert_eq!(
+            result,
+            r#"[["first","second","0,1",false,false],"second","second","extra",3,"ordinary",false,false,false]"#
         );
         reset();
     }
