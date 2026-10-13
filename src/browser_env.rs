@@ -1120,16 +1120,27 @@ fn el_split_text(
     rv.set(node.into());
 }
 
-/// Install immutable host CSS authorization for this native document before page scripts.
+/// Install immutable host handler authorization for the current context's document.
 pub fn install_inline_event_handlers(
     scope: &mut v8::PinScope,
     callback: v8::Local<v8::Function>,
     base: &str,
 ) {
+    let id = scope
+        .get_current_context()
+        .get_slot::<DomContextId>()
+        .map_or(0, |id| id.0);
+    let _dom = DomScope::enter(id);
     event_handlers::install(scope, Some(callback), base);
 }
 
+/// Install immutable host CSS authorization for the current context's document.
 pub fn install_css_policy(scope: &mut v8::PinScope, callback: v8::Local<v8::Function>) {
+    let id = scope
+        .get_current_context()
+        .get_slot::<DomContextId>()
+        .map_or(0, |id| id.0);
+    let _dom = DomScope::enter(id);
     css_policy::install(scope, callback);
 }
 
@@ -5688,6 +5699,75 @@ mod tests {
         let src=v8::String::new(scope,r#"(() => {const p=parsed.querySelector('#source');p.textContent='changed';return parsed!==document&&Object.getPrototypeOf(parsed)===HTMLDocument.prototype&&p.ownerDocument===parsed&&document.querySelector('#source')===null&&imported.ownerDocument===document&&imported.textContent==='native'&&imported!==p&&parsed.querySelector('head').textContent==='parsed';})()"#).unwrap();
         let script = v8::Script::compile(scope, src, None).unwrap();
         assert!(script.run(scope).unwrap().boolean_value(scope));
+        reset();
+    }
+
+    #[test]
+    fn document_policy_installation_routes_by_context_and_preserves_parent_handlers() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let parent = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, parent);
+        install_with_html(
+            scope,
+            "<style id=sheet>div{color:red}</style><body><div id=node style='opacity:0.4'></div>",
+        );
+        let source = v8::String::new(scope, "(()=>true)").unwrap();
+        let allow = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let allow = v8::Local::<v8::Function>::try_from(allow).unwrap();
+        install_inline_event_handlers(scope, allow, "https://parent.test/");
+        install_css_policy(scope, allow);
+        let source = v8::String::new(
+            scope,
+            "globalThis.calls=0;document.getElementById('node').onload=()=>calls++;",
+        )
+        .unwrap();
+        v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let child = v8::Context::new(scope, Default::default());
+        child.set_security_token(parent.get_security_token(scope));
+        {
+            let scope = &mut v8::ContextScope::new(scope, child);
+            install_independent_html(scope, "<style id=sheet>div{color:blue}</style><body><div id=node style='opacity:0.8' onload='globalThis.authored=true'></div>");
+            // The independent installer restores the parent's ambient DOM before
+            // these public hooks run, while the child V8 context remains current.
+            let source = v8::String::new(scope, "(()=>false)").unwrap();
+            let deny = v8::Script::compile(scope, source, None)
+                .unwrap()
+                .run(scope)
+                .unwrap();
+            let deny = v8::Local::<v8::Function>::try_from(deny).unwrap();
+            install_inline_event_handlers(scope, deny, "https://child.test/");
+            install_css_policy(scope, deny);
+        }
+        let key = v8::String::new(scope, "child").unwrap();
+        let child_global = child.global(scope);
+        parent
+            .global(scope)
+            .set(scope, key.into(), child_global.into());
+        let source = v8::String::new(scope, r#"(()=>{
+            const node=document.getElementById('node'),foreign=child.document.getElementById('node');
+            const parentHandler=typeof node.onload==='function';node.dispatchEvent(new Event('load'));
+            foreign.dispatchEvent(new child.Event('load'));
+            return JSON.stringify({parentHandler,calls,parentSheet:document.getElementById('sheet').sheet!==null,
+                parentInline:node.style.opacity,childSheet:child.document.getElementById('sheet').sheet===null,
+                childInline:foreign.style.opacity,childHandler:foreign.onload===null,childAuthored:child.authored===undefined});
+        })()"#).unwrap();
+        let result = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        assert_eq!(
+            result,
+            r#"{"parentHandler":true,"calls":1,"parentSheet":true,"parentInline":"0.4","childSheet":true,"childInline":"","childHandler":true,"childAuthored":true}"#
+        );
         reset();
     }
 
