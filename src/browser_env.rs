@@ -24,7 +24,9 @@ mod event_brands;
 mod event_handlers;
 #[path = "event_listeners.rs"]
 mod event_listeners;
-pub use event_brands::{is_native_event, native_event_record};
+pub use event_brands::{
+    is_native_abort_object, is_native_event, is_native_event_target, native_event_record,
+};
 pub use event_listeners::capture_window_event_interfaces;
 
 /// Capture the trusted host timer after the runtime has installed its scheduler.

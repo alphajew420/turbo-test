@@ -16,8 +16,15 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   Capture final trusted ErrorEvent/AbortSignal interfaces and the default AbortError
   DOMException constructor after host environment installation. Expose dispatch records through
   a Rust-only native_event_record seam with genuine/foreign/forged Event brand checks.
-  Complete shadow retargeting/composed host crossing, generic EventTarget option behavior and
-  listener exception reporting remain explicit followups.
+  Generic EventTarget/subclass and AbortSignal listeners also use private native records:
+  no public registry fields, native receiver/foreign brands, real onabort handlers and
+  once/passive/signal/removal/stop semantics. Match measured registration order at direct
+  Window/generic/Signal targets while preserving Node/Document capture and bubble phases.
+  Capture array primitives against guest poisoning and expose Rust-only platform brands.
+  Complete shadow retargeting/composed host crossing and listener exception reporting remain
+  explicit followups.
+- Implement the HTML-standard legacy Document clear/captureEvents/releaseEvents no-effect
+  methods with native Document receivers, descriptors and ignored-argument behavior.
 - Implement Document XPath evaluation/compiled expressions and XPathEvaluator over bounded
   public-rtdom snapshots using the unmodified MIT xpath 0.0.35 provider in a private V8
   context. Preserve real Node/Attr identity, namespace and foreign-case matching, corrected

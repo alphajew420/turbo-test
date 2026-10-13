@@ -15,6 +15,26 @@ pub fn native_event_record<'s>(
     event_record(scope, event)
 }
 
+/// Native EventTarget/Abort platform objects, without public instance properties.
+pub fn is_native_event_target(scope: &mut v8::PinScope, event: v8::Local<v8::Object>) -> bool {
+    private_platform_record(scope, event, "target")
+}
+pub fn is_native_abort_object(scope: &mut v8::PinScope, event: v8::Local<v8::Object>) -> bool {
+    private_platform_record(scope, event, "signal")
+        || private_platform_record(scope, event, "controller")
+}
+fn private_platform_record(
+    scope: &mut v8::PinScope,
+    event: v8::Local<v8::Object>,
+    family: &str,
+) -> bool {
+    let name = v8::String::new(scope, &format!("turbo-dom.Abort.{family}")).unwrap();
+    let key = v8::Private::for_api(scope, Some(name));
+    event
+        .get_private(scope, key)
+        .is_some_and(|value| value.is_object())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,7 +63,7 @@ mod tests {
           const real=new Event('real'),forged=Object.create(Event.prototype),plain={};
           for(const value of [real,forged,plain])Object.defineProperty(value,'constructor',{get(){throw new Error('guest constructor read')}});
           Object.defineProperty(Event,Symbol.hasInstance,{value(){throw new Error('guest instanceof')}});
-          return [real,forged,plain];
+          const target=new EventTarget(),controller=new AbortController();return [real,forged,plain,target,controller,controller.signal,Object.create(EventTarget.prototype),Object.create(AbortSignal.prototype)];
         })()"#).unwrap();
         let values = v8::Script::compile(scope, source, None)
             .unwrap()
@@ -78,6 +98,21 @@ mod tests {
         );
         assert!(native_event_record(scope, forged).is_none());
         assert!(native_event_record(scope, plain).is_none());
+        let [target, controller, signal, forged_target, forged_signal] =
+            [3, 4, 5, 6, 7].map(|index| {
+                values
+                    .get_index(scope, index)
+                    .unwrap()
+                    .to_object(scope)
+                    .unwrap()
+            });
+        assert!(is_native_event_target(scope, target));
+        assert!(is_native_event_target(scope, signal));
+        assert!(is_native_abort_object(scope, controller));
+        assert!(is_native_abort_object(scope, signal));
+        assert!(!is_native_abort_object(scope, target));
+        assert!(!is_native_event_target(scope, forged_target));
+        assert!(!is_native_abort_object(scope, forged_signal));
         reset();
     }
 }

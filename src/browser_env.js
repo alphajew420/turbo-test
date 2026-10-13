@@ -1883,7 +1883,7 @@ if(typeof __ns.makeNativeFunction==='function'){
         if(this===g)return windowCallbacks[name].apply(this,arguments);
         var node=false;try{getType.call(this);node=true;}catch(e){}
         if(node)return native.apply(this,arguments);
-        if(!eventTargets.has(this))throw new TypeError('Illegal invocation');
+        if(__ns.eventTargetNativeBrand?!__ns.eventTargetNativeBrand(this):!eventTargets.has(this))throw new TypeError('Illegal invocation');
         return eventCallbacks[name].apply(this,arguments);
       },name,minimum);
       Object.defineProperty(eventTargetProto,name,{value:method,writable:true,configurable:true,enumerable:true});

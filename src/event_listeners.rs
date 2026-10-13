@@ -64,7 +64,9 @@ fn records(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv
         }
         return;
     }
-    let family = if operation.starts_with("signal") {
+    let family = if operation.starts_with("target") {
+        "target"
+    } else if operation.starts_with("signal") {
         "signal"
     } else {
         "controller"
@@ -387,27 +389,27 @@ mod tests {
         {
             let scope = &mut v8::ContextScope::new(scope, child);
             install_independent_html(scope, "<!doctype html><body><span id=target></span>");
-            run_js(scope, "globalThis.hits=[];globalThis.node=document.getElementById('target');globalThis.failure=new Error('foreign');globalThis.errorEvent=new ErrorEvent('error',{message:'foreign',filename:'child.js',lineno:9,colno:3,error:failure,cancelable:true});addEventListener('foreign',function(event){hits.push([event.currentTarget===window,event.target===node,event.composedPath().at(-1)===window])},true);Object.defineProperty(document,'defaultView',{value:{}});Object.defineProperty(ErrorEvent.prototype,'message',{get(){throw new Error('guest getter')}});");
+            run_js(scope, "globalThis.hits=[];globalThis.node=document.getElementById('target');globalThis.eventTarget=new EventTarget();globalThis.targetHits=[];eventTarget.addEventListener('generic',function(event){targetHits.push([this===eventTarget,event.eventPhase])});globalThis.failure=new Error('foreign');globalThis.errorEvent=new ErrorEvent('error',{message:'foreign',filename:'child.js',lineno:9,colno:3,error:failure,cancelable:true});addEventListener('foreign',function(event){hits.push([event.currentTarget===window,event.target===node,event.composedPath().at(-1)===window])},true);Object.defineProperty(document,'defaultView',{value:{}});Object.defineProperty(ErrorEvent.prototype,'message',{get(){throw new Error('guest getter')}});");
         }
         let scope = &mut v8::ContextScope::new(scope, parent);
         let global = parent.global(scope);
         let child_global = child.global(scope);
         set_prop(scope, global, "child", child_global.into());
-        let source = v8::String::new(scope, "child.node.dispatchEvent(new Event('foreign',{bubbles:true}));const cancelled=!window.dispatchEvent(child.errorEvent);let signalled=0;const signal=new child.AbortController();const callback=()=>signalled++;addEventListener('foreign-signal',callback,{signal:signal.signal});signal.abort();addEventListener('foreign-signal',callback);dispatchEvent(new Event('foreign-signal'));JSON.stringify([hits,child.hits,cancelled,signalled]);").unwrap();
+        let source = v8::String::new(scope, "child.node.dispatchEvent(new Event('foreign',{bubbles:true}));const cancelled=!window.dispatchEvent(child.errorEvent);let signalled=0;const signal=new child.AbortController();const callback=()=>signalled++;addEventListener('foreign-signal',callback,{signal:signal.signal});signal.abort();addEventListener('foreign-signal',callback);dispatchEvent(new Event('foreign-signal'));EventTarget.prototype.dispatchEvent.call(child.eventTarget,new Event('generic'));JSON.stringify([hits,child.hits,cancelled,signalled,child.targetHits]);").unwrap();
         let result = v8::Script::compile(scope, source, None)
             .unwrap()
             .run(scope)
             .unwrap();
         assert_eq!(
             result.to_rust_string_lossy(scope),
-            r#"[[["foreign","child.js",9,3,true,5]],[[true,true,true]],true,1]"#
+            r#"[[["foreign","child.js",9,3,true,5]],[[true,true,true]],true,1,[[true,2]]]"#
         );
         reset();
     }
     #[test]
     fn window_listener_failure_preserves_event_state() {
         fixture(
-            r#"(()=>{let rows=[];window.addEventListener('direct',()=>{throw new Error('listener failure')},true);window.addEventListener('direct',e=>rows.push([e.currentTarget===window,e.eventPhase,e.isTrusted,e.composedPath().length]));const event=new Event('direct');window.dispatchEvent(event);if(JSON.stringify(rows)!=='[[true,2,false,1]]'||event.currentTarget!==null||event.eventPhase!==0)throw new Error('listener cleanup '+JSON.stringify(rows));window.addEventListener('immediate',e=>{rows.push('capture');e.stopImmediatePropagation()},true);window.addEventListener('immediate',()=>rows.push('bad'));window.dispatchEvent(new Event('immediate'));if(rows.at(-1)!=='capture')throw new Error('immediate');let brand;try{window.dispatchEvent(Object.create(Event.prototype))}catch(error){brand=error.name}if(brand!=='TypeError')throw new Error('forged event');const node=document.createElement('div'),NativeException=DOMException;let intercepted=0;DOMException=function(){intercepted++;return new Error('fake')};let native=false;try{node.dispatchEvent(new Event(''))}catch(error){native=error instanceof NativeException&&error.name==='InvalidStateError'}if(!native||intercepted)throw new Error('public constructor intercepted dispatch');return true})()"#,
+            r#"(()=>{let rows=[];const order=[];window.addEventListener('order',()=>order.push('bubble'));window.addEventListener('order',()=>order.push('capture'),true);window.dispatchEvent(new Event('order'));if(order.join()!=='bubble,capture')throw new Error('direct Window target order '+order);window.addEventListener('direct',()=>{throw new Error('listener failure')},true);window.addEventListener('direct',e=>rows.push([e.currentTarget===window,e.eventPhase,e.isTrusted,e.composedPath().length]));const event=new Event('direct');window.dispatchEvent(event);if(JSON.stringify(rows)!=='[[true,2,false,1]]'||event.currentTarget!==null||event.eventPhase!==0)throw new Error('listener cleanup '+JSON.stringify(rows));window.addEventListener('immediate',e=>{rows.push('capture');e.stopImmediatePropagation()},true);window.addEventListener('immediate',()=>rows.push('bad'));window.dispatchEvent(new Event('immediate'));if(rows.at(-1)!=='capture')throw new Error('immediate');let brand;try{window.dispatchEvent(Object.create(Event.prototype))}catch(error){brand=error.name}if(brand!=='TypeError')throw new Error('forged event');const node=document.createElement('div'),NativeException=DOMException;let intercepted=0;DOMException=function(){intercepted++;return new Error('fake')};let native=false;try{node.dispatchEvent(new Event(''))}catch(error){native=error instanceof NativeException&&error.name==='InvalidStateError'}if(!native||intercepted)throw new Error('public constructor intercepted dispatch');return true})()"#,
         );
     }
     #[test]
@@ -441,6 +443,18 @@ mod tests {
             .unwrap()
             .is_true());
         reset();
+    }
+    #[test]
+    fn generic_targets_and_abort_events_have_private_real_listener_state() {
+        fixture(
+            r#"(()=>{const target=new EventTarget(),rows=[];target.addEventListener('probe',e=>rows.push(['bubble',e.eventPhase,e.currentTarget===target,e.target===target,e.composedPath().length]));target.addEventListener('probe',e=>rows.push(['capture',e.eventPhase,e.currentTarget===target,e.target===target,e.composedPath().length]),true);target.dispatchEvent(new Event('probe'));if(JSON.stringify(rows)!=='[["bubble",2,true,true,1],["capture",2,true,true,1]]'||Reflect.ownKeys(target).length)throw new Error('target '+JSON.stringify(rows));let called=0;const controller=new AbortController(),callback=()=>called++;controller.signal.onabort=callback;controller.signal.addEventListener('abort',callback);let abort;controller.signal.addEventListener('abort',e=>abort=[e.isTrusted,e.eventPhase,e.currentTarget===controller.signal,e.target===controller.signal]);controller.abort();controller.abort();if(called!==2||JSON.stringify(abort)!=='[true,2,true,true]'||Reflect.ownKeys(controller.signal).length||controller.signal.reason.name!=='AbortError'||controller.signal.reason.code!==20||!(controller.signal.reason instanceof DOMException))throw new Error('abort '+called+' '+JSON.stringify(abort)+' '+Reflect.ownKeys(controller.signal));class Custom extends EventTarget{}const custom=new Custom();custom.addEventListener('x',()=>called++);custom.dispatchEvent(new Event('x'));if(!(custom instanceof EventTarget)||Reflect.ownKeys(custom).length||called!==3)throw new Error('subclass');return true})()"#,
+        );
+    }
+    #[test]
+    fn generic_target_options_abort_removal_stop_and_opaque_branding() {
+        fixture(
+            r#"(()=>{const target=new EventTarget();let calls=0;const once=()=>{calls++;target.dispatchEvent(new Event('once'))};target.addEventListener('once',once,{once:true});target.dispatchEvent(new Event('once'));if(calls!==1)throw new Error('once');let passive;target.addEventListener('passive',e=>{e.preventDefault();e.returnValue=false;passive=e.defaultPrevented},{passive:true});if(!target.dispatchEvent(new Event('passive',{cancelable:true}))||passive)throw new Error('passive');const controller=new AbortController(),callback=()=>calls++;target.addEventListener('signal',callback,{signal:controller.signal});controller.abort();target.addEventListener('signal',callback);target.dispatchEvent(new Event('signal'));if(calls!==2)throw new Error('signal');let rows=[];target.addEventListener('stop',e=>{rows.push('capture');e.stopPropagation()},true);target.addEventListener('stop',()=>rows.push('bubble'));target.dispatchEvent(new Event('stop'));if(rows.join()!=='capture,bubble')throw new Error('stop');rows=[];target.addEventListener('immediate',e=>{rows.push('capture');e.stopImmediatePropagation()},true);target.addEventListener('immediate',()=>rows.push('bad'));target.dispatchEvent(new Event('immediate'));if(rows.join()!=='capture')throw new Error('immediate');const forged=Object.create(EventTarget.prototype);let error;try{EventTarget.prototype.addEventListener.call(forged,'x',()=>{})}catch(caught){error=caught.name}if(error!=='TypeError')throw new Error('forged');const nativeSlice=Array.prototype.slice,nativePush=Array.prototype.push;Array.prototype.slice=Array.prototype.push=function(){throw new Error('guest intrinsic')};const protectedTarget=new EventTarget();protectedTarget.addEventListener('x',()=>calls++);protectedTarget.dispatchEvent(new Event('x'));Array.prototype.slice=nativeSlice;Array.prototype.push=nativePush;if(calls!==3||Reflect.ownKeys(protectedTarget).length)throw new Error('private array poisoning');return true})()"#,
+        );
     }
     fn fixture(source: &str) {
         super::super::tests::init_v8();
