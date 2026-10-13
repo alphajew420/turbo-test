@@ -5,6 +5,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+### Fixed
+- Capture popover task schedulers by the current native context document after host timer
+  installation, preserving independent frame queues and the parent's private scheduler.
+
 ## [0.4.6] - 2026-10-13
 
 ### Fixed

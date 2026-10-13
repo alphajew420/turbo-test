@@ -447,6 +447,13 @@ pub(super) fn install(scope: &mut v8::PinScope) {
     capture_scheduler(scope);
 }
 pub(super) fn capture_scheduler(scope: &mut v8::PinScope) {
+    // Independent-context installation restores its caller's TLS document. The
+    // host installs timers afterwards, so resolve ownership from the realm here.
+    let owner = scope
+        .get_current_context()
+        .get_slot::<DomContextId>()
+        .map_or(0, |id| id.0);
+    let _dom = DomScope::enter(owner);
     let global = scope.get_current_context().global(scope);
     let key = v8::String::new(scope, "setTimeout").unwrap();
     if let Some(scheduler) = global
@@ -576,6 +583,52 @@ pub(super) fn selector(scope: &mut v8::PinScope, anchor: Handle, source: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn post_install_schedulers_follow_their_native_context_document() {
+        super::super::tests::init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let parent = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, parent);
+        install_with_html(scope, "<!doctype html><body><div id=popup popover=manual>");
+        let timers = "globalThis.tasks=[];globalThis.events=[];globalThis.setTimeout=callback=>{tasks.push(callback);return tasks.length};document.body.replaceChildren();const popup=document.createElement('div');popup.id='popup';popup.popover='manual';document.body.append(popup);popup.ontoggle=event=>events.push([event.oldState,event.newState,event.isTrusted]);";
+        run_js(scope, timers);
+        capture_popover_scheduler(scope);
+        let child = v8::Context::new(scope, Default::default());
+        child.set_security_token(parent.get_security_token(scope));
+        {
+            let scope = &mut v8::ContextScope::new(scope, child);
+            install_independent_html(scope, "<!doctype html><body><div id=popup popover=manual>");
+            run_js(scope, timers);
+            capture_popover_scheduler(scope);
+            run_js(scope, "globalThis.setTimeout=()=>{throw new Error('guest timer replacement')};document.getElementById('popup').showPopover();");
+        }
+        let global = parent.global(scope);
+        let scope = &mut v8::ContextScope::new(scope, parent);
+        let key = v8::String::new(scope, "child").unwrap();
+        let child_global = child.global(scope);
+        global.set(scope, key.into(), child_global.into());
+        let parsed = parse_html_document(scope, "<!doctype html><body>", false);
+        let key = v8::String::new(scope, "inert").unwrap();
+        global.set(scope, key.into(), parsed.into());
+        let source = v8::String::new(scope, r#"(()=>{
+          setTimeout=()=>{throw new Error('guest timer replacement')};document.getElementById('popup').showPopover();
+          if(tasks.length!==1||child.tasks.length!==1)throw new Error('scheduler crossed document ownership');
+          tasks.shift()();child.tasks.shift()();
+          const inactive=inert.adoptNode(document.createElement('div'));inactive.popover='manual';inert.body.append(inactive);
+          let error;try{inactive.showPopover()}catch(caught){error=caught.name}
+          return JSON.stringify([events,child.events,error,document.querySelector(':popover-open').id,child.document.querySelector(':popover-open').id]);
+        })()"#).unwrap();
+        let result = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        assert_eq!(
+            result.to_rust_string_lossy(scope),
+            r#"[[["closed","open",true]],[["closed","open",true]],"InvalidStateError","popup","popup"]"#
+        );
+        reset();
+    }
     fn fixture(source: &str) {
         super::super::tests::init_v8();
         let isolate = &mut v8::Isolate::new(Default::default());
