@@ -1,0 +1,3 @@
+# Preserve the exact published MIT provider and license, including upstream CRLF/spacing.
+src/xpath_provider/xpath.js -text -whitespace
+src/xpath_provider/LICENSE -text -whitespace
