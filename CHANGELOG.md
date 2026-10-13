@@ -6,6 +6,15 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Implement native-tree Range clone/extract/delete/surround content operations,
+  real selected text, boundary ordering/offset/root validation, node intersections
+  and atomic insertion preflight. Preserve extracted node identity and nested
+  partial shells, genuine receiver checks and private final exception constructors.
+  Saved Chrome155 content/error controls and hostile DOM-method regressions cover
+  this subset; mutation-adjusted live boundaries and layout geometry remain open.
+- Build DOM collection snapshots, private event paths and returned composed-path
+  copies through intrinsic own elements, bypassing guest numeric setters,
+  constructors/species and iterators while retaining live/native node identities.
 - Propagate native Node events through the actual owner Document and Window with capture,
   target and bubble phases, stable composed paths, stop/removal/once/passive contracts and
   immediate AbortSignal subscriptions. Nonbubbling resource errors reach Window capture;

@@ -190,6 +190,7 @@ pub(super) fn aborted(scope: &mut v8::PinScope, signal: &v8::Global<v8::Object>)
 
 /// Capture trusted post-bootstrap interface getters without exposing a page setter.
 pub fn capture_window_event_interfaces(scope: &mut v8::PinScope) {
+    range_contents::capture_interfaces(scope);
     let context = scope.get_current_context();
     let Some(updater) = context.get_slot::<WindowInterfaces>() else {
         return;
@@ -470,6 +471,12 @@ mod tests {
     fn native_node_signal_data_and_window_error_arguments_bypass_guest_index_setters() {
         fixture(
             r#"(()=>{const node=document.createElement('div');document.body.append(node);const controller=new AbortController();let hooks=0,calls=0,errors=0;const callback=()=>calls++;window.onerror=function(message,source,line,column,error){if(message==='authored'&&source==='fixture.js'&&line===4&&column===2&&error===failure)errors++;return true};const failure=new Error('authored');Object.defineProperty(Array.prototype,'0',{configurable:true,set(){hooks++}});let returned;try{node.addEventListener('private',callback,{signal:controller.signal});controller.abort('reason');node.addEventListener('private',callback);const event=new ErrorEvent('error',{message:'authored',filename:'fixture.js',lineno:4,colno:2,error:failure,cancelable:true});returned=window.dispatchEvent(event)}finally{delete Array.prototype[0];window.onerror=null}node.dispatchEvent(new Event('private'));if(hooks!==0||calls!==1||errors!==1||returned!==false)throw new Error('native array privacy '+hooks+' '+calls+' '+errors+' '+returned);return true})()"#,
+        );
+    }
+    #[test]
+    fn native_dom_snapshots_and_event_paths_bypass_guest_array_hooks() {
+        fixture(
+            r#"(()=>{const node=document.createElement('div'),child=document.createElement('i');node.setAttribute('authored','value');node.append(child);document.body.append(node);const define=Object.defineProperty,constructor=Object.getOwnPropertyDescriptor(Array.prototype,'constructor'),iterator=Object.getOwnPropertyDescriptor(Array.prototype,Symbol.iterator);let hooks=0,calls=0,path;node.addEventListener('owned',e=>{calls++;path=e.composedPath();path.length=0;if(e.composedPath()[0]!==node)throw new Error('private path changed')});define(Array.prototype,'0',{configurable:true,set(){hooks++}});define(Array.prototype,'constructor',{configurable:true,get(){hooks++;throw new Error('private array species '+new Error().stack)}});define(Array.prototype,Symbol.iterator,{configurable:true,value(){hooks++;throw new Error('private array iterator')}});let snapshots;try{snapshots=node.children.item(0)===child&&node.childNodes.item(0)===child&&node.attributes.item(0).name==='authored'&&node.querySelectorAll('i').item(0)===child&&document.querySelectorAll('i').item(0)===child&&Object.keys(node.children).join()==='0';node.dispatchEvent(new Event('owned',{bubbles:true}));}finally{delete Array.prototype[0];define(Array.prototype,'constructor',constructor);define(Array.prototype,Symbol.iterator,iterator)}if(hooks!==0||calls!==1||!snapshots||path.length!==0)throw new Error('DOM array privacy '+hooks+' '+calls+' '+snapshots);return true})()"#,
         );
     }
     fn fixture(source: &str) {

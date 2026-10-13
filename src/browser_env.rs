@@ -811,6 +811,18 @@ fn wrap<'s>(scope: &mut v8::PinScope<'s, '_>, handle: Handle) -> v8::Local<'s, v
     obj
 }
 
+/// Build native node sequences without consulting guest array prototypes.
+fn node_array<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    handles: impl IntoIterator<Item = Handle>,
+) -> v8::Local<'s, v8::Array> {
+    let values = handles
+        .into_iter()
+        .map(|handle| wrap(scope, handle).into())
+        .collect::<Vec<_>>();
+    v8::Array::new_with_elements(scope, &values)
+}
+
 /// Wrap `Option<Handle>` as object-or-null.
 fn wrap_opt<'s>(scope: &mut v8::PinScope<'s, '_>, h: Option<Handle>) -> v8::Local<'s, v8::Value> {
     match h {
@@ -2328,11 +2340,7 @@ fn get_children(
             .collect()
     })
     .unwrap_or_default();
-    let arr = v8::Array::new(scope, kids.len() as i32);
-    for (i, k) in kids.into_iter().enumerate() {
-        let node = wrap(scope, k);
-        arr.set_index(scope, i as u32, node.into());
-    }
+    let arr = node_array(scope, kids);
     bind_method(scope, arr.into(), "item", nodelist_item);
     bind_method(scope, arr.into(), "namedItem", nodelist_named_item);
     rv.set(arr.into());
@@ -2877,11 +2885,7 @@ fn get_attributes(
             .collect::<Vec<_>>()
     })
     .unwrap_or_default();
-    let arr = v8::Array::new(scope, attrs.len() as i32);
-    for (index, node) in attrs.into_iter().enumerate() {
-        let object = wrap(scope, node);
-        arr.set_index(scope, index as u32, object.into());
-    }
+    let arr = node_array(scope, attrs);
     // NamedNodeMap accessors (`attributes.item(i)` / `attributes.namedItem(name)`).
     bind_method(scope, arr.into(), "item", nodelist_item);
     bind_method(scope, arr.into(), "namedItem", nodelist_named_item);
@@ -3072,11 +3076,7 @@ fn el_query_selector_all(
             .collect::<Vec<_>>()
     })
     .unwrap_or_default();
-    let arr = v8::Array::new(scope, handles.len() as i32);
-    for (i, hh) in handles.into_iter().enumerate() {
-        let node = wrap(scope, hh);
-        arr.set_index(scope, i as u32, node.into());
-    }
+    let arr = node_array(scope, handles);
     bind_method(scope, arr.into(), "item", nodelist_item);
     bind_method(scope, arr.into(), "namedItem", nodelist_named_item);
     rv.set(arr.into());
@@ -3547,9 +3547,13 @@ pub fn event_callback_state(
     } else {
         v8::null(scope).into()
     };
-    let path = v8::Array::new(scope, i32::from(active));
+    let values = if active {
+        vec![target.into()]
+    } else {
+        Vec::new()
+    };
+    let path = v8::Array::new_with_elements(scope, &values);
     if active {
-        path.set_index(scope, 0, target.into());
         set_prop(scope, record, "target", target.into());
         let trusted = v8::Boolean::new(scope, true);
         set_prop(scope, record, "trusted", trusted.into());
@@ -3642,18 +3646,15 @@ fn el_dispatch_event(
     } else {
         None
     };
-    let path = v8::Array::new(
-        scope,
-        (ancestors.len() + 1 + usize::from(window.is_some())) as i32,
-    );
-    path.set_index(scope, 0, target_node.into());
-    for (index, &handle) in ancestors.iter().enumerate() {
-        let node = wrap(scope, handle);
-        path.set_index(scope, (index + 1) as u32, node.into());
+    let mut values = Vec::with_capacity(ancestors.len() + 2);
+    values.push(target_node.into());
+    for &handle in &ancestors {
+        values.push(wrap(scope, handle).into());
     }
     if let Some(window) = window {
-        path.set_index(scope, (ancestors.len() + 1) as u32, window.into());
+        values.push(window.into());
     }
+    let path = v8::Array::new_with_elements(scope, &values);
     set_prop(scope, record, "path", path.into());
 
     // CAPTURE phase: root → target's parent (capture listeners), then TARGET (both), then BUBBLE:
@@ -4164,11 +4165,7 @@ fn get_child_nodes(
         return;
     };
     let kids = with_tree(|t| t.children(h)).unwrap_or_default();
-    let arr = v8::Array::new(scope, kids.len() as i32);
-    for (i, k) in kids.into_iter().enumerate() {
-        let node = wrap(scope, k);
-        arr.set_index(scope, i as u32, node.into());
-    }
+    let arr = node_array(scope, kids);
     bind_method(scope, arr.into(), "item", nodelist_item);
     bind_method(scope, arr.into(), "namedItem", nodelist_named_item);
     rv.set(arr.into());
@@ -4355,11 +4352,7 @@ fn doc_query_selector_all(
     };
     let handles: Vec<Handle> =
         with_tree(|t| t.query_selector_all(&sel).to_vec()).unwrap_or_default();
-    let arr = v8::Array::new(scope, handles.len() as i32);
-    for (i, hh) in handles.into_iter().enumerate() {
-        let node = wrap(scope, hh);
-        arr.set_index(scope, i as u32, node.into());
-    }
+    let arr = node_array(scope, handles);
     bind_method(scope, arr.into(), "item", nodelist_item);
     bind_method(scope, arr.into(), "namedItem", nodelist_named_item);
     rv.set(arr.into());
@@ -5322,6 +5315,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     global.set(scope, factory_key.into(), factory.into());
     bind_method(scope, global, "__nativeEventRecord", lookup_event_record);
     bind_method(scope, global, "__nativeRangeRecord", native_range_record);
+    range_contents::capture(scope);
     collection_records::register(scope);
     css_policy::register(scope);
     event_handlers::register(scope);
@@ -5355,6 +5349,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     run_js(scope, include_str!("element_tokens.js"));
     run_js(scope, include_str!("element_relations.js"));
     run_js(scope, include_str!("document_basics.js"));
+    range_contents::install(scope);
     bind_method(scope, global, "__htmlTextNative", html_text::dispatch);
     run_js(scope, include_str!("html_text.js"));
     html_popover::install(scope);
@@ -5460,6 +5455,9 @@ fn run_js(scope: &mut v8::PinScope, src: &str) {
 /// and pure-JS document extras. Kept in a sibling .js file (not Rust) so the shims are editable
 /// as JS; the Rust side is purely the rtdom↔V8 binding.
 const BOOTSTRAP: &str = include_str!("browser_env.js");
+
+#[path = "range_contents.rs"]
+mod range_contents;
 
 /// Reset the per-thread DOM (call between test files when reusing an isolate).
 pub fn reset() {

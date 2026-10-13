@@ -61,13 +61,18 @@
   for (const name of ['xmlEncoding', 'rootElement']) property(g.Document.prototype, name, function () { check(this, [9]); return null; });
   property(g.Document.prototype, 'xmlStandalone', function () { check(this, [9]); return !!state(this).xmlStandalone; }, function (value) { check(this, [9]); state(this).xmlStandalone = !!value; });
   property(g.Document.prototype, 'xmlVersion', function () { check(this, [9]); return state(this).xmlVersion || null; }, function (value) { check(this, [9]); value = string(value); if (value !== '1.0') throw new g.DOMException('Only XML version 1.0 is supported', 'NotSupportedError'); state(this).xmlVersion = value; });
+  const collectionDefine=Object.defineProperty, collectionApply=Reflect.apply;
+  const collectionMapGet=Map.prototype.get, collectionMapHas=Map.prototype.has, collectionMapSet=Map.prototype.set;
+  const collectionValues=Array.prototype.values, collectionEntries=Array.prototype.entries, collectionKeys=Array.prototype.keys, collectionForEach=Array.prototype.forEach;
+  const collectionOwn=(rows,index,value)=>collectionDefine(rows,index,{__proto__:null,value,writable:true,configurable:true,enumerable:true});
+  const copyRows=(rows,match)=>{const result=[];for(let index=0;index<rows.length;index++){const value=rows[index];if(!match||match(value))collectionOwn(result,result.length,value);}return result;};
   function descendants(receiver, match) {
     const result = [];
     function visit(node) {
       const children = rawChildren.call(node);
       for (let i = 0; i < children.length; i++) {
         const child = children[i];
-        if (type.call(child) === 1 && match(child)) result.push(child);
+        if (type.call(child) === 1 && match(child)) collectionOwn(result,result.length,child);
         visit(child);
       }
     }
@@ -84,28 +89,32 @@
     const record = receiver => { const value = getRecord(receiver); if (!value || value.kind!==name) throw new TypeError('Illegal invocation'); return value.read; };
     property(proto, 'length', function () { return record(this)().length; });
     method(proto, 'item', function (index) { if (!arguments.length) throw new TypeError('item requires 1 argument'); return record(this)()[(+index) >>> 0] || null; }, 1);
-    Object.defineProperty(proto, Symbol.iterator, { value: make(function () { record(this); return Array.prototype.values.call(this); }, 'values', 0), writable: true, configurable: true });
+    Object.defineProperty(proto, Symbol.iterator, { value: make(function () { record(this); return collectionApply(collectionValues,this,[]); }, 'values', 0), writable: true, configurable: true });
     return { proto, record };
   }
   const collection = collectionInterface('HTMLCollection');
   const nodeList = collectionInterface('NodeList');
-  const named = (list, name) => name === '' ? null : list.find(node => getAttribute.call(node, 'id') === name || namespace.call(node) === html && getAttribute.call(node, 'name') === name) || null;
+  const named = (list,name)=>{if(name==='')return null;for(let index=0;index<list.length;index++){const node=list[index];if(getAttribute.call(node,'id')===name||namespace.call(node)===html&&getAttribute.call(node,'name')===name)return node;}return null;};
   method(collection.proto, 'namedItem', function (name) { if (!arguments.length) throw new TypeError('namedItem requires 1 argument'); return named(collection.record(this)(), string(name)); }, 1);
-  for (const name of ['entries', 'keys', 'values']) method(nodeList.proto, name, function () { nodeList.record(this); return Array.prototype[name].call(this); }, 0);
+  for (const [name,implementation] of [['entries',collectionEntries],['keys',collectionKeys],['values',collectionValues]]) method(nodeList.proto,name,function(){nodeList.record(this);return collectionApply(implementation,this,[]);},0);
   Object.defineProperty(nodeList.proto, Symbol.iterator, {value: nodeList.proto.values, writable: true, configurable: true});
-  method(nodeList.proto, 'forEach', function (callback, thisArg) { nodeList.record(this); if (typeof callback !== 'function') throw new TypeError('callback must be a function'); Array.prototype.forEach.call(this, callback, thisArg); }, 1);
+  method(nodeList.proto, 'forEach', function (callback, thisArg) { nodeList.record(this); if (typeof callback !== 'function') throw new TypeError('callback must be a function'); collectionApply(collectionForEach,this,[callback,thisArg]); }, 1);
   function live(list, namedProperties) {
     const proto = namedProperties ? collection.proto : nodeList.proto;
     const object = ns.makeNamedObject(proto, function (operation, key) {
       const rows = list();
       const indexed = /^(0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
       const supported = indexed ? Number(key) < rows.length : namedProperties && !(key in proto) && named(rows, key) !== null;
-      if (operation === 'indices') return rows.map((_, index) => index);
+      if (operation === 'indices') {const indices=[];for(let index=0;index<rows.length;index++)collectionOwn(indices,index,index);return indices;}
       if (operation === 'keys') {
         const names = [];
-        if (namedProperties) for (const node of rows) {
-          for (const value of [getAttribute.call(node, 'id'), namespace.call(node) === html ? getAttribute.call(node, 'name') : null])
-            if (value && !/^(0|[1-9][0-9]*)$/.test(value) && !(value in proto) && !names.includes(value)) names.push(value);
+        if (namedProperties) for (let index=0;index<rows.length;index++) {
+          const node=rows[index],values=[getAttribute.call(node,'id'),namespace.call(node)===html?getAttribute.call(node,'name'):null];
+          for(let at=0;at<values.length;at++){
+            const value=values[at];let duplicate=false;
+            for(let existing=0;existing<names.length;existing++)if(names[existing]===value){duplicate=true;break;}
+            if(value&&!/^(0|[1-9][0-9]*)$/.test(value)&&!(value in proto)&&!duplicate)collectionOwn(names,names.length,value);
+          }
         }
         return names;
       }
@@ -121,26 +130,26 @@
     setRecord(object,{kind:namedProperties?'HTMLCollection':'NodeList',read:list});
     return object;
   }
-  const caches = new WeakMap();
+  const caches = new WeakMap(), cacheGet=WeakMap.prototype.get.bind(caches),cacheSet=WeakMap.prototype.set.bind(caches);
   function cached(receiver, key, read, namedProperties = true) {
-    let cache = caches.get(receiver);
-    if (!cache) { cache = new Map(); caches.set(receiver, cache); }
-    if (!cache.has(key)) {
+    let cache = cacheGet(receiver);
+    if (!cache) { cache = new Map(); cacheSet(receiver, cache); }
+    if (!collectionApply(collectionMapHas,cache,[key])) {
       let stamp = null, rows = null;
       const current = () => { const next = native('stamp', receiver); if(next !== stamp) { rows = read(); stamp = next; } return rows; };
-      cache.set(key, live(current, namedProperties));
+      collectionApply(collectionMapSet,cache,[key,live(current,namedProperties)]);
     }
-    return cache.get(key);
+    return collectionApply(collectionMapGet,cache,[key]);
   }
   property(g.Node.prototype, 'childNodes', function () {
     check(this, [1, 3, 7, 8, 9, 10, 11]);
     const receiver = this;
-    return cached(receiver, 'childNodes', () => Array.from(rawChildren.call(receiver)), false);
+    return cached(receiver, 'childNodes', () => copyRows(rawChildren.call(receiver)), false);
   });
   for (const owner of ['Element', 'Document', 'DocumentFragment']) property(g[owner].prototype, 'children', function () {
     check(this, owner === 'Element' ? [1] : owner === 'Document' ? [9] : [11]);
     const receiver = this;
-    return cached(receiver, 'children', () => Array.from(rawChildren.call(receiver)).filter(node => type.call(node) === 1));
+    return cached(receiver, 'children', () => copyRows(rawChildren.call(receiver),node=>type.call(node)===1));
   });
   for (const owner of ['Document', 'Element', 'DocumentFragment']) {
     const proto = g[owner].prototype;
@@ -148,7 +157,7 @@
     method(proto, 'querySelectorAll', function (selector) {
       check(this, owner === 'Document' ? [9] : owner === 'Element' ? [1] : [11]);
       if (!arguments.length) throw new TypeError('querySelectorAll requires 1 argument');
-      const rows = Array.from(query.call(this, string(selector)));
+      const rows = copyRows(query.call(this,string(selector)));
       return live(() => rows, false);
     }, 1);
   }

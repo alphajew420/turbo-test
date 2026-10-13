@@ -186,6 +186,12 @@
   var getEventRecord = WeakMap.prototype.get.bind(eventRecords);
   var setEventRecord = WeakMap.prototype.set.bind(eventRecords);
   var eventClockOrigin = Date.now();
+  var eventDefineProperty = Object.defineProperty;
+  function copyEventPath(path) {
+    var result = [];
+    for (var index=0; index<path.length; index++) eventDefineProperty(result,index,{__proto__:null,value:path[index],writable:true,configurable:true,enumerable:true});
+    return result;
+  }
   var nativeEventRecord = g.__nativeEventRecord;
   delete g.__nativeEventRecord;
   function eventRecord(event) {
@@ -232,7 +238,7 @@
       preventDefault(){var state=eventRecord(this);if(state.cancelable&&!state.passive)state.defaultPrevented=true;},
       stopPropagation(){eventRecord(this).stop=true;},
       stopImmediatePropagation(){var state=eventRecord(this);state.stop=true;state.stopImmediate=true;},
-      composedPath(){return eventRecord(this).path.slice();},
+      composedPath(){return copyEventPath(eventRecord(this).path);},
       initEvent(type,bubbles=false,cancelable=false){
         var state=eventRecord(this);if(!arguments.length)throw new TypeError('A type is required');if(state.dispatching)return;
         state.type=eventString(type);state.bubbles=!!bubbles;state.cancelable=!!cancelable;
