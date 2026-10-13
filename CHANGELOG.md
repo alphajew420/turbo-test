@@ -6,6 +6,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Compile authored HTML event-handler attributes as real V8 functions with native element,
+  form and document scope; keep assigned-function overrides and host CSP authorization private.
+- Initiate inline stylesheet imports through private host state and include imported declarations
+  in live computed styles; cache native policy filtering by the actual tree mutation version.
+- Create native ProcessingInstruction nodes with CharacterData inheritance, XML-name/data
+  validation, serialization, identity-preserving adoption and clone/import support. CharacterData
+  methods now use UTF-16 offsets and reject invalid ranges; HTML CDATA creation throws the
+  measured NotSupportedError. Preserve actual supported HTML XML-metadata state.
 - Apply host CSS authorization without changing authored DOM attributes; preserve parser policy
   position and separate CSP-blocked attribute text from applied declarations and CSSOM writes.
   Keep stylesheet loader capabilities private and guard opaque stylesheet rules/mutations.

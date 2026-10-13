@@ -18,6 +18,8 @@ mod cssom_parser;
 mod collection_records;
 #[path = "css_policy.rs"]
 mod css_policy;
+#[path = "event_handlers.rs"]
+mod event_handlers;
 
 pub fn clear_interface_records(isolate: &mut v8::Isolate) {
     collection_records::clear(isolate);
@@ -296,6 +298,7 @@ struct DomState {
     basics_state: Option<v8::Global<v8::Object>>,
     control_clone: Option<v8::Global<v8::Function>>,
     css_policy: css_policy::PolicyState,
+    event_handlers: event_handlers::State,
 }
 
 thread_local! {
@@ -450,6 +453,7 @@ pub fn parse_html_document<'s>(
             basics_state: None,
             control_clone,
             css_policy: Default::default(),
+            event_handlers: Default::default(),
         })
     });
     let context = scope.get_current_context();
@@ -496,7 +500,7 @@ pub fn import_document_node<'s>(
     }
     fn capture(tree: &Tree, node: Handle, deep: bool) -> Result<Snapshot, &'static str> {
         let kind = tree.node_type_id(node);
-        if !matches!(kind, 1 | 2 | 3 | 8 | 10 | 11) {
+        if !matches!(kind, 1 | 2 | 3 | 7 | 8 | 10 | 11) {
             return Err("Importing this node kind is unsupported");
         }
         if kind == 1 && tree.local_name(node) == Some("template") {
@@ -508,6 +512,7 @@ pub fn import_document_node<'s>(
             name: tree
                 .qualified_name(node)
                 .or_else(|| tree.doctype_name(node))
+                .or_else(|| tree.processing_instruction_target(node))
                 .unwrap_or_default()
                 .to_string(),
             value: tree.node_value(node).unwrap_or_default(),
@@ -533,6 +538,7 @@ pub fn import_document_node<'s>(
                 &snapshot.value,
             ),
             3 => tree.create_text_node(&snapshot.value),
+            7 => tree.create_processing_instruction(&snapshot.name, &snapshot.value),
             8 => tree.create_comment(&snapshot.value),
             10 => {
                 tree.create_document_type(&snapshot.name, &snapshot.public_id, &snapshot.system_id)
@@ -1115,6 +1121,14 @@ fn el_split_text(
 }
 
 /// Install immutable host CSS authorization for this native document before page scripts.
+pub fn install_inline_event_handlers(
+    scope: &mut v8::PinScope,
+    callback: v8::Local<v8::Function>,
+    base: &str,
+) {
+    event_handlers::install(scope, Some(callback), base);
+}
+
 pub fn install_css_policy(scope: &mut v8::PinScope, callback: v8::Local<v8::Function>) {
     css_policy::install(scope, callback);
 }
@@ -1182,7 +1196,7 @@ fn resolve_nodes(
 
 fn el_before(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 8, 10]) else {
+    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 7, 8, 10]) else {
         return;
     };
     let Some(nodes) = resolve_nodes(scope, &args, 0) else {
@@ -1192,7 +1206,7 @@ fn el_before(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv:
 }
 fn el_after(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 8, 10]) else {
+    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 7, 8, 10]) else {
         return;
     };
     let Some(nodes) = resolve_nodes(scope, &args, 0) else {
@@ -1206,7 +1220,7 @@ fn el_replace_with(
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 8, 10]) else {
+    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 7, 8, 10]) else {
         return;
     };
     let Some(nodes) = resolve_nodes(scope, &args, 0) else {
@@ -1436,6 +1450,9 @@ fn el_set_attribute_ns<'s, 'i>(
         return;
     }
     with_tree_mut(|tree| tree.set_attribute_ns(node, namespace.as_deref(), &qualified, &value));
+    if namespace.is_none() {
+        event_handlers::changed(scope, node, &qualified);
+    }
     if namespace.is_none() && qualified == "style" {
         css_policy::attribute_changed(scope, node);
     }
@@ -1462,6 +1479,9 @@ fn el_remove_attribute_ns<'s, 'i>(
         return;
     };
     with_tree_mut(|tree| tree.remove_attribute_ns(node, namespace.as_deref(), &local));
+    if namespace.is_none() {
+        event_handlers::changed(scope, node, &local);
+    }
     if namespace.is_none() && local == "style" {
         css_policy::attribute_changed(scope, node);
     }
@@ -1516,6 +1536,7 @@ fn el_set_attribute(
         name.clone()
     };
     with_tree_mut(|t| t.set_attribute(h, &key, &value));
+    event_handlers::changed(scope, h, &key);
     if key == "style" {
         css_policy::attribute_changed(scope, h);
     }
@@ -1958,6 +1979,7 @@ fn el_remove_attribute(
             t.remove_attribute(h, &lower);
         }
     });
+    event_handlers::changed(scope, h, &lower);
     if lower == "style" {
         css_policy::attribute_changed(scope, h);
     }
@@ -2332,7 +2354,7 @@ fn el_remove_self(
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 8, 10]) else {
+    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 7, 8, 10]) else {
         return;
     };
     let parent = with_tree(|t| NodeRef::new(t, h).parent().map(|p| p.handle())).flatten();
@@ -2410,6 +2432,13 @@ fn clone_subtree(t: &mut Tree, h: Handle, deep: bool) -> Handle {
             t.create_attribute(data.namespace.as_deref(), &data.qualified_name, &data.value)
         }
         3 => t.create_text_node(&t.node_value(h).unwrap_or_default()),
+        7 => {
+            let target = t
+                .processing_instruction_target(h)
+                .unwrap_or_default()
+                .to_owned();
+            t.create_processing_instruction(&target, &t.node_value(h).unwrap_or_default())
+        }
         8 => t.create_comment(&t.node_value(h).unwrap_or_default()),
         10 => {
             let name = t.doctype_name(h).unwrap_or_default().to_owned();
@@ -3060,6 +3089,7 @@ fn el_add_event_listener(
     let Some(f) = v8::Local::<v8::Function>::try_from(args.get(1)).ok() else {
         return;
     };
+    event_handlers::refresh(scope, h, &format!("on{ty}"));
     let capture = arg_capture(scope, &args);
     let g = v8::Global::new(scope, f);
     LISTENERS.with(|m| {
@@ -3238,6 +3268,7 @@ fn el_dispatch_event(
         }
         return;
     }
+    event_handlers::refresh(scope, target, &format!("on{ty}"));
     let bubbles = get_bool_prop(scope, record, "bubbles");
     let trusted = args.data().is_true();
     let yes = v8::Boolean::new(scope, true);
@@ -3523,6 +3554,7 @@ fn get_constructor(
     let (nt, tag) = with_tree(|t| (t.node_type_id(h), t.tag_name(h))).unwrap_or((1, None));
     let cname = match nt {
         3 => "Text",
+        7 => "ProcessingInstruction",
         8 => "Comment",
         9 => "HTMLDocument",
         11 => "DocumentFragment",
@@ -3614,7 +3646,7 @@ fn get_node_data(
         return;
     };
     let nt = with_tree(|t| t.node_type_id(h)).unwrap_or(1);
-    if nt == 2 || nt == 3 || nt == 8 {
+    if matches!(nt, 2 | 3 | 7 | 8) {
         let data = with_tree(|t| t.node_value(h)).flatten().unwrap_or_default();
         rv.set(v8::String::new(scope, &data).unwrap().into());
     } else {
@@ -3623,7 +3655,7 @@ fn get_node_data(
 }
 fn set_node_data(
     scope: &mut v8::PinScope,
-    _name: v8::Local<v8::Name>,
+    name: v8::Local<v8::Name>,
     value: v8::Local<v8::Value>,
     args: v8::PropertyCallbackArguments,
     _rv: v8::ReturnValue<()>,
@@ -3632,7 +3664,17 @@ fn set_node_data(
     let Some(h) = handle_of(scope, args.holder()) else {
         return;
     };
-    let data = value.to_rust_string_lossy(scope);
+    if !with_tree(|tree| matches!(tree.node_type_id(h), 2 | 3 | 7 | 8)).unwrap_or(false) {
+        return;
+    }
+    let data = if value.is_null() && name.to_rust_string_lossy(scope) == "nodeValue" {
+        String::new()
+    } else {
+        let Some(value) = value.to_string(scope) else {
+            return;
+        };
+        value.to_rust_string_lossy(scope)
+    };
     with_tree_mut(|t| t.set_text_content(h, &data));
 }
 
@@ -3669,6 +3711,12 @@ fn get_node_name(
         2 => with_tree(|tree| tree.qualified_name(h).unwrap_or_default().to_owned())
             .unwrap_or_default(),
         3 => "#text".to_string(),
+        7 => with_tree(|tree| {
+            tree.processing_instruction_target(h)
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .unwrap_or_default(),
         8 => "#comment".to_string(),
         9 => "#document".to_string(),
         10 => with_tree(|tree| tree.doctype_name(h).unwrap_or_default().to_owned())
@@ -4233,7 +4281,7 @@ fn dom_accessor_dispatch(
                     "Attr" => kind == 2,
                     "DocumentType" => kind == 10,
                     "HTMLElement" => kind == 1 && tree.namespace_id(h) == 0,
-                    "CharacterData" => matches!(kind, 3 | 4 | 8),
+                    "CharacterData" => matches!(kind, 3 | 4 | 7 | 8),
                     "Document" => kind == 9,
                     "DocumentFragment" => kind == 11,
                     "ShadowRoot" => kind == 11 && tree.is_shadow_root(h),
@@ -4756,6 +4804,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
             basics_state: None,
             control_clone: None,
             css_policy: Default::default(),
+            event_handlers: Default::default(),
         });
     });
 
@@ -4795,6 +4844,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     bind_method(scope, global, "__nativeEventRecord", lookup_event_record);
     collection_records::register(scope);
     css_policy::register(scope);
+    event_handlers::register(scope);
     run_js(scope, BOOTSTRAP);
     let name = v8::String::new(scope, "ts").unwrap();
     let key = v8::Symbol::for_key(scope, name);
@@ -4840,6 +4890,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
             .set_slot(std::rc::Rc::new(HostEventDispatcher(dispatcher)));
         global.delete(scope, key.into());
     }
+    event_handlers::install(scope, None, "about:blank");
 }
 
 fn bind_document(scope: &mut v8::PinScope) {
@@ -4979,6 +5030,67 @@ mod tests {
         assert_eq!(
             result,
             r#"[[true,true,"urn:element","p","Mixed","p:Mixed",true,true,2,true,true,true,true,"live","second","plain",null,"live",null,true,true,true,true,true,"replaced",true,"urn:lookup","q","http://www.w3.org/XML/1998/namespace","urn:element","urn:lookup","urn:element","p","Mixed","second"],["NamespaceError","NamespaceError","InUseAttributeError","TypeError","HierarchyRequestError"]]"#
+        );
+        reset();
+    }
+
+    #[test]
+    fn processing_instruction_uses_real_tree_and_utf16_character_data() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_independent_html(scope, "<!doctype html><body>");
+        let parsed = parse_html_document(scope, "<body>", false);
+        let key = v8::String::new(scope, "targetDocument").unwrap();
+        scope
+            .get_current_context()
+            .global(scope)
+            .set(scope, key.into(), parsed.into());
+        let source=v8::String::new(scope,r#"(()=>{
+          const fail=message=>{throw Error(message)};
+          const pi=document.createProcessingInstruction('test','a😀b');
+          if(!(pi instanceof ProcessingInstruction)||!(pi instanceof CharacterData)||pi.nodeType!==7||pi.nodeName!=='test'||pi.target!=='test'||pi.length!==4)fail('identity');
+          pi.insertData(3,'!');if(pi.data!=='a😀!b'||pi.substringData(1,2)!=='😀')fail('UTF16');
+          document.body.appendChild(pi);if(document.body.textContent!==''||document.body.innerHTML!=='<?test a😀!b?>')fail('serialize');
+          const clone=pi.cloneNode();if(clone===pi||clone.target!==pi.target||clone.data!==pi.data)fail('clone');
+          if(targetDocument.adoptNode(pi)!==pi||pi.ownerDocument!==targetDocument||pi.parentNode!==null||pi.target!=='test')fail('adopt');
+          const cases=[()=>document.createCDATASection('x'),()=>document.createProcessingInstruction('bad name','x'),()=>document.createProcessingInstruction('x','?>'),()=>pi.deleteData(99,1)];
+          const errors=cases.map(action=>{try{action();return null}catch(e){return [e.name,e.code,e instanceof DOMException]}});
+          const conversion=document.createProcessingInstruction('convert','data');conversion.nodeValue=null;if(conversion.data!=='')fail('nullable nodeValue');
+          try{conversion.data=Symbol();fail('Symbol conversion')}catch(e){if(!(e instanceof TypeError))throw e}
+          document.body.nodeValue='ignored';if(document.body.nodeValue!==null||document.body.childNodes.length!==0)fail('element nodeValue');
+          const child=document.createProcessingInstruction('child','data');document.body.appendChild(child);child.before('before');child.after('after');child.remove();if(child.parentNode!==null||document.body.textContent!=='beforeafter')fail('child methods');
+          document.xmlStandalone=true;document.xmlVersion='1.0';
+          return JSON.stringify([errors,document.xmlEncoding,document.xmlStandalone,document.xmlVersion,document.rootElement]);
+        })()"#).unwrap();
+        let script = v8::Script::compile(scope, source, None).unwrap();
+        let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
+        assert_eq!(
+            result,
+            r#"[[["NotSupportedError",9,true],["InvalidCharacterError",5,true],["InvalidCharacterError",5,true],["IndexSizeError",1,true]],null,true,"1.0",null]"#
+        );
+        reset();
+    }
+
+    #[test]
+    fn authored_handlers_compile_real_functions_and_preserve_property_override_and_scope() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_independent_html(
+            scope,
+            r#"<body><form id='scopeForm'><button id='btn' value='native' onclick="seen.push([this===btn,event.type,value,scopeForm.id]);return false"></button></form></body>"#,
+        );
+        let source=v8::String::new(scope,r#"(()=>{globalThis.seen=[];const button=document.getElementById('btn');globalThis.btn=button;globalThis.scopeForm=document.getElementById('scopeForm');const handler=button.onclick;const first=button.dispatchEvent(new Event('click',{cancelable:true}));button.onclick=()=>seen.push('manual');button.dispatchEvent(new Event('click'));button.setAttribute('onclick','seen.push("changed")');button.dispatchEvent(new Event('click'));button.removeAttribute('onclick');button.dispatchEvent(new Event('click'));return JSON.stringify([handler.name,handler.length,Function.prototype.toString.call(handler).includes('seen.push'),first,seen,button.onclick]);})()"#).unwrap();
+        let script = v8::Script::compile(scope, source, None).unwrap();
+        let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
+        assert_eq!(
+            result,
+            r#"["onclick",1,true,false,[[true,"click","native","scopeForm"],"manual","changed"],null]"#
         );
         reset();
     }

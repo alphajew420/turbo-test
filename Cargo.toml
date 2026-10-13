@@ -57,7 +57,7 @@ turbo-dom-parser = { package = "turbo-dom", version = "0.5.1" }
 
 [patch.crates-io]
 # Additive DOM API, pinned for clean-checkout reproducibility; PR #8.
-turbo-dom = { git = "https://github.com/miaskiewicz/turbo-dom", rev = "edb5e1f38cc498a5f38a5dea321db85c81170be7" }
+turbo-dom = { git = "https://github.com/miaskiewicz/turbo-dom", rev = "3c2c2061b69eb60e512104e1e8d985f96d4aeda1" }
 
 [profile.release]
 opt-level = 3

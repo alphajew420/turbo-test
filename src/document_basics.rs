@@ -107,7 +107,7 @@ struct Snapshot {
 }
 fn capture(tree: &mut Tree, node: Handle) -> Result<Snapshot, &'static str> {
     let kind = tree.node_type_id(node);
-    if !matches!(kind, 1 | 2 | 3 | 8 | 10 | 11) {
+    if !matches!(kind, 1 | 2 | 3 | 7 | 8 | 10 | 11) {
         return Err("Adopting this native node kind is unsupported");
     }
     if kind == 1 && tree.local_name(node) == Some("template") {
@@ -130,7 +130,11 @@ fn capture(tree: &mut Tree, node: Handle) -> Result<Snapshot, &'static str> {
             tree.doctype_system_id(node).unwrap_or_default().to_owned(),
         )
     });
-    let name = if kind == 10 {
+    let name = if kind == 7 {
+        tree.processing_instruction_target(node)
+            .unwrap_or_default()
+            .to_owned()
+    } else if kind == 10 {
         tree.doctype_name(node).unwrap_or_default().to_owned()
     } else {
         attr.as_ref()
@@ -176,6 +180,7 @@ fn materialize(
     let target = supplied.unwrap_or_else(|| match source.kind {
         2 => tree.create_attribute(source.namespace.as_deref(), &source.name, &source.value),
         3 => tree.create_text_node(&source.value),
+        7 => tree.create_processing_instruction(&source.name, &source.value),
         8 => tree.create_comment(&source.value),
         10 => {
             let (public_id, system_id) = source.doctype.as_ref().unwrap();
@@ -368,6 +373,22 @@ pub fn dispatch<'s>(
                     state
                 });
             rv.set(state.into());
+        }
+        "createPI" if kind == 9 => {
+            let target = args.get(2).to_rust_string_lossy(scope);
+            let data = args.get(3).to_rust_string_lossy(scope);
+            let node =
+                with_tree_mut(|tree| tree.create_processing_instruction(&target, &data)).unwrap();
+            rv.set(wrap(scope, node).into());
+        }
+        "piTarget" if kind == 7 => {
+            let target = with_tree(|tree| {
+                tree.processing_instruction_target(handle)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .unwrap();
+            rv.set(v8::String::new(scope, &target).unwrap().into());
         }
         "compatMode" if kind == 9 => {
             let mode = with_tree(|tree| tree.compat_mode()).unwrap_or("BackCompat");

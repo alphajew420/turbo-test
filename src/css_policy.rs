@@ -7,6 +7,7 @@ pub(super) struct PolicyState {
     callback: Option<v8::Global<v8::Function>>,
     sheets: HashMap<Handle, (String, bool)>,
     inline: HashMap<Handle, Inline>,
+    cascade: Option<(u64, StylePolicy)>,
 }
 #[derive(Clone)]
 struct Inline {
@@ -209,6 +210,21 @@ pub fn install(scope: &mut v8::PinScope, callback: v8::Local<v8::Function>) {
     }
 }
 pub(super) fn cascade_policy(scope: &mut v8::PinScope) -> StylePolicy {
+    let version = with_tree(|tree| tree.version).unwrap_or_default();
+    if let Some(policy) = DOM.with(|dom| {
+        let dom = dom.borrow();
+        let state = &dom.as_ref().unwrap().css_policy;
+        if state.callback.is_none() {
+            return Some(StylePolicy::default());
+        }
+        state
+            .cascade
+            .as_ref()
+            .filter(|(cached, _)| *cached == version)
+            .map(|(_, policy)| policy.clone())
+    }) {
+        return policy;
+    }
     let mut policy = StylePolicy::default();
     let nodes = with_tree(|tree| {
         tree.handles()
@@ -228,6 +244,9 @@ pub(super) fn cascade_policy(scope: &mut v8::PinScope) -> StylePolicy {
             policy.inline_overrides.insert(node, applied);
         }
     }
+    DOM.with(|dom| {
+        dom.borrow_mut().as_mut().unwrap().css_policy.cascade = Some((version, policy.clone()))
+    });
     policy
 }
 fn read_inline(

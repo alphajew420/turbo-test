@@ -23,6 +23,36 @@
     Object.defineProperty(proto, name, descriptor);
   };
   const method = (proto, name, delegate, arity) => Object.defineProperty(proto, name, { value: make(delegate, name, arity), writable: true, enumerable: true, configurable: true });
+  // XML Name uses code-point ranges, rather than HTML's permissive attribute names.
+  const xmlName = /^[:A-Z_a-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u02ff\u0370-\u037d\u037f-\u1fff\u200c-\u200d\u2070-\u218f\u2c00-\u2fef\u3001-\ud7ff\uf900-\ufdcf\ufdf0-\ufffd\u{10000}-\u{effff}][:A-Z_a-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u02ff\u0370-\u037d\u037f-\u1fff\u200c-\u200d\u2070-\u218f\u2c00-\u2fef\u3001-\ud7ff\uf900-\ufdcf\ufdf0-\ufffd\u{10000}-\u{effff}\-\.0-9\u00b7\u0300-\u036f\u203f-\u2040]*$/u;
+  method(g.Document.prototype, 'createProcessingInstruction', function (target, data) {
+    check(this, [9]);
+    if (arguments.length < 2) throw new TypeError('createProcessingInstruction requires 2 arguments');
+    target = string(target); data = string(data);
+    if (!xmlName.test(target) || data.includes('?>')) throw new g.DOMException('Invalid processing instruction', 'InvalidCharacterError');
+    return native('createPI', this, target, data);
+  }, 2);
+  method(g.Document.prototype, 'createCDATASection', function (data) {
+    check(this, [9]);
+    if (!arguments.length) throw new TypeError('createCDATASection requires 1 argument');
+    string(data);
+    throw new g.DOMException('CDATA sections are unsupported in HTML documents', 'NotSupportedError');
+  }, 1);
+  property(g.ProcessingInstruction.prototype, 'target', function () { check(this, [7]); return native('piTarget', this); });
+  const data = Object.getOwnPropertyDescriptor(g.CharacterData.prototype, 'data');
+  property(g.CharacterData.prototype, 'length', function () { check(this, [3, 4, 7, 8]); return data.get.call(this).length; });
+  const uint = value => (+value) >>> 0;
+  const character = receiver => { check(receiver, [3, 4, 7, 8]); return data.get.call(receiver); };
+  const range = (value, offset) => { if (offset > value.length) throw new g.DOMException('Character-data offset is out of range', 'IndexSizeError'); };
+  // V8 strings use the DOM's UTF-16 offsets; native Tree storage uses UTF-8 bytes.
+  method(g.CharacterData.prototype, 'substringData', function (offset, count) { const value = character(this); if (arguments.length < 2) throw new TypeError('substringData requires 2 arguments'); offset = uint(offset); count = uint(count); range(value, offset); return value.slice(offset, offset + count); }, 2);
+  method(g.CharacterData.prototype, 'replaceData', function (offset, count, value) { const current = character(this); if (arguments.length < 3) throw new TypeError('replaceData requires 3 arguments'); offset = uint(offset); count = uint(count); value = string(value); range(current, offset); data.set.call(this, current.slice(0, offset) + value + current.slice(offset + count)); }, 3);
+  method(g.CharacterData.prototype, 'insertData', function (offset, value) { const current = character(this); if (arguments.length < 2) throw new TypeError('insertData requires 2 arguments'); offset = uint(offset); value = string(value); range(current, offset); data.set.call(this, current.slice(0, offset) + value + current.slice(offset)); }, 2);
+  method(g.CharacterData.prototype, 'deleteData', function (offset, count) { const current = character(this); if (arguments.length < 2) throw new TypeError('deleteData requires 2 arguments'); offset = uint(offset); count = uint(count); range(current, offset); data.set.call(this, current.slice(0, offset) + current.slice(offset + count)); }, 2);
+  method(g.CharacterData.prototype, 'appendData', function (value) { const current = character(this); if (!arguments.length) throw new TypeError('appendData requires 1 argument'); data.set.call(this, current + string(value)); }, 1);
+  for (const name of ['xmlEncoding', 'rootElement']) property(g.Document.prototype, name, function () { check(this, [9]); return null; });
+  property(g.Document.prototype, 'xmlStandalone', function () { check(this, [9]); return !!state(this).xmlStandalone; }, function (value) { check(this, [9]); state(this).xmlStandalone = !!value; });
+  property(g.Document.prototype, 'xmlVersion', function () { check(this, [9]); return state(this).xmlVersion || null; }, function (value) { check(this, [9]); value = string(value); if (value !== '1.0') throw new g.DOMException('Only XML version 1.0 is supported', 'NotSupportedError'); state(this).xmlVersion = value; });
   function descendants(receiver, match) {
     const result = [];
     function visit(node) {

@@ -1,5 +1,6 @@
 (function(){
   var g = globalThis;
+  var prepareInlineHandler=g.__prepareInlineHandler,noteInlineHandler=g.__noteInlineHandler;delete g.__prepareInlineHandler;delete g.__noteInlineHandler;
   var collectionGet=g.__getCollectionRecord,collectionSet=g.__setCollectionRecord;
   var appliedInlineRead=g.__readAppliedInlineStyle,appliedInlineWrite=g.__writeAppliedInlineStyle,inlineSheetAllowed=g.__isInlineSheetAllowed;
   delete g.__readAppliedInlineStyle;delete g.__writeAppliedInlineStyle;delete g.__isInlineSheetAllowed;
@@ -9,6 +10,7 @@
   // not as `__*` string globals. Reachable from every realm via globalThis[Symbol.for('ts')].
   var __ns = g[Symbol.for('ts')] || (Object.defineProperty(g, Symbol.for('ts'), { value: {}, configurable: true, enumerable: false }), g[Symbol.for('ts')]);
   if (typeof g.__parseCssNative === 'function') { __ns.parseCssNative = g.__parseCssNative; delete g.__parseCssNative; }
+  var cssNativeParse=__ns.parseCssNative;
   if (typeof g.__domAccessor === 'function') { __ns.domAccessor = g.__domAccessor; delete g.__domAccessor; }
   if (typeof g.__nativeDOMFunction === 'function') { __ns.makeNativeFunction = g.__nativeDOMFunction; delete g.__nativeDOMFunction; }
   if (typeof g.__nativeNamedObject === 'function') { __ns.makeNamedObject = g.__nativeNamedObject; delete g.__nativeNamedObject; }
@@ -103,7 +105,7 @@
       var sheets = el && el.ownerDocument ? (el.ownerDocument.styleSheets || []) : [];
       for (var si=0; si<sheets.length; si++) {
         if(sheetRecord(sheets[si]).disabled)continue;
-        var rules = sheetRecord(sheets[si]).rules || [];
+        var rules = appliedSheetRules(sheets[si]);
         for (var ri=0; ri<rules.length; ri++) {
           var txt = String(cssRuleText(cssRuleRecord(rules[ri])) || ''); var br = txt.indexOf('{'); if (br < 0) continue;
           var sel = txt.slice(0, br).trim(); var body = txt.slice(br+1, txt.lastIndexOf('}'));
@@ -433,7 +435,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   iface('HTMLTextAreaElement', function(o){ return isNode(o) && o.nodeType === 1 && String(o.tagName).toUpperCase() === 'TEXTAREA'; });
   iface('HTMLSelectElement', function(o){ return isNode(o) && o.nodeType === 1 && String(o.tagName).toUpperCase() === 'SELECT'; });
   // Node subtypes keyed on nodeType (CharacterData is the Text/Comment/CDATA base).
-  iface('CharacterData', function(o){ return isNode(o) && (o.nodeType === 3 || o.nodeType === 4 || o.nodeType === 8); });
+  iface('CharacterData', function(o){ return isNode(o) && (o.nodeType === 3 || o.nodeType === 4 || o.nodeType === 7 || o.nodeType === 8); });
   iface('Attr', function(o){ return isNode(o) && o.nodeType === 2; });
   iface('CDATASection', function(o){ return isNode(o) && o.nodeType === 4; });
   iface('ProcessingInstruction', function(o){ return isNode(o) && o.nodeType === 7; });
@@ -583,12 +585,12 @@ if(typeof __ns.makeNativeFunction==='function'){
   function declarationRecord(style){var record=declarationRecords.get(style);if(!record)throw new TypeError('Illegal invocation');if(record.owner){var text=appliedInlineRead.call(record.owner);if(text!==record.source){record.source=text;parseDeclaration(record,text);}}if(record.refresh){var fresh=declarationRecords.get(record.refresh());if(fresh){record.values=fresh.values;record.names=fresh.names;}}return record;}
   function cssString(value){if(typeof value==='symbol')throw new TypeError('Cannot convert a Symbol to a string');return String(value);}
   function cssPropertyName(name){if(name==='cssFloat')return 'float';return String(name).replace(/[A-Z]/g,function(c){return '-'+c.toLowerCase();}).replace(/^webkit-/,'-webkit-');}
-  function knownProperty(name){if(!cssPropertyCache.has(name))cssPropertyCache.set(name,typeof __ns.parseCssNative==='function'&&__ns.parseCssNative(name,true));return cssPropertyCache.get(name);}
+  function knownProperty(name){if(!cssPropertyCache.has(name))cssPropertyCache.set(name,typeof cssNativeParse==='function'&&cssNativeParse(name,true));return cssPropertyCache.get(name);}
   function declarationText(record){return record.names.map(function(name){var value=record.values.get(name);return name+': '+value.text+(value.priority?' !important':'')+';';}).join(' ');}
   __ns.readDeclarationText=function(style){return declarationText(declarationRecord(style));};
   function colorText(name,text){if(!/(?:^color$|color$)/.test(name))return text;var match=/^#([\da-f]{3}|[\da-f]{6})$/i.exec(text);if(!match)return text;var hex=match[1];if(hex.length===3)hex=hex.replace(/./g,function(c){return c+c;});return 'rgb('+parseInt(hex.slice(0,2),16)+', '+parseInt(hex.slice(2,4),16)+', '+parseInt(hex.slice(4,6),16)+')';}
   function storeDeclaration(record,name,text,priority){if(!record.values.has(name))record.names.push(name);record.values.set(name,{text:colorText(name,text),priority:priority||''});}
-  function parseDeclaration(record,text){record.names=[];record.values=new Map();var parsed=typeof __ns.parseCssNative==='function'?__ns.parseCssNative('x { '+text+' }'):'x { '+text+' }';var body=parsed.slice(parsed.indexOf('{')+1,parsed.lastIndexOf('}'));cssParts(body,';').forEach(function(part){var index=part.indexOf(':');if(index<1)return;var name=part.slice(0,index).trim();if(!name.startsWith('--')&&!knownProperty(name))return;var value=part.slice(index+1).trim(),important=/\s*!important\s*$/i.test(value);if(important)value=value.replace(/\s*!important\s*$/i,'').trim();var previous=record.values.get(name);if(previous&&previous.priority&&!important)return;storeDeclaration(record,name,value,important?'important':'');});}
+  function parseDeclaration(record,text){record.names=[];record.values=new Map();var parsed=typeof cssNativeParse==='function'?cssNativeParse('x { '+text+' }'):'x { '+text+' }';var body=parsed.slice(parsed.indexOf('{')+1,parsed.lastIndexOf('}'));cssParts(body,';').forEach(function(part){var index=part.indexOf(':');if(index<1)return;var name=part.slice(0,index).trim();if(!name.startsWith('--')&&!knownProperty(name))return;var value=part.slice(index+1).trim(),important=/\s*!important\s*$/i.test(value);if(important)value=value.replace(/\s*!important\s*$/i,'').trim();var previous=record.values.get(name);if(previous&&previous.priority&&!important)return;storeDeclaration(record,name,value,important?'important':'');});}
   function writableDeclaration(record){if(record.readOnly)throw new g.DOMException('The declaration is read-only','NoModificationAllowedError');}
   function commitDeclaration(record){if(record.owner){record.source=declarationText(record);appliedInlineWrite.call(record.owner,record.source);}}
   function removeDeclaration(record,name){var previous=record.values.get(name);if(!previous)return '';record.values.delete(name);record.names.splice(record.names.indexOf(name),1);commitDeclaration(record);return previous.text;}
@@ -626,7 +628,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   Object.keys(cssRuleConstants).forEach(function(name){[g.CSSRule,g.CSSRule.prototype].forEach(function(owner){Object.defineProperty(owner,name,{value:cssRuleConstants[name],enumerable:true});});});
   function finishCssRule(rule){var record={};['type','parentRule','parentStyleSheet','cssText','selectorText','href','media','styleSheet'].forEach(function(name){if(Object.hasOwn(rule,name)){record[name]=rule[name];delete rule[name];}});if(record.type===1){record.style=rule.style;delete rule.style;}cssRuleStates.set(rule,record);Object.setPrototypeOf(rule,record.type===1?g.CSSStyleRule.prototype:record.type===3?g.CSSImportRule.prototype:g.CSSRule.prototype);return rule;}
   var parseCssRules = function(text, sheet, parent, validated){
-    text=String(text);if(!validated&&typeof __ns.parseCssNative==='function')text=__ns.parseCssNative(text);
+    text=String(text);if(!validated&&typeof cssNativeParse==='function')text=cssNativeParse(text);
     var out=cssList(), start=0, depth=0, quote='', escaped=false, comment=false, open=-1;
     for(var i=0;i<text.length;i++){
       var c=text[i],next=text[i+1];
@@ -657,7 +659,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   function cssInterface(name,parent,construct){var ctor=__ns.makeNativeFunction(construct||function(){throw new TypeError('Illegal constructor');},name,0,true);ctor.prototype=Object.create(parent?parent.prototype:Object.prototype);Object.defineProperty(ctor.prototype,'constructor',{value:ctor,writable:true,configurable:true});Object.defineProperty(ctor.prototype,Symbol.toStringTag,{value:name,configurable:true});Object.defineProperty(ctor,'prototype',{writable:false});if(parent)Object.setPrototypeOf(ctor,parent);Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});return ctor;}
   function cssMember(proto,name,get,set){var descriptor={enumerable:true,configurable:true,get:__ns.makeNativeFunction(get,'get '+name,0)};if(set)descriptor.set=__ns.makeNativeFunction(set,'set '+name,1);Object.defineProperty(proto,name,descriptor);}
   function cssMethod(proto,name,length,method){Object.defineProperty(proto,name,{value:__ns.makeNativeFunction(method,name,length),enumerable:true,writable:true,configurable:true});}
-  function mediaQueries(text){text=cssString(text).trim();if(!text)return [];return cssParts(text,',').map(function(query){query=query.trim();return __ns.parseCssNative(query,'media');});}
+  function mediaQueries(text){text=cssString(text).trim();if(!text)return [];return cssParts(text,',').map(function(query){query=query.trim();return cssNativeParse(query,'media');});}
   var mediaConstructor=cssInterface('MediaList');
   cssMember(mediaConstructor.prototype,'length',function(){return mediaRecord(this).items.length;});
   cssMember(mediaConstructor.prototype,'mediaText',function(){return mediaRecord(this).items.join(', ');},function(text){mediaRecord(this).items=mediaQueries(text);});
@@ -676,6 +678,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   cssMember(styleSheetConstructor.prototype,'media',function(){return sheetRecord(this).media;},function(value){mediaRecord(sheetRecord(this).media).items=mediaQueries(value);});
   cssMember(styleSheetConstructor.prototype,'disabled',function(){return sheetRecord(this).disabled;},function(value){sheetRecord(this).disabled=!!value;});
   cssMember(sheetConstructor.prototype,'ownerRule',function(){return sheetRecord(this).ownerRule;});
+  function appliedSheetRules(sheet,seen){seen=seen||new Set();if(seen.has(sheet))return [];seen.add(sheet);var out=[];for(var rule of cssItems(sheetRecord(sheet).rules)){var record=cssRuleRecord(rule);if(record.type===3){if(record.styleSheet&&(!record.media.mediaText||g.matchMedia(record.media.mediaText).matches))out.push.apply(out,appliedSheetRules(record.styleSheet,seen));}else out.push(rule);}return out;}
   function readableSheet(sheet){var record=sheetRecord(sheet);if(!record.originClean)throw new g.DOMException('Cannot access rules of a cross-origin stylesheet','SecurityError');return record;}
   var cssStyleSheetRulesGetter=__ns.makeNativeFunction(function(){return readableSheet(this).rules;},'get cssRules',0);
   Object.defineProperty(sheetConstructor.prototype,'cssRules',{get:cssStyleSheetRulesGetter,enumerable:true,configurable:true});
@@ -683,7 +686,7 @@ if(typeof __ns.makeNativeFunction==='function'){
 
   function detachCssRule(rule,parent){var record=cssRuleRecord(rule);record.parentStyleSheet=null;record.parentRule=parent||null;if(rule.cssRules)for(var child of cssItems(rule.cssRules))detachCssRule(child,rule);}
   function replaceSheetRules(sheet,record,text,keepImports){var parsed=cssItems(parseCssRules(cssString(text),sheet,null));if(!keepImports)parsed=parsed.filter(function(rule){return cssRuleRecord(rule).type!==3;});var list=cssItems(record.rules);for(var rule of list)detachCssRule(rule);list.splice.apply(list,[0,list.length].concat(parsed));}
-  function insertSheetRule(sheet,text,index){var record=readableSheet(sheet),list=cssItems(record.rules),i=index===undefined?0:Number(index)>>>0;if(record.replacing)throw new g.DOMException('The sheet is being replaced','NotAllowedError');if(i>list.length)throw new g.DOMException('The rule index is out of range','IndexSizeError');var source=__ns.parseCssNative(cssString(text),false,true),parsed=source===null?cssList():parseCssRules(source,sheet,null,true);if(parsed.length!==1)throw new g.DOMException('Expected one CSS rule','SyntaxError');var rule=cssItems(parsed)[0],type=cssRuleRecord(rule).type;if(type===3&&record.constructed)throw new g.DOMException('Cannot insert an import into a constructed sheet','SyntaxError');if(type===3&&list.slice(0,i).some(function(prior){return cssRuleRecord(prior).type!==3;}))throw new g.DOMException('Imports must precede style rules','HierarchyRequestError');if(type!==3&&list.slice(i).some(function(next){return cssRuleRecord(next).type===3;}))throw new g.DOMException('Style rules must follow imports','HierarchyRequestError');list.splice(i,0,rule);return i;}
+  function insertSheetRule(sheet,text,index){var record=readableSheet(sheet),list=cssItems(record.rules),i=index===undefined?0:Number(index)>>>0;if(record.replacing)throw new g.DOMException('The sheet is being replaced','NotAllowedError');if(i>list.length)throw new g.DOMException('The rule index is out of range','IndexSizeError');var source=cssNativeParse(cssString(text),false,true),parsed=source===null?cssList():parseCssRules(source,sheet,null,true);if(parsed.length!==1)throw new g.DOMException('Expected one CSS rule','SyntaxError');var rule=cssItems(parsed)[0],type=cssRuleRecord(rule).type;if(type===3&&record.constructed)throw new g.DOMException('Cannot insert an import into a constructed sheet','SyntaxError');if(type===3&&list.slice(0,i).some(function(prior){return cssRuleRecord(prior).type!==3;}))throw new g.DOMException('Imports must precede style rules','HierarchyRequestError');if(type!==3&&list.slice(i).some(function(next){return cssRuleRecord(next).type===3;}))throw new g.DOMException('Style rules must follow imports','HierarchyRequestError');list.splice(i,0,rule);return i;}
   function deleteSheetRule(sheet,index){var record=readableSheet(sheet),list=cssItems(record.rules),i=Number(index)>>>0;if(record.replacing)throw new g.DOMException('The sheet is being replaced','NotAllowedError');if(i>=list.length)throw new g.DOMException('The rule index is out of range','IndexSizeError');detachCssRule(list[i]);list.splice(i,1);}
   cssMethod(sheetConstructor.prototype,'insertRule',1,function(text,index){sheetRecord(this);if(!arguments.length)throw new TypeError('insertRule requires 1 argument');return insertSheetRule(this,text,index);});
   cssMethod(sheetConstructor.prototype,'deleteRule',1,function(index){sheetRecord(this);if(!arguments.length)throw new TypeError('deleteRule requires 1 argument');deleteSheetRule(this,index);});
@@ -695,7 +698,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   function detachSheet(sheet){if(sheet){var record=sheetRecord(sheet);if(record.ownerNode)record.title=record.ownerNode.getAttribute('title')||null;mediaRecord(record.media).owner=null;record.ownerNode=null;}}
   function attachLinkedStyleSheet(el,text,url,originClean){var sheet=linkedSheet(el,text,url),old=elementSheets.get(el);sheetRecord(sheet).originClean=originClean!==false;if(old)detachSheet(old.sheet);elementSheets.set(el,{sheet:sheet,text:null});return sheet;};
   function attachImportStyleSheet(rule,sheet,url,text,originClean){var parent=cssRuleRecord(rule,3),record=sheetRecord(sheet);record.constructed=false;record.ownerRule=rule;record.parentStyleSheet=parent.parentStyleSheet;record.href=url||null;record.originClean=originClean!==false;if(text!==undefined)replaceSheetRules(sheet,record,text,true);parent.styleSheet=sheet;};
-  var documentCSSRecord=collectionGet(d)||{kind:'Document'};documentCSSRecord.cssHost={readRules:function(sheet){return sheetRecord(sheet).rules;},attachLinked:attachLinkedStyleSheet,attachImport:attachImportStyleSheet};collectionSet(d,documentCSSRecord);
+  var documentCSSRecord=collectionGet(d)||{kind:'Document'};documentCSSRecord.cssHost={looksLikeCSS:function(text){return !String(text).trim()||!!cssNativeParse(String(text)).trim();},sheet:function(element){return currentSheetGetter.call(element);},readRules:function(sheet){return sheetRecord(sheet).rules;},attachLinked:attachLinkedStyleSheet,attachImport:attachImportStyleSheet};collectionSet(d,documentCSSRecord);
   // adoptedStyleSheets — must be a real, settable ARRAY (a non-iterable getter or
   // absent prop both break the read-modify-write spread above).
   if (!Array.isArray(d.adoptedStyleSheets)) {
@@ -1680,7 +1683,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   (function(){
     if (typeof __ns.domAccessor !== 'function') return;
     var oldBase=g.HTMLElement.prototype,oldDocument=g.Document.prototype;
-    var nodeConstructors=['Node','Element','HTMLElement','Document','HTMLDocument','CharacterData','Attr','DocumentType','NamedNodeMap','Text','Comment','CDATASection','DocumentFragment','ShadowRoot','SVGElement','SVGSVGElement'];
+    var nodeConstructors=['Node','Element','HTMLElement','Document','HTMLDocument','CharacterData','Attr','DocumentType','NamedNodeMap','Text','Comment','CDATASection','ProcessingInstruction','DocumentFragment','ShadowRoot','SVGElement','SVGSVGElement'];
     Object.getOwnPropertyNames(g).forEach(function(name){if(/^HTML.*Element$/.test(name)&&typeof g[name]==='function'&&nodeConstructors.indexOf(name)<0)nodeConstructors.push(name);});
     nodeConstructors.forEach(function(name){var previous=g[name];var ctor=__ns.makeNativeFunction(function(){throw new TypeError('Illegal constructor');},name,0,true);ctor.prototype=previous.prototype;Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});});
     var prototypes={};
@@ -1724,6 +1727,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     defineInterface('Text',characterProto);
     defineInterface('Comment',characterProto);
     defineInterface('CDATASection',characterProto);
+    defineInterface('ProcessingInstruction',characterProto);
     defineInterface('DocumentFragment',nodeProto);
     defineInterface('ShadowRoot',g.DocumentFragment.prototype);
     defineInterface('SVGElement',elementProto);
@@ -1933,9 +1937,9 @@ if(typeof __ns.makeNativeFunction==='function'){
     handlerNames.forEach(function(type){
       var name='on'+type;
       Object.defineProperty(htmlProto,name,{configurable:true,enumerable:true,
-        get:__ns.makeNativeFunction(function(){checkHandlerReceiver.call(this);var handlers=eventHandlers.get(this);return handlers&&handlers[name]&&handlers[name].value||null;},'get '+name,0),
+        get:__ns.makeNativeFunction(function(){checkHandlerReceiver.call(this);if(prepareInlineHandler)prepareInlineHandler.call(this,name);var handlers=eventHandlers.get(this);return handlers&&handlers[name]&&handlers[name].value||null;},'get '+name,0),
         set:__ns.makeNativeFunction(function(value){
-          checkHandlerReceiver.call(this);value=typeof value==='function'?value:null;
+          checkHandlerReceiver.call(this);if(noteInlineHandler)noteInlineHandler.call(this,name);value=typeof value==='function'?value:null;
           var handlers=eventHandlers.get(this);if(!handlers){handlers=Object.create(null);eventHandlers.set(this,handlers);}
           var entry=handlers[name];
           if(!entry){entry={value:null,callback:__ns.makeNativeFunction(function(event){var current=eventHandlers.get(this)[name].value;if(current&&current.call(this,event)===false)event.preventDefault();},name,1)};handlers[name]=entry;}
@@ -1964,7 +1968,7 @@ if(typeof __ns.makeNativeFunction==='function'){
       if(type===1){
         var tag=getLocalTag.call(obj),namespace=getNamespace.call(obj);
         name=namespace==='http://www.w3.org/2000/svg'?(String(tag).split(':').pop()==='svg'?'SVGSVGElement':'SVGElement'):namespace==='http://www.w3.org/1999/xhtml'?(tags[String(tag).toUpperCase()]||'HTMLElement'):'Element';
-      }else name=type===11&&isShadowRoot.call(obj)?'ShadowRoot':({2:'Attr',10:'DocumentType',3:'Text',4:'CDATASection',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
+      }else name=type===11&&isShadowRoot.call(obj)?'ShadowRoot':({2:'Attr',10:'DocumentType',3:'Text',4:'CDATASection',7:'ProcessingInstruction',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
       Object.setPrototypeOf(obj,prototypes[name]);
       projected.add(obj);
       nativeKeys.forEach(function(key){if(Object.prototype.hasOwnProperty.call(obj,key))delete obj[key];});
