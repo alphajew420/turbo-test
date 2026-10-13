@@ -10,7 +10,7 @@
   // not as `__*` string globals. Reachable from every realm via globalThis[Symbol.for('ts')].
   var __ns = g[Symbol.for('ts')] || (Object.defineProperty(g, Symbol.for('ts'), { value: {}, configurable: true, enumerable: false }), g[Symbol.for('ts')]);
   if (typeof g.__parseCssNative === 'function') { __ns.parseCssNative = g.__parseCssNative; delete g.__parseCssNative; }
-  var cssNativeParse=__ns.parseCssNative;
+  var cssNativeParse=__ns.parseCssNative,cssSetPrototype=Object.setPrototypeOf;
   if (typeof g.__domAccessor === 'function') { __ns.domAccessor = g.__domAccessor; delete g.__domAccessor; }
   if (typeof g.__nativeDOMFunction === 'function') { __ns.makeNativeFunction = g.__nativeDOMFunction; delete g.__nativeDOMFunction; }
   if (typeof g.__nativeNamedObject === 'function') { __ns.makeNamedObject = g.__nativeNamedObject; delete g.__nativeNamedObject; }
@@ -698,7 +698,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   function detachSheet(sheet){if(sheet){var record=sheetRecord(sheet);if(record.ownerNode)record.title=record.ownerNode.getAttribute('title')||null;mediaRecord(record.media).owner=null;record.ownerNode=null;}}
   function attachLinkedStyleSheet(el,text,url,originClean){var sheet=linkedSheet(el,text,url),old=elementSheets.get(el);sheetRecord(sheet).originClean=originClean!==false;if(old)detachSheet(old.sheet);elementSheets.set(el,{sheet:sheet,text:null});return sheet;};
   function attachImportStyleSheet(rule,sheet,url,text,originClean){var parent=cssRuleRecord(rule,3),record=sheetRecord(sheet);record.constructed=false;record.ownerRule=rule;record.parentStyleSheet=parent.parentStyleSheet;record.href=url||null;record.originClean=originClean!==false;if(text!==undefined)replaceSheetRules(sheet,record,text,true);parent.styleSheet=sheet;};
-  var documentCSSRecord=collectionGet(d)||{kind:'Document'};documentCSSRecord.cssHost={looksLikeCSS:function(text){return !String(text).trim()||!!cssNativeParse(String(text)).trim();},sheet:function(element){return currentSheetGetter.call(element);},readRules:function(sheet){return cssItems(sheetRecord(sheet).rules).slice();},readRule:function(rule){var record=cssRuleRecord(rule);return {type:record.type,href:record.href||null};},attachLinked:attachLinkedStyleSheet,attachImport:attachImportStyleSheet};collectionSet(d,documentCSSRecord);
+  var documentCSSRecord=collectionGet(d)||{kind:'Document'};documentCSSRecord.cssHost={looksLikeCSS:function(text){return !String(text).trim()||!!cssNativeParse(String(text)).trim();},sheet:function(element){return currentSheetGetter.call(element);},readRules:function(sheet){var source=cssItems(sheetRecord(sheet).rules),snapshot=[];cssSetPrototype(snapshot,null);for(var index=0;index<source.length;index++)snapshot[index]=source[index];return snapshot;},readRule:function(rule){var record=cssRuleRecord(rule);return {type:record.type,href:record.href||null};},attachLinked:attachLinkedStyleSheet,attachImport:attachImportStyleSheet};collectionSet(d,documentCSSRecord);
   // adoptedStyleSheets — must be a real, settable ARRAY (a non-iterable getter or
   // absent prop both break the read-modify-write spread above).
   if (!Array.isArray(d.adoptedStyleSheets)) {

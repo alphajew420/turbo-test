@@ -5880,7 +5880,10 @@ mod tests {
         const internal=hostCSSForTest.readRules(opaque).length===1;
         const parsed=document.createElement('style');parsed.textContent='@import "actual.css";';document.head.appendChild(parsed);const importRule=parsed.sheet.cssRules[0],liveRules=parsed.sheet.cssRules;
         Object.defineProperty(importRule,'href',{get(){throw new Error('Guest href override');}});Object.defineProperty(importRule,'type',{get(){throw new Error('Guest type override');}});Object.defineProperty(liveRules,Symbol.iterator,{value(){throw new Error('Guest iterator override');}});
-        const snapshot=hostCSSForTest.readRules(parsed.sheet),info=hostCSSForTest.readRule(snapshot[0]);const hostReads=Array.isArray(snapshot)&&info.type===3&&info.href==='actual.css';
+        const arrayIterator=Array.prototype[Symbol.iterator],arraySlice=Array.prototype.slice;
+        Array.prototype[Symbol.iterator]=function(){throw new Error('Guest Array iterator override');};Array.prototype.slice=function(){throw new Error('Guest Array slice override');};
+        const snapshot=hostCSSForTest.readRules(parsed.sheet),info=hostCSSForTest.readRule(snapshot[0]);
+        Array.prototype[Symbol.iterator]=arrayIterator;Array.prototype.slice=arraySlice;const hostReads=Array.isArray(snapshot)&&info.type===3&&info.href==='actual.css';
         snapshot.length=0;const snapshotIsolated=hostCSSForTest.readRules(parsed.sheet).length===1;
         let branded=false;try{Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype,'cssRules').get.call({});}catch(error){branded=error instanceof TypeError;}
         return JSON.stringify({crossRealm,security:errors.length===4&&errors.every(name=>name==='SecurityError'),internal,hostReads,snapshotIsolated,branded});})()"#).unwrap();
