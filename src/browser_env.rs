@@ -5877,15 +5877,27 @@ mod tests {
         const media=Object.getOwnPropertyDescriptor(StyleSheet.prototype,'media').get.call(foreignSheet);const crossRealm=value==='red' && Object.getOwnPropertyDescriptor(CSSRuleList.prototype,'length').get.call(rules)===1 && MediaList.prototype.item.call(media,0)==='screen';
         const link=document.createElement('link');document.head.appendChild(link);const opaque=hostCSSForTest.attachLinked(link,'.a {color:blue}','https://other.invalid/sheet.css',false);let errors=[];
         for(const fn of [()=>opaque.cssRules,()=>opaque.rules,()=>opaque.insertRule('.b {}'),()=>opaque.deleteRule(0)]){try{fn();}catch(error){errors.push(error.name);}}
-        const internal=hostCSSForTest.readRules(opaque).length===1;let branded=false;try{Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype,'cssRules').get.call({});}catch(error){branded=error instanceof TypeError;}
-        return JSON.stringify({crossRealm,security:errors.length===4&&errors.every(name=>name==='SecurityError'),internal,branded});})()"#).unwrap();
+        const internal=hostCSSForTest.readRules(opaque).length===1;
+        const parsed=document.createElement('style');parsed.textContent='@import "actual.css";';document.head.appendChild(parsed);const importRule=parsed.sheet.cssRules[0],liveRules=parsed.sheet.cssRules;
+        Object.defineProperty(importRule,'href',{get(){throw new Error('Guest href override');}});Object.defineProperty(importRule,'type',{get(){throw new Error('Guest type override');}});Object.defineProperty(liveRules,Symbol.iterator,{value(){throw new Error('Guest iterator override');}});
+        const snapshot=hostCSSForTest.readRules(parsed.sheet),info=hostCSSForTest.readRule(snapshot[0]);const hostReads=Array.isArray(snapshot)&&info.type===3&&info.href==='actual.css';
+        snapshot.length=0;const snapshotIsolated=hostCSSForTest.readRules(parsed.sheet).length===1;
+        let branded=false;try{Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype,'cssRules').get.call({});}catch(error){branded=error instanceof TypeError;}
+        return JSON.stringify({crossRealm,security:errors.length===4&&errors.every(name=>name==='SecurityError'),internal,hostReads,snapshotIsolated,branded});})()"#).unwrap();
         let result = v8::Script::compile(scope, source, None)
             .unwrap()
             .run(scope)
             .unwrap()
             .to_rust_string_lossy(scope);
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
-        for field in ["crossRealm", "security", "internal", "branded"] {
+        for field in [
+            "crossRealm",
+            "security",
+            "internal",
+            "hostReads",
+            "snapshotIsolated",
+            "branded",
+        ] {
             assert_eq!(result[field], true, "{field}: {result}");
         }
         reset();
