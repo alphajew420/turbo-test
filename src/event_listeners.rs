@@ -47,15 +47,15 @@ fn records(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv
         }
         let scope = std::pin::pin!(v8::TryCatch::new(scope));
         let scope = &mut scope.init();
-        let values = v8::Array::new(scope, 5);
-        for (index, getter) in getters.0.iter().enumerate() {
+        let mut values = Vec::with_capacity(5);
+        for getter in &getters.0 {
             let getter = v8::Local::new(scope, getter);
             let Some(value) = getter.call(scope, object.into(), &[]) else {
                 return;
             };
-            values.set_index(scope, index as u32, value);
+            values.push(value);
         }
-        rv.set(values.into());
+        rv.set(v8::Array::new_with_elements(scope, &values).into());
         return;
     }
     if operation == "event" {
@@ -228,7 +228,7 @@ pub fn capture_window_event_interfaces(scope: &mut v8::PinScope) {
         else {
             continue;
         };
-        let functions = v8::Array::new(scope, names.len() as i32);
+        let mut functions = Vec::with_capacity(names.len());
         let mut getters = Vec::new();
         for (index, name) in names.iter().enumerate() {
             let key = v8::String::new(scope, name).unwrap();
@@ -244,16 +244,19 @@ pub fn capture_window_event_interfaces(scope: &mut v8::PinScope) {
                     })
             };
             if let Some(value) = value.filter(|value| value.is_function()) {
-                functions.set_index(scope, index as u32, value);
+                functions.push(value);
                 if interface == "ErrorEvent" {
                     let function = v8::Local::<v8::Function>::try_from(value).unwrap();
                     getters.push(v8::Global::new(scope, function));
                 }
+            } else {
+                functions.push(v8::undefined(scope).into());
             }
         }
         if interface == "ErrorEvent" {
             context.set_slot(std::rc::Rc::new(ErrorGetters(getters)));
         }
+        let functions = v8::Array::new_with_elements(scope, &functions);
         set_prop(scope, values, interface, functions.into());
     }
     let receiver = v8::undefined(scope).into();
@@ -353,14 +356,15 @@ pub(super) fn attach(
     let Some(signal) = &listener.signal else {
         return;
     };
-    let data = v8::Array::new(scope, 4);
-    data.set_index(scope, 0, node.into());
-    let kind = v8::String::new(scope, kind).unwrap();
-    data.set_index(scope, 1, kind.into());
+    let Some(kind) = v8::String::new(scope, kind) else {
+        return;
+    };
     let callback = v8::Local::new(scope, &listener.callback);
-    data.set_index(scope, 2, callback.into());
     let capture = v8::Boolean::new(scope, listener.capture);
-    data.set_index(scope, 3, capture.into());
+    let data = v8::Array::new_with_elements(
+        scope,
+        &[node.into(), kind.into(), callback.into(), capture.into()],
+    );
     let Some(hook) = v8::Function::builder(abort_listener)
         .data(data.into())
         .build(scope)
@@ -460,6 +464,12 @@ mod tests {
     fn hostile_array_and_object_hooks_never_observe_private_listener_records() {
         fixture(
             r#"(()=>{const define=Object.defineProperty,descriptor=Object.getOwnPropertyDescriptor,iterator=Symbol.iterator,species=Symbol.species;let cases=0;function scenario(install,restore){let hooks=0,calls=0,aborts=0;const poison=()=>{hooks++;throw new Error('private record observed')};const target=new EventTarget(),controller=new AbortController(),event=new Event('owned'),listener=()=>calls++;try{install(poison);controller.signal.addEventListener('abort',()=>aborts++,{once:true});target.addEventListener('owned',listener,{signal:controller.signal});target.dispatchEvent(event);target.removeEventListener('owned',listener);target.addEventListener('owned',listener,{once:true});target.dispatchEvent(event);target.dispatchEvent(event);window.addEventListener('owned',listener,{signal:controller.signal});window.dispatchEvent(event);controller.abort('reason');window.dispatchEvent(event);if(hooks||calls!==3||aborts!==1||Reflect.ownKeys(target).length||Reflect.ownKeys(controller.signal).length)throw new Error('privacy '+hooks+' '+calls+' '+aborts);cases++;}finally{restore();window.removeEventListener('owned',listener)}}const zero=descriptor(Array.prototype,'0');scenario(poison=>define(Array.prototype,'0',{configurable:true,set:poison}),()=>{if(zero)define(Array.prototype,'0',zero);else delete Array.prototype[0]});const constructor=descriptor(Array.prototype,'constructor');scenario(poison=>{const replacement=Object.create(null);define(replacement,species,{get:poison});define(Array.prototype,'constructor',{...constructor,value:replacement})},()=>define(Array.prototype,'constructor',constructor));const iter=descriptor(Array.prototype,iterator);scenario(poison=>define(Array.prototype,iterator,{...iter,value:poison}),()=>define(Array.prototype,iterator,iter));const listeners=descriptor(Object.prototype,'listeners'),handlers=descriptor(Object.prototype,'handlers');scenario(poison=>{define(Object.prototype,'listeners',{configurable:true,set:poison});define(Object.prototype,'handlers',{configurable:true,set:poison})},()=>{if(listeners)define(Object.prototype,'listeners',listeners);else delete Object.prototype.listeners;if(handlers)define(Object.prototype,'handlers',handlers);else delete Object.prototype.handlers});return cases===4})()"#,
+        );
+    }
+    #[test]
+    fn native_node_signal_data_and_window_error_arguments_bypass_guest_index_setters() {
+        fixture(
+            r#"(()=>{const node=document.createElement('div');document.body.append(node);const controller=new AbortController();let hooks=0,calls=0,errors=0;const callback=()=>calls++;window.onerror=function(message,source,line,column,error){if(message==='authored'&&source==='fixture.js'&&line===4&&column===2&&error===failure)errors++;return true};const failure=new Error('authored');Object.defineProperty(Array.prototype,'0',{configurable:true,set(){hooks++}});let returned;try{node.addEventListener('private',callback,{signal:controller.signal});controller.abort('reason');node.addEventListener('private',callback);const event=new ErrorEvent('error',{message:'authored',filename:'fixture.js',lineno:4,colno:2,error:failure,cancelable:true});returned=window.dispatchEvent(event)}finally{delete Array.prototype[0];window.onerror=null}node.dispatchEvent(new Event('private'));if(hooks!==0||calls!==1||errors!==1||returned!==false)throw new Error('native array privacy '+hooks+' '+calls+' '+errors+' '+returned);return true})()"#,
         );
     }
     fn fixture(source: &str) {

@@ -25,6 +25,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   facade data/construct arguments with intrinsic array creation. Expose Rust-only platform
   brands and an idempotent opaque host target initializer in the actual creation realm.
   Hostile index/species/iterator/state-setter controls retain callbacks with zero hooks.
+  Native Node abort-hook data and Window ErrorEvent argument arrays also bypass inherited
+  numeric setters during subscription and onerror dispatch.
   Complete shadow retargeting/composed host crossing and listener exception reporting remain
   explicit followups.
 - Implement the HTML-standard legacy Document clear/captureEvents/releaseEvents no-effect
