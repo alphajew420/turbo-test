@@ -614,7 +614,8 @@ mod tests {
 
     #[test]
     fn namespace_resolvers_keep_native_node_identity_and_resolution() {
-        check_script(r#"(()=>{
+        check_script(
+            r#"(()=>{
           const root=inertDocument.documentElement,child=inertDocument.createElementNS('urn:custom','x:node');root.append(child);
           child.setAttributeNS('http://www.w3.org/2000/xmlns/','xmlns:y','urn:declared');
           for(const node of [root,child,inertDocument,child.firstChild||inertDocument.createTextNode('text')])if(document.createNSResolver(node)!==node)throw new Error('resolver identity');
@@ -622,7 +623,8 @@ mod tests {
           if(resolver.lookupNamespaceURI('x')!=='urn:custom'||resolver.lookupNamespaceURI('y')!=='urn:declared'||document.createNSResolver(root).lookupNamespaceURI(null)!=='http://www.w3.org/1999/xhtml')throw new Error('namespace resolution');
           let converted=false;for(const action of [()=>document.createNSResolver(),()=>document.createNSResolver(null),()=>document.createNSResolver({toString(){converted=true;return 'node'}}),()=>Document.prototype.createNSResolver.call({},child)]){let error;try{action()}catch(caught){error=caught.name}if(error!=='TypeError'||converted)throw new Error('resolver brand');}
           return true;
-        })()"#);
+        })()"#,
+        );
     }
 
     #[test]
@@ -675,6 +677,28 @@ mod tests {
           if(JSON.stringify(errors)!==JSON.stringify(['HierarchyRequestError','HierarchyRequestError','NotFoundError','HierarchyRequestError','HierarchyRequestError','HierarchyRequestError','TypeError','TypeError','TypeError']))throw new Error(JSON.stringify(errors));
           if(c.parentNode!==a||a.parentNode!==document.body||b.childNodes.length!==0)throw new Error('invalid move mutated tree');
           const host=document.createElement('div');document.body.append(host);const shadow=host.attachShadow({mode:'open'});try{shadow.moveBefore(host,null);throw new Error('missing')}catch(error){if(error.name!=='HierarchyRequestError')throw error;}
+          return true;
+        })()"#,
+        );
+    }
+
+    #[test]
+    fn obsolete_document_methods_preserve_contents_and_ignore_arguments_with_real_receiver_checks()
+    {
+        check_script(
+            r#"(()=>{
+          inertDocument.body.innerHTML='<p>retained</p>';
+          const before=inertDocument.body.innerHTML;
+          for(const name of ['clear','captureEvents','releaseEvents']){
+            const descriptor=Object.getOwnPropertyDescriptor(Document.prototype,name),fn=descriptor.value;
+            if(fn.name!==name||fn.length!==0||!descriptor.enumerable||!descriptor.configurable||!descriptor.writable||Object.hasOwn(fn,'prototype')||!Function.prototype.toString.call(fn).includes('[native code]'))throw new Error('descriptor '+name);
+            let hooks=0;const ignored={toString(){hooks++;throw new Error('ignored argument')}};
+            if(fn.call(inertDocument,ignored)!==undefined||hooks||inertDocument.body.innerHTML!==before)throw new Error('legacy effects '+name);
+            for(const receiver of [{},null,Object.create(Document.prototype)]){
+              let denied=false;try{fn.call(receiver)}catch(error){denied=error instanceof TypeError}
+              if(!denied)throw new Error('receiver '+name);
+            }
+          }
           return true;
         })()"#,
         );

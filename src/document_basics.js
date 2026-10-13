@@ -24,6 +24,13 @@
     Object.defineProperty(proto, name, descriptor);
   };
   const method = (proto, name, delegate, arity) => Object.defineProperty(proto, name, { value: make(delegate, name, arity), writable: true, enumerable: true, configurable: true });
+  const apply = Reflect.apply, ErrorType = TypeError;
+  // HTML's obsolete Document methods explicitly preserve the document and ignore arguments.
+  for (const name of ['clear', 'captureEvents', 'releaseEvents']) {
+    method(g.Document.prototype, name, function () {
+      if (apply(type, this, []) !== 9) throw new ErrorType('Illegal invocation');
+    }, 0);
+  }
   // XML Name uses code-point ranges, rather than HTML's permissive attribute names.
   const xmlName = /^[:A-Z_a-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u02ff\u0370-\u037d\u037f-\u1fff\u200c-\u200d\u2070-\u218f\u2c00-\u2fef\u3001-\ud7ff\uf900-\ufdcf\ufdf0-\ufffd\u{10000}-\u{effff}][:A-Z_a-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u02ff\u0370-\u037d\u037f-\u1fff\u200c-\u200d\u2070-\u218f\u2c00-\u2fef\u3001-\ud7ff\uf900-\ufdcf\ufdf0-\ufffd\u{10000}-\u{effff}\-\.0-9\u00b7\u0300-\u036f\u203f-\u2040]*$/u;
   method(g.Document.prototype, 'createProcessingInstruction', function (target, data) {
