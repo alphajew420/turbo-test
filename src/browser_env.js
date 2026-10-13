@@ -763,7 +763,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   var sheetTagName=__ns.domAccessor('tagName',false,'Element'),sheetConnected=__ns.domAccessor('isConnected',false,'Node');
   (function(){
     var mkSheet = function(el){return linkedSheet(el,el.textContent||'',null);};
-    var orig = d.createElement.bind(d);
+    var orig = d.createElement;
     // value/checked live ONLY on the interface .prototype (NOT own — React's value-tracker bails on
     // node.hasOwnProperty('value')). Each control's actual proto is set to that interface prototype
     // so getPrototypeOf(el) === el.constructor.prototype has the descriptor (React + testing-library).
@@ -818,7 +818,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     var selStartDesc = { configurable: true, get: function(){ return this.__selStart == null ? String(this.value||'').length : this.__selStart; }, set: function(v){ this.__selStart = v; } };
     var selEndDesc = { configurable: true, get: function(){ return this.__selEnd == null ? String(this.value||'').length : this.__selEnd; }, set: function(v){ this.__selEnd = v; } };
     var selDirDesc = { configurable: true, get: function(){ return this.__selDir || 'none'; }, set: function(v){ this.__selDir = v; } };
-    var baseProto = Object.getPrototypeOf(orig('span'));
+    var baseProto = Object.getPrototypeOf(orig.call(d,'span'));
     // Reflected IDL attributes on every element: setting el.src / el.href (script/img/link/a — a DOM
     // property) must show as the content attribute so attribute selectors like script[src*="maps"]
     // and getAttribute('src') see it. (Image() defines its own src with onload; that shadows this.)
@@ -1326,7 +1326,7 @@ if(typeof __ns.makeNativeFunction==='function'){
       cp.getBoundingClientRect = function(){ return { x:0, y:0, top:0, left:0, right:0, bottom:0, width:0, height:0, toJSON:function(){ return this; } }; };
     })();
     d.createElement = ({ createElement(tag){
-      var el = orig(tag); var t = String(tag).toLowerCase();
+      var el = orig.apply(this,arguments); var t = String(el.localName).toLowerCase();
       applyControlProto(el);
       // canvas: drop the own native getBoundingClientRect so it resolves to the (mockable)
       // HTMLCanvasElement.prototype version; getContext/toDataURL/toBlob are on the proto too.
@@ -1666,10 +1666,10 @@ if(typeof __ns.makeNativeFunction==='function'){
     // Wire createElement('iframe') to expose a real contentWindow/contentDocument, built
     // lazily on first access (or when src is set). Kept general so any consumer gets it;
     // the lazy build means an unused iframe costs nothing.
-    var origCreateEl = d.createElement.bind(d);
+    var origCreateEl = d.createElement;
     d.createElement = ({ createElement(tag){
-      var el = origCreateEl(tag);
-      if (el && String(tag).toLowerCase() === 'iframe' && !el.__iframeWired) {
+      var el = origCreateEl.apply(this,arguments);
+      if (el && String(el.localName).toLowerCase() === 'iframe' && !el.__iframeWired) {
         el.__iframeWired = true;
         try {
           Object.defineProperty(el, 'contentWindow', { configurable: true,

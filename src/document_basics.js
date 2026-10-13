@@ -14,7 +14,8 @@
   const hasAttribute = g.Element.prototype.hasAttribute;
   const setAttribute = g.Element.prototype.setAttribute;
   const html = 'http://www.w3.org/1999/xhtml';
-  const string = value => { if (typeof value === 'symbol') throw new TypeError('Cannot convert a Symbol to a string'); return String(value); };
+  const StringValue = String;
+  const string = value => { if (typeof value === 'symbol') throw new TypeError('Cannot convert a Symbol to a string'); return StringValue(value); };
   const check = (receiver, allowed) => { if (!allowed.includes(type.call(receiver))) throw new TypeError('Illegal invocation'); };
   const state = document => native('state', document);
   const property = (proto, name, read, write) => {
@@ -191,6 +192,20 @@
   for (const name of ['createElement','createAttribute','createAttributeNS']) {
     const descriptor=Object.getOwnPropertyDescriptor(g.document,name);
     if(descriptor){Object.defineProperty(g.Document.prototype,name,{...descriptor,enumerable:true});delete g.document[name];}
+  }
+  const createElement=g.Document.prototype.createElement;
+  method(g.Document.prototype,'createElement',function(name){
+    check(this,[9]);if(!arguments.length)throw new TypeError('createElement requires 1 argument');
+    name=string(name);if(!xmlName.test(name))throw new g.DOMException('Invalid element name','InvalidCharacterError');
+    return createElement.call(this,name,arguments[1]);
+  },1);
+  method(g.Document.prototype,'createNSResolver',function(node){
+    check(this,[9]);if(!arguments.length)throw new TypeError('createNSResolver requires 1 argument');
+    type.call(node);return node;
+  },1);
+  for (const [owner, localName] of [['HTMLScriptElement','script'],['HTMLLinkElement','link']]) {
+    const branded = receiver => { check(receiver,[1]); if(namespace.call(receiver)!==html||receiver.localName!==localName)throw new TypeError('Illegal invocation'); };
+    property(g[owner].prototype,'integrity',function(){branded(this);return getAttribute.call(this,'integrity')||'';},function(value){branded(this);setAttribute.call(this,'integrity',string(value));});
   }
   property(g.Document.prototype, 'documentElement', function () { check(this, [9]); return Array.from(rawChildren.call(this)).find(node => type.call(node) === 1) || null; });
   property(g.Document.prototype, 'head', function () { check(this, [9]); const root=this.documentElement; return root ? Array.from(rawChildren.call(root)).find(node => type.call(node) === 1 && node.localName === 'head' && namespace.call(node) === html) || null : null; });

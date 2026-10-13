@@ -8,6 +8,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ### Fixed
 - Capture popover task schedulers by the current native context document after host timer
   installation, preserving independent frame queues and the parent's private scheduler.
+- Preserve createElement's actual Document receiver through control/iframe enrichment, with
+  single tag coercion, native ownership for inert documents, and IDL/name validation. Reflect
+  script/link integrity properties into loader attributes with native receiver checks. Add
+  legacy createNSResolver as validated Node identity backed by native namespace resolution.
 
 ## [0.4.6] - 2026-10-13
 

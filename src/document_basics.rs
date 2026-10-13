@@ -568,6 +568,10 @@ mod tests {
             scope,
             "<!DOCTYPE html><html><head></head><body></body></html>",
         );
+        let inert = parse_html_document(scope, "<!doctype html><body>", false);
+        let global = scope.get_current_context().global(scope);
+        let key = v8::String::new(scope, "inertDocument").unwrap();
+        global.set(scope, key.into(), inert.into());
         let scope = std::pin::pin!(v8::TryCatch::new(scope));
         let scope = &mut scope.init();
         let source = v8::String::new(scope, source).unwrap();
@@ -580,6 +584,67 @@ mod tests {
         }
         assert!(result.unwrap().is_true());
         reset();
+    }
+
+    #[test]
+    fn inert_document_factories_preserve_receiver_ownership_and_control_state() {
+        check_script(
+            r#"(()=>{
+          for(const tag of ['div','input','textarea','select','script','link','canvas','iframe']){
+            const node=inertDocument.createElement(tag);node.id='inert-'+tag;
+            if(node.ownerDocument!==inertDocument)throw new Error('wrong factory owner '+tag);
+            inertDocument.body.append(node);
+            if(inertDocument.getElementById(node.id)!==node||document.getElementById(node.id)!==null)throw new Error('factory trees alias');
+          }
+          const input=inertDocument.getElementById('inert-input');input.value='live';input.setAttribute('value','default');
+          if(input.value!=='live'||input.defaultValue!=='default')throw new Error('control wrapper lost');
+          let calls=0;const coerced=inertDocument.createElement({toString(){calls++;return 'span';}});
+          if(calls!==1||coerced.ownerDocument!==inertDocument||coerced.localName!=='span')throw new Error('tag conversion repeated');
+          const borrowed=Document.prototype.createElement.call(inertDocument,'em');
+          if(borrowed.ownerDocument!==inertDocument||borrowed.parentNode!==null)throw new Error('borrowed factory owner');
+          let converted=false,error;try{Document.prototype.createElement.call({}, {toString(){converted=true;return 'div';}})}catch(caught){error=caught.name}
+          if(error!=='TypeError'||converted)throw new Error('brand validation after coercion');
+          for(const [run,wanted] of [[()=>inertDocument.createElement(),'TypeError'],[()=>inertDocument.createElement(Symbol('tag')),'TypeError'],[()=>inertDocument.createElement('bad tag'),'InvalidCharacterError']]){let error;try{run()}catch(caught){error=caught.name}if(error!==wanted)throw new Error('factory validation '+error);}
+          const nodes=[inertDocument.createTextNode('text'),inertDocument.createComment('comment'),inertDocument.createDocumentFragment(),inertDocument.createElementNS('urn:custom','x:node'),inertDocument.createAttribute('data-test'),inertDocument.createAttributeNS('urn:custom','x:value')];
+          if(nodes.some(node=>node.ownerDocument!==inertDocument))throw new Error('other factory ownership');
+          return true;
+        })()"#,
+        );
+    }
+
+    #[test]
+    fn namespace_resolvers_keep_native_node_identity_and_resolution() {
+        check_script(r#"(()=>{
+          const root=inertDocument.documentElement,child=inertDocument.createElementNS('urn:custom','x:node');root.append(child);
+          child.setAttributeNS('http://www.w3.org/2000/xmlns/','xmlns:y','urn:declared');
+          for(const node of [root,child,inertDocument,child.firstChild||inertDocument.createTextNode('text')])if(document.createNSResolver(node)!==node)throw new Error('resolver identity');
+          const resolver=inertDocument.createNSResolver(child);
+          if(resolver.lookupNamespaceURI('x')!=='urn:custom'||resolver.lookupNamespaceURI('y')!=='urn:declared'||document.createNSResolver(root).lookupNamespaceURI(null)!=='http://www.w3.org/1999/xhtml')throw new Error('namespace resolution');
+          let converted=false;for(const action of [()=>document.createNSResolver(),()=>document.createNSResolver(null),()=>document.createNSResolver({toString(){converted=true;return 'node'}}),()=>Document.prototype.createNSResolver.call({},child)]){let error;try{action()}catch(caught){error=caught.name}if(error!=='TypeError'||converted)throw new Error('resolver brand');}
+          return true;
+        })()"#);
+    }
+
+    #[test]
+    fn integrity_reflection_is_branded_and_updates_the_loader_attribute() {
+        check_script(
+            r#"(()=>{
+          for(const [tag,ctor] of [['script',HTMLScriptElement],['link',HTMLLinkElement]]){
+            const node=inertDocument.createElement(tag),property=Object.getOwnPropertyDescriptor(ctor.prototype,'integrity');
+            if(node.integrity!=='')throw new Error('initial integrity');
+            node.integrity='sha384-example';if(node.getAttribute('integrity')!=='sha384-example')throw new Error('loader attribute missing');
+            node.setAttribute('integrity','sha256-updated');if(node.integrity!=='sha256-updated')throw new Error('attribute reflection');
+            node.integrity=null;if(node.integrity!=='null')throw new Error('DOMString null conversion');
+            let calls=0;node.integrity={toString(){calls++;return 'sha512-once';}};if(calls!==1||node.getAttribute('integrity')!=='sha512-once')throw new Error('conversion repeated');
+            let converted=false;for(const wrong of [{},document.createElement('div'),document.createElementNS('urn:custom',tag)]){
+              let error;try{property.set.call(wrong,{toString(){converted=true;return 'bad';}})}catch(caught){error=caught.name}if(error!=='TypeError'||converted)throw new Error('wrong receiver accepted');
+            }
+            let error;try{node.integrity=Symbol('bad')}catch(caught){error=caught.name}if(error!=='TypeError'||node.integrity!=='sha512-once')throw new Error('symbol conversion mutated attribute');
+            node.removeAttribute('integrity');if(property.get.call(node)!=='')throw new Error('removed integrity');
+          }
+          return true;
+        })()"#,
+        );
     }
 
     #[test]
