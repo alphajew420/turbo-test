@@ -226,10 +226,10 @@
       eventMember(name,{get:getter});
     });
     eventMember('srcElement',{get:Object.getOwnPropertyDescriptor({get srcElement(){return eventRecord(this).target;}},'srcElement').get});
-    eventMember('returnValue',Object.getOwnPropertyDescriptor({get returnValue(){return !eventRecord(this).defaultPrevented;},set returnValue(value){var state=eventRecord(this);if(!value&&state.cancelable)state.defaultPrevented=true;}},'returnValue'));
+    eventMember('returnValue',Object.getOwnPropertyDescriptor({get returnValue(){return !eventRecord(this).defaultPrevented;},set returnValue(value){var state=eventRecord(this);if(!value&&state.cancelable&&!state.passive)state.defaultPrevented=true;}},'returnValue'));
     eventMember('cancelBubble',Object.getOwnPropertyDescriptor({get cancelBubble(){return eventRecord(this).stop;},set cancelBubble(value){var state=eventRecord(this);if(value)state.stop=true;}},'cancelBubble'));
     var methods={
-      preventDefault(){var state=eventRecord(this);if(state.cancelable)state.defaultPrevented=true;},
+      preventDefault(){var state=eventRecord(this);if(state.cancelable&&!state.passive)state.defaultPrevented=true;},
       stopPropagation(){eventRecord(this).stop=true;},
       stopImmediatePropagation(){var state=eventRecord(this);state.stop=true;state.stopImmediate=true;},
       composedPath(){return eventRecord(this).path.slice();},

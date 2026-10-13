@@ -6,6 +6,16 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Propagate native Node events through the actual owner Document and Window with capture,
+  target and bubble phases, stable composed paths, stop/removal/once/passive contracts and
+  immediate AbortSignal subscriptions. Nonbubbling resource errors reach Window capture;
+  element load events exclude Window. Preserve inert-document and shadow-root boundaries,
+  foreign event/signal brands, listener objects and native handler registration order.
+  Window onerror receives genuine ErrorEvent's five source/error arguments and return-true
+  cancellation; ordinary on* handlers receive one Event and cancel on return false.
+  Capture final trusted ErrorEvent/AbortSignal interfaces after host environment installation.
+  Complete shadow retargeting/composed host crossing, generic EventTarget option behavior and
+  listener exception reporting remain explicit followups.
 - Implement Document XPath evaluation/compiled expressions and XPathEvaluator over bounded
   public-rtdom snapshots using the unmodified MIT xpath 0.0.35 provider in a private V8
   context. Preserve real Node/Attr identity, namespace and foreign-case matching, corrected
