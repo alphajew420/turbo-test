@@ -15,6 +15,34 @@ pub fn native_event_record<'s>(
     event_record(scope, event)
 }
 
+/// Initialize an embedding-authorized opaque target without exposing a guest setter.
+/// The embedding must authenticate ownership before calling this host-only seam.
+pub fn register_native_event_target(
+    scope: &mut v8::PinScope,
+    target: v8::Local<v8::Object>,
+) -> bool {
+    let Some(context) = target.get_creation_context(scope) else {
+        return false;
+    };
+    let scope = &mut v8::ContextScope::new(scope, context);
+    let name = v8::String::new(scope, "turbo-dom.Abort.target").unwrap();
+    let key = v8::Private::for_api(scope, Some(name));
+    if target
+        .get_private(scope, key)
+        .is_some_and(|value| value.is_object())
+    {
+        return true;
+    }
+    let record = v8::Object::new(scope);
+    let listeners = v8::Array::new(scope, 0);
+    let handlers = v8::Object::new(scope);
+    let null = v8::null(scope);
+    handlers.set_prototype(scope, null.into());
+    set_prop(scope, record, "listeners", listeners.into());
+    set_prop(scope, record, "handlers", handlers.into());
+    target.set_private(scope, key, record.into()) == Some(true)
+}
+
 /// Native EventTarget/Abort platform objects, without public instance properties.
 pub fn is_native_event_target(scope: &mut v8::PinScope, event: v8::Local<v8::Object>) -> bool {
     private_platform_record(scope, event, "target")
@@ -38,6 +66,33 @@ fn private_platform_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opaque_host_targets_are_initialized_privately_without_guest_brand_hooks() {
+        super::super::tests::init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        super::super::install(scope);
+        let code=v8::String::new(scope,"globalThis.hostTarget=Object.create(EventTarget.prototype);globalThis.hooks=0;Object.defineProperty(EventTarget,Symbol.hasInstance,{value(){hooks++;throw new Error('guest instanceof')}});Object.defineProperty(Object.prototype,'opaqueBrandProbe',{get(){hooks++;throw new Error('guest getter')}});hostTarget;").unwrap();
+        let target = v8::Script::compile(scope, code, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .to_object(scope)
+            .unwrap();
+        assert!(!is_native_event_target(scope, target));
+        assert!(register_native_event_target(scope, target));
+        assert!(register_native_event_target(scope, target));
+        assert!(is_native_event_target(scope, target));
+        let code=v8::String::new(scope,"(()=>{let calls=0;hostTarget.addEventListener('probe',()=>calls++,{once:true});hostTarget.dispatchEvent(new Event('probe'));hostTarget.dispatchEvent(new Event('probe'));return calls===1&&hooks===0&&Reflect.ownKeys(hostTarget).length===0})()").unwrap();
+        assert!(v8::Script::compile(scope, code, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .is_true());
+        reset();
+    }
     #[test]
     fn event_identity_uses_private_records_across_realms_and_ignores_forged_prototypes() {
         super::super::tests::init_v8();

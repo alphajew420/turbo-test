@@ -26,6 +26,7 @@ mod event_handlers;
 mod event_listeners;
 pub use event_brands::{
     is_native_abort_object, is_native_event, is_native_event_target, native_event_record,
+    register_native_event_target,
 };
 pub use event_listeners::capture_window_event_interfaces;
 
