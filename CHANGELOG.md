@@ -6,6 +6,15 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Validate native DOM insertion before changing parent links: reject ordinary and shadow-host
+  ancestor cycles, enforce final Document element/doctype/text constraints, preserve nodes on
+  invalid insertions, and check native Node brands, references and removal membership. Route
+  variadic, adjacent and replacement operations through the shared validator; preserve valid
+  fragment transfer, repeated-node ordering, string insertion and self-reference behavior.
+  Native hierarchy errors retain genuine DOMException identity through private constructors.
+- Use published turbo-dom 0.5.2 as the canonical DOM dependency. Add native HTML innerText/outerText
+  mutation and supported rendered-text flow, nullable popover reflection and branded ToggleEvent
+  records; complete CSS layout and popover top-layer lifecycle remain unsupported.
 - Keep native `classList` and `part` token-list identity and live indexed state,
   validate mutations atomically, and reflect ARIA element references with private
   assignment state, attribute invalidation and shadow-tree scope checks. Add native

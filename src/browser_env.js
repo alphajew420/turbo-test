@@ -331,19 +331,22 @@ const __domExceptionCodes = {IndexSizeError:1, HierarchyRequestError:3, WrongDoc
   NamespaceError:14, InvalidAccessError:15, TypeMismatchError:17, SecurityError:18,
   NetworkError:19, AbortError:20, URLMismatchError:21, QuotaExceededError:22,
   TimeoutError:23, InvalidNodeTypeError:24, DataCloneError:25};
+const __domExceptionGet = __domExceptionState.get.bind(__domExceptionState);
+const __domExceptionSet = __domExceptionState.set.bind(__domExceptionState);
+const __exceptionStringConstructor = String;
 const __exceptionState = (exception) => {
-  const state = __domExceptionState.get(exception);
+  const state = __domExceptionGet(exception);
   if (!state) throw new TypeError("Illegal invocation");
   return state;
 };
 const __exceptionString = value => {
   if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-  return String(value);
+  return __exceptionStringConstructor(value);
 };
 g.DOMException = class DOMException {
   constructor(message = "", name = "Error") {
     const text = __exceptionString(message), kind = __exceptionString(name);
-    __domExceptionState.set(this, {message: text, name: kind});
+    __domExceptionSet(this, {message: text, name: kind});
   }
   get name() { return __exceptionState(this).name; }
   get message() { return __exceptionState(this).message; }
@@ -1845,7 +1848,7 @@ if(typeof __ns.makeNativeFunction==='function'){
       owners.forEach(function(owner){var proto=prototypes[owner];if(proto&&!Object.hasOwn(proto,name)&&descriptor)Object.defineProperty(proto,name,{value:descriptor.value,writable:true,configurable:true,enumerable:true});});
     });
     var methodOwners={
-      Node:['appendChild','removeChild','insertBefore','contains','hasChildNodes','cloneNode','getRootNode'],
+      Node:['appendChild','removeChild','insertBefore','replaceChild','contains','hasChildNodes','cloneNode','getRootNode'],
       Element:['setAttribute','getAttribute','getAttributeNode','getAttributeNodeNS','setAttributeNode','setAttributeNodeNS','removeAttributeNode','hasAttribute','removeAttribute','querySelector','querySelectorAll','matches','closest','append','prepend','remove','before','after','replaceWith','replaceChildren','insertAdjacentElement','insertAdjacentHTML','toggleAttribute','getAttributeNS','hasAttributeNS','setAttributeNS','removeAttributeNS','scrollIntoView','scrollTo','scrollBy','getBoundingClientRect','attachShadow'],
       HTMLElement:['focus','blur','click'],
       CharacterData:['insertData','deleteData','appendData','replaceData','substringData'],
@@ -1881,7 +1884,7 @@ if(typeof __ns.makeNativeFunction==='function'){
       });
     }
     projectCompatibility('Document',['getElementsByTagName','getElementsByClassName','getElementsByName'],htmlProto);
-    projectCompatibility('Node',['isEqualNode','isSameNode','lastChild','previousSibling','replaceChild'],htmlProto);
+    projectCompatibility('Node',['isEqualNode','isSameNode','lastChild','previousSibling'],htmlProto);
     projectCompatibility('Element',['classList','getClientRects','getElementsByTagName','getElementsByClassName','nextElementSibling','previousElementSibling','requestFullscreen'],htmlProto);
     ['isEqualNode','isSameNode','lastChild','previousSibling','replaceChild','classList','getClientRects','getElementsByTagName','getElementsByClassName','getElementsByName','nextElementSibling','previousElementSibling','requestFullscreen','lastElementChild','cookie','exitFullscreen'].forEach(function(name){delete htmlProto[name];});
     ['createTextNode','createComment','createDocumentFragment','createElementNS','getElementById'].forEach(function(name){
@@ -1955,7 +1958,6 @@ if(typeof __ns.makeNativeFunction==='function'){
       lookupNamespaceURI(prefix){prefix=prefix==null||prefix===''?null:attributeString(prefix);var element=this.nodeType===9?this.documentElement:this.nodeType===2?this.ownerElement:this.nodeType===1?this:this.parentElement;while(element){if(prefix==='xml')return 'http://www.w3.org/XML/1998/namespace';if(prefix==='xmlns')return 'http://www.w3.org/2000/xmlns/';if(element.namespaceURI&&element.prefix===prefix)return element.namespaceURI;var declaration=element.getAttributeNodeNS('http://www.w3.org/2000/xmlns/',prefix===null?'xmlns':prefix);if(declaration&&(prefix===null?declaration.prefix===null:declaration.prefix==='xmlns'))return declaration.value||null;element=element.parentElement;}return null;},
       lookupPrefix(namespace){namespace=namespace==null||namespace===''?null:attributeString(namespace);if(namespace===null)return null;var element=this.nodeType===9?this.documentElement:this.nodeType===2?this.ownerElement:this.nodeType===1?this:this.parentElement;while(element){if(element.prefix&&element.namespaceURI===namespace&&this.lookupNamespaceURI(element.prefix)===namespace)return element.prefix;var attributes=element.attributes;for(var index=0;index<attributes.length;index++){var attribute=attributes[index];if(attribute.namespaceURI==='http://www.w3.org/2000/xmlns/'&&attribute.prefix==='xmlns'&&attribute.value===namespace&&this.lookupNamespaceURI(attribute.localName)===namespace)return attribute.localName;}element=element.parentElement;}return null;},
       isDefaultNamespace(namespace){namespace=namespace==null||namespace===''?null:String(namespace);return this.lookupNamespaceURI(null)===namespace;},
-      replaceChild(node,old){getType.call(node);getType.call(old);if(old.parentNode!==this)throw new g.DOMException('The node is not a child.','NotFoundError');if(node!==old){this.insertBefore(node,old);this.removeChild(old);}return old;},
       normalize(){var nodes=this.childNodes;for(var index=0;index<nodes.length;){var node=nodes[index];if(node.nodeType!==3){node.normalize();index++;continue;}while(index+1<nodes.length&&nodes[index+1].nodeType===3){node.data+=nodes[index+1].data;this.removeChild(nodes[index+1]);nodes=this.childNodes;}if(!node.data){this.removeChild(node);nodes=this.childNodes;}else index++;}},
       compareDocumentPosition(other){getType.call(other);if(this===other)return 0;var root=this.getRootNode(),otherRoot=other.getRootNode();if(root!==otherRoot){var order=__ns.nodeComparisonOrder||(__ns.nodeComparisonOrder=new WeakMap());var next=__ns.nodeComparisonNext||1;[this,other].forEach(function(node){if(!order.has(node))order.set(node,next++);});__ns.nodeComparisonNext=next;return 33|(order.get(this)<order.get(other)?4:2);}if(this.contains(other))return 20;if(other.contains(this))return 10;var before=false,found=false;(function visit(node){if(found)return;if(node===this)before=true;if(node===other){found=true;return;}var children=node.childNodes;for(var i=0;i<children.length;i++)visit.call(this,children[i]);}).call(this,root);return before?4:2;}
     };

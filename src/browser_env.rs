@@ -42,6 +42,8 @@ pub fn set_interface_record<'s>(
 
 #[path = "document_basics.rs"]
 mod document_basics;
+#[path = "dom_mutations.rs"]
+mod dom_mutations;
 #[path = "element_relations.rs"]
 mod element_relations;
 #[path = "html_text.rs"]
@@ -129,6 +131,7 @@ const KNOWN: &[&str] = &[
     "appendChild",
     "removeChild",
     "insertBefore",
+    "replaceChild",
     "setAttribute",
     "getAttribute",
     "hasAttribute",
@@ -834,13 +837,30 @@ fn with_tree_mut<R>(f: impl FnOnce(&mut Tree) -> R) -> Option<R> {
 
 // ---- element methods -------------------------------------------------------------------------
 
+fn dom_exception_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+    let name = v8::String::new(scope, "turbo.native.DOMException").unwrap();
+    v8::Private::for_api(scope, Some(name))
+}
+
 fn throw_dom_error(scope: &mut v8::PinScope, name: &str, message: &str) {
     let text = v8::String::new(scope, message).unwrap();
+    let name_value = v8::String::new(scope, name).unwrap();
+    let global = scope.get_current_context().global(scope);
+    let key = dom_exception_key(scope);
+    if let Some(constructor) = global
+        .get_private(scope, key)
+        .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+    {
+        if let Some(error) = constructor.new_instance(scope, &[text.into(), name_value.into()]) {
+            scope.throw_exception(error.into());
+        }
+        return;
+    }
+    // Initialization failures can precede installation of the browser constructor.
     let error = v8::Exception::error(scope, text);
     let object = v8::Local::<v8::Object>::try_from(error).unwrap();
     let key = v8::String::new(scope, "name").unwrap();
-    let name = v8::String::new(scope, name).unwrap();
-    object.set(scope, key.into(), name.into());
+    object.set(scope, key.into(), name_value.into());
     scope.throw_exception(error);
 }
 
@@ -1001,19 +1021,12 @@ fn el_append_child(
     let Some(parent) = receiver_handle(scope, &args, &[]) else {
         return;
     };
-    let Some(child) = arg_handle(scope, &args, 0) else {
+    let Some(child) = dom_mutations::node_argument(scope, &args, 0) else {
         return;
     };
-    if with_tree(|t| t.node_type_id(child) == 2 || t.is_shadow_root(child)).unwrap_or(false) {
-        throw_dom_error(
-            scope,
-            "HierarchyRequestError",
-            "A shadow root cannot be inserted",
-        );
-        return;
+    if dom_mutations::insert(scope, parent, &[child], None, &[]) {
+        rv.set(args.get(0));
     }
-    with_tree_mut(|t| t.append_child(parent, child));
-    rv.set(args.get(0));
 }
 
 fn el_remove_child(
@@ -1025,11 +1038,40 @@ fn el_remove_child(
     let Some(parent) = receiver_handle(scope, &args, &[]) else {
         return;
     };
-    let Some(child) = arg_handle(scope, &args, 0) else {
+    let Some(child) = dom_mutations::node_argument(scope, &args, 0) else {
         return;
     };
-    with_tree_mut(|t| t.remove_child(parent, child));
+    if with_tree(|tree| tree.parent(child) != Some(parent)).unwrap_or(true) {
+        throw_dom_error(
+            scope,
+            "NotFoundError",
+            "The node is not a child of this parent",
+        );
+        return;
+    }
+    with_tree_mut(|tree| tree.remove_child(parent, child));
     rv.set(args.get(0));
+}
+
+fn el_replace_child(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(parent) = receiver_handle(scope, &args, &[]) else {
+        return;
+    };
+    let Some(child) = dom_mutations::node_argument(scope, &args, 0) else {
+        return;
+    };
+    let Some(old) = dom_mutations::node_argument(scope, &args, 1) else {
+        return;
+    };
+    let reference = with_tree(|tree| tree.next_sibling(old)).flatten();
+    if dom_mutations::insert(scope, parent, &[child], reference, &[old]) {
+        rv.set(args.get(1));
+    }
 }
 
 // ---- CharacterData methods (text/comment nodes) ----------------------------------------------
@@ -1177,9 +1219,9 @@ fn el_cascade_prop(
 
 // Resolve a run of variadic (Node | string) arguments [start..] into handles, turning bare strings
 // into text nodes (per the ChildNode/ParentNode spec). Used by before/after/replaceWith/etc.
-fn resolve_nodes(
-    scope: &mut v8::PinScope,
-    args: &v8::FunctionCallbackArguments,
+fn resolve_nodes<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: &v8::FunctionCallbackArguments<'s>,
     start: i32,
 ) -> Option<Vec<Handle>> {
     let mut out = Vec::new();
@@ -1203,35 +1245,15 @@ fn resolve_nodes(
                 continue;
             }
         }
-        let text = value.to_rust_string_lossy(scope);
+        let text = dom_string(scope, value)?;
         out.push(with_tree_mut(|tree| tree.create_text_node(&text))?);
     }
     Some(out)
 }
 
-fn el_before(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 7, 8, 10]) else {
-        return;
-    };
-    let Some(nodes) = resolve_nodes(scope, &args, 0) else {
-        return;
-    };
-    with_tree_mut(|t| t.before(h, &nodes));
-}
-fn el_after(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 7, 8, 10]) else {
-        return;
-    };
-    let Some(nodes) = resolve_nodes(scope, &args, 0) else {
-        return;
-    };
-    with_tree_mut(|t| t.after(h, &nodes));
-}
-fn el_replace_with(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_before<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -1241,11 +1263,39 @@ fn el_replace_with(
     let Some(nodes) = resolve_nodes(scope, &args, 0) else {
         return;
     };
-    with_tree_mut(|t| t.replace_with(h, &nodes));
+    dom_mutations::sibling_mutation(scope, h, &nodes, false, false);
 }
-fn el_replace_children(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_after<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 7, 8, 10]) else {
+        return;
+    };
+    let Some(nodes) = resolve_nodes(scope, &args, 0) else {
+        return;
+    };
+    dom_mutations::sibling_mutation(scope, h, &nodes, true, false);
+}
+fn el_replace_with<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(h) = receiver_handle(scope, &args, &[1, 3, 4, 7, 8, 10]) else {
+        return;
+    };
+    let Some(nodes) = resolve_nodes(scope, &args, 0) else {
+        return;
+    };
+    dom_mutations::sibling_mutation(scope, h, &nodes, true, true);
+}
+fn el_replace_children<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -1255,40 +1305,100 @@ fn el_replace_children(
     let Some(nodes) = resolve_nodes(scope, &args, 0) else {
         return;
     };
-    with_tree_mut(|t| t.replace_children(h, &nodes));
+    let removed = with_tree(|tree| tree.children(h)).unwrap_or_default();
+    dom_mutations::insert(scope, h, &nodes, None, &removed);
 }
-fn el_insert_adjacent_element(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_insert_adjacent_element<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1]) else {
+    let Some(target) = receiver_handle(scope, &args, &[1]) else {
         return;
     };
-    let pos = arg_str(scope, &args, 0);
-    let Some(el) = arg_handle(scope, &args, 1) else {
+    if !require_arguments(scope, &args, 2) {
+        return;
+    }
+    let Some(position) = dom_string(scope, args.get(0)) else {
         return;
     };
-    let ok = with_tree_mut(|t| t.insert_adjacent_element(h, &pos, el)).unwrap_or(false);
-    if ok {
-        rv.set(args.get(1));
-    } else {
+    let Some(element) = dom_mutations::node_argument(scope, &args, 1) else {
+        return;
+    };
+    if with_tree(|tree| tree.node_type_id(element) != 1).unwrap_or(true) {
+        let text = v8::String::new(scope, "The argument must be an Element").unwrap();
+        let error = v8::Exception::type_error(scope, text);
+        scope.throw_exception(error);
+        return;
+    }
+    let position = position.to_ascii_lowercase();
+    if !matches!(
+        position.as_str(),
+        "beforebegin" | "afterend" | "afterbegin" | "beforeend"
+    ) {
+        throw_dom_error(scope, "SyntaxError", "Invalid adjacent insertion position");
+        return;
+    }
+    let location = with_tree(|tree| match position.as_str() {
+        "beforebegin" => tree.parent(target).map(|parent| (parent, Some(target))),
+        "afterend" => tree
+            .parent(target)
+            .map(|parent| (parent, tree.next_sibling(target))),
+        "afterbegin" => Some((target, tree.first_child(target))),
+        _ => Some((target, None)),
+    })
+    .flatten();
+    let Some((parent, reference)) = location else {
         rv.set(v8::null(scope).into());
+        return;
+    };
+    if dom_mutations::insert(scope, parent, &[element], reference, &[]) {
+        rv.set(args.get(1));
     }
 }
-fn el_insert_adjacent_html(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_insert_adjacent_html<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1]) else {
+    let Some(target) = receiver_handle(scope, &args, &[1]) else {
         return;
     };
-    let pos = arg_str(scope, &args, 0);
-    let html = arg_str(scope, &args, 1);
-    with_tree_mut(|t| t.insert_adjacent_html(h, &pos, &html));
+    if !require_arguments(scope, &args, 2) {
+        return;
+    }
+    let Some(position) = dom_string(scope, args.get(0)) else {
+        return;
+    };
+    let Some(html) = dom_string(scope, args.get(1)) else {
+        return;
+    };
+    let position = position.to_ascii_lowercase();
+    if !matches!(
+        position.as_str(),
+        "beforebegin" | "afterend" | "afterbegin" | "beforeend"
+    ) {
+        throw_dom_error(scope, "SyntaxError", "Invalid adjacent insertion position");
+        return;
+    }
+    if matches!(position.as_str(), "beforebegin" | "afterend")
+        && with_tree(|tree| {
+            tree.parent(target)
+                .is_none_or(|parent| tree.node_type_id(parent) == 9)
+        })
+        .unwrap_or(true)
+    {
+        throw_dom_error(
+            scope,
+            "NoModificationAllowedError",
+            "No element parent is available for HTML insertion",
+        );
+        return;
+    }
+    // These nodes are freshly parsed, so they cannot contain an existing ancestor.
+    with_tree_mut(|tree| tree.insert_adjacent_html(target, &position, &html));
 }
 fn el_toggle_attribute<'s>(
     scope: &mut v8::PinScope<'s, '_>,
@@ -1520,20 +1630,23 @@ fn el_insert_before(
     let Some(parent) = receiver_handle(scope, &args, &[]) else {
         return;
     };
-    let Some(child) = arg_handle(scope, &args, 0) else {
-        return;
-    };
-    let reference = arg_handle(scope, &args, 1);
-    if with_tree(|t| t.node_type_id(child) == 2 || t.is_shadow_root(child)).unwrap_or(false) {
-        throw_dom_error(
-            scope,
-            "HierarchyRequestError",
-            "A shadow root cannot be inserted",
-        );
+    if !require_arguments(scope, &args, 2) {
         return;
     }
-    with_tree_mut(|t| t.insert_before(parent, child, reference));
-    rv.set(args.get(0));
+    let Some(child) = dom_mutations::node_argument(scope, &args, 0) else {
+        return;
+    };
+    let reference = if args.get(1).is_null_or_undefined() {
+        None
+    } else {
+        let Some(reference) = dom_mutations::node_argument(scope, &args, 1) else {
+            return;
+        };
+        Some(reference)
+    };
+    if dom_mutations::insert(scope, parent, &[child], reference, &[]) {
+        rv.set(args.get(0));
+    }
 }
 
 fn el_set_attribute<'s>(
@@ -2387,16 +2500,38 @@ fn el_get_bounding_client_rect(
 }
 
 /// `append(...nodes)` / `prepend(...)` / `remove()` (DOM ChildNode/ParentNode mixins).
-fn el_append(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn el_append<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue,
+) {
+    parent_insert(scope, &args, false);
+}
+fn el_prepend<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue,
+) {
+    parent_insert(scope, &args, true);
+}
+fn parent_insert<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: &v8::FunctionCallbackArguments<'s>,
+    prepend: bool,
+) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(parent) = receiver_handle(scope, &args, &[1, 9, 11]) else {
+    let Some(parent) = receiver_handle(scope, args, &[1, 9, 11]) else {
         return;
     };
-    for i in 0..args.length() {
-        if let Some(child) = arg_handle(scope, &args, i) {
-            with_tree_mut(|t| t.append_child(parent, child));
-        }
-    }
+    let Some(nodes) = resolve_nodes(scope, args, 0) else {
+        return;
+    };
+    let reference = if prepend {
+        with_tree(|tree| tree.first_child(parent)).flatten()
+    } else {
+        None
+    };
+    dom_mutations::insert(scope, parent, &nodes, reference, &[]);
 }
 fn el_remove_self(
     scope: &mut v8::PinScope,
@@ -4024,6 +4159,7 @@ fn method_arity(name: &str) -> i32 {
         | "containsNode"
         | "attachShadow" => 1,
         "insertBefore"
+        | "replaceChild"
         | "setAttribute"
         | "addEventListener"
         | "removeEventListener"
@@ -4121,6 +4257,7 @@ fn build_el_template<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
     tmpl_method(scope, tmpl, "appendChild", el_append_child);
     tmpl_method(scope, tmpl, "removeChild", el_remove_child);
     tmpl_method(scope, tmpl, "insertBefore", el_insert_before);
+    tmpl_method(scope, tmpl, "replaceChild", el_replace_child);
     tmpl_method(scope, tmpl, "setAttribute", el_set_attribute);
     tmpl_method(scope, tmpl, "getAttribute", el_get_attribute);
     tmpl_method(scope, tmpl, "getAttributeNode", el_get_attribute_node);
@@ -4149,7 +4286,7 @@ fn build_el_template<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
     tmpl_method(scope, tmpl, "getRootNode", el_get_root_node);
     tmpl_method(scope, tmpl, "containsNode", el_contains_node);
     tmpl_method(scope, tmpl, "append", el_append);
-    tmpl_method(scope, tmpl, "prepend", el_append);
+    tmpl_method(scope, tmpl, "prepend", el_prepend);
     tmpl_method(scope, tmpl, "remove", el_remove_self);
     tmpl_method(scope, tmpl, "focus", el_focus);
     tmpl_method(scope, tmpl, "blur", el_blur);
@@ -4898,6 +5035,11 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     css_policy::register(scope);
     event_handlers::register(scope);
     run_js(scope, BOOTSTRAP);
+    let exception_name = v8::String::new(scope, "DOMException").unwrap();
+    if let Some(constructor) = global.get(scope, exception_name.into()) {
+        let key = dom_exception_key(scope);
+        global.set_private(scope, key, constructor);
+    }
     let name = v8::String::new(scope, "ts").unwrap();
     let key = v8::Symbol::for_key(scope, name);
     if let Some(namespace) = global
