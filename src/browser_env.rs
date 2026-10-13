@@ -51,6 +51,9 @@ pub fn set_interface_record<'s>(
 
 #[path = "document_basics.rs"]
 mod document_basics;
+#[path = "document_xpath.rs"]
+mod document_xpath;
+pub use document_xpath::is_native_xpath_object;
 #[path = "dom_mutations.rs"]
 mod dom_mutations;
 #[path = "element_relations.rs"]
@@ -5215,6 +5218,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     bind_method(scope, global, "__htmlTextNative", html_text::dispatch);
     run_js(scope, include_str!("html_text.js"));
     html_popover::install(scope);
+    document_xpath::install(scope);
     let key = v8::String::new(scope, "__captureEventRecord").unwrap();
     if let Some(accessor) = global
         .get(scope, key.into())

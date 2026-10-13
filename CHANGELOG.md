@@ -6,6 +6,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Implement Document XPath evaluation/compiled expressions and XPathEvaluator over bounded
+  public-rtdom snapshots using the unmodified MIT xpath 0.0.35 provider in a private V8
+  context. Preserve real Node/Attr identity, namespace and foreign-case matching, corrected
+  following/preceding axes, scalar/snapshot/iterator contracts, mutation invalidation,
+  opaque native brands and owner-realm results for borrowed foreign interfaces. Enforce
+  explicit node/depth/string/expression/operation budgets; reject namespace-axis results
+  and fragment/shadow contexts. Keep the provider's automatic page installation disabled.
 - Capture popover task schedulers by the current native context document after host timer
   installation, preserving independent frame queues and the parent's private scheduler.
 - Preserve createElement's actual Document receiver through control/iframe enrichment, with
