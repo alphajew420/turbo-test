@@ -4807,10 +4807,7 @@ fn native_dom_function_dispatch(
         else {
             return;
         };
-        let arguments = v8::Array::new(scope, values.len() as i32);
-        for (index, value) in values.iter().enumerate() {
-            arguments.set_index(scope, index as u32, *value);
-        }
+        let arguments = v8::Array::new_with_elements(scope, &values);
         let receiver = v8::undefined(scope).into();
         if let Some(value) = construct.call(
             scope,
@@ -4890,13 +4887,17 @@ fn make_native_dom_function(
     } else {
         args.get(5).boolean_value(scope)
     };
-    let data = v8::Array::new(scope, 4);
-    data.set_index(scope, 0, delegate.into());
-    let flag = v8::Boolean::new(scope, require_new);
-    data.set_index(scope, 1, flag.into());
-    let flag = v8::Boolean::new(scope, class_construct);
-    data.set_index(scope, 2, flag.into());
-    data.set_index(scope, 3, args.data());
+    let require_new = v8::Boolean::new(scope, require_new);
+    let class_construct = v8::Boolean::new(scope, class_construct);
+    let data = v8::Array::new_with_elements(
+        scope,
+        &[
+            delegate.into(),
+            require_new.into(),
+            class_construct.into(),
+            args.data(),
+        ],
+    );
     let template = v8::FunctionTemplate::builder(native_dom_function_dispatch)
         .data(data.into())
         .constructor_behavior(if constructor {

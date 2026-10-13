@@ -20,7 +20,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   no public registry fields, native receiver/foreign brands, real onabort handlers and
   once/passive/signal/removal/stop semantics. Match measured registration order at direct
   Window/generic/Signal targets while preserving Node/Document capture and bubble phases.
-  Capture array primitives against guest poisoning and expose Rust-only platform brands.
+  Create private listener/dispatch records without prototypes, append/copy/remove private
+  arrays through own indices without guest setters/species/iterators, and allocate native
+  facade data/construct arguments with intrinsic array creation. Expose Rust-only platform
+  brands and an idempotent opaque host target initializer in the actual creation realm.
+  Hostile index/species/iterator/state-setter controls retain callbacks with zero hooks.
   Complete shadow retargeting/composed host crossing and listener exception reporting remain
   explicit followups.
 - Implement the HTML-standard legacy Document clear/captureEvents/releaseEvents no-effect

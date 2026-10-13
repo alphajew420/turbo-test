@@ -25,7 +25,12 @@ pub fn register_native_event_target(
         return false;
     };
     let scope = &mut v8::ContextScope::new(scope, context);
-    let name = v8::String::new(scope, "turbo-dom.Abort.target").unwrap();
+    if scope.is_execution_terminating() {
+        return false;
+    }
+    let Some(name) = v8::String::new(scope, "turbo-dom.Abort.target") else {
+        return false;
+    };
     let key = v8::Private::for_api(scope, Some(name));
     if target
         .get_private(scope, key)
@@ -37,9 +42,22 @@ pub fn register_native_event_target(
     let listeners = v8::Array::new(scope, 0);
     let handlers = v8::Object::new(scope);
     let null = v8::null(scope);
-    handlers.set_prototype(scope, null.into());
-    set_prop(scope, record, "listeners", listeners.into());
-    set_prop(scope, record, "handlers", handlers.into());
+    if record.set_prototype(scope, null.into()) != Some(true)
+        || handlers.set_prototype(scope, null.into()) != Some(true)
+    {
+        return false;
+    }
+    for (name, value) in [
+        ("listeners", listeners.into()),
+        ("handlers", handlers.into()),
+    ] {
+        let Some(name) = v8::String::new(scope, name) else {
+            return false;
+        };
+        if record.create_data_property(scope, name.into(), value) != Some(true) {
+            return false;
+        }
+    }
     target.set_private(scope, key, record.into()) == Some(true)
 }
 
@@ -74,7 +92,7 @@ mod tests {
         let context = v8::Context::new(scope, Default::default());
         let scope = &mut v8::ContextScope::new(scope, context);
         super::super::install(scope);
-        let code=v8::String::new(scope,"globalThis.hostTarget=Object.create(EventTarget.prototype);globalThis.hooks=0;Object.defineProperty(EventTarget,Symbol.hasInstance,{value(){hooks++;throw new Error('guest instanceof')}});Object.defineProperty(Object.prototype,'opaqueBrandProbe',{get(){hooks++;throw new Error('guest getter')}});hostTarget;").unwrap();
+        let code=v8::String::new(scope,"globalThis.hostTarget=Object.create(EventTarget.prototype);globalThis.hooks=0;Object.defineProperty(EventTarget,Symbol.hasInstance,{value(){hooks++;throw new Error('guest instanceof')}});Object.defineProperty(Object.prototype,'opaqueBrandProbe',{get(){hooks++;throw new Error('guest getter')}});for(const name of ['listeners','handlers'])Object.defineProperty(Object.prototype,name,{configurable:true,set(value){hooks++;globalThis.observedPrivate=value}});hostTarget;").unwrap();
         let target = v8::Script::compile(scope, code, None)
             .unwrap()
             .run(scope)
@@ -85,7 +103,7 @@ mod tests {
         assert!(register_native_event_target(scope, target));
         assert!(register_native_event_target(scope, target));
         assert!(is_native_event_target(scope, target));
-        let code=v8::String::new(scope,"(()=>{let calls=0;hostTarget.addEventListener('probe',()=>calls++,{once:true});hostTarget.dispatchEvent(new Event('probe'));hostTarget.dispatchEvent(new Event('probe'));return calls===1&&hooks===0&&Reflect.ownKeys(hostTarget).length===0})()").unwrap();
+        let code=v8::String::new(scope,"(()=>{let calls=0;hostTarget.addEventListener('probe',()=>calls++,{once:true});hostTarget.dispatchEvent(new Event('probe'));hostTarget.dispatchEvent(new Event('probe'));return calls===1&&hooks===0&&globalThis.observedPrivate===undefined&&Reflect.ownKeys(hostTarget).length===0})()").unwrap();
         assert!(v8::Script::compile(scope, code, None)
             .unwrap()
             .run(scope)

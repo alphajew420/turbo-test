@@ -204,10 +204,10 @@
       if (!arguments.length) throw new TypeError('Event requires a type');
       if (init != null && typeof init !== 'object' && typeof init !== 'function') throw new TypeError('EventInit must be a dictionary');
       init = init || {};
-      var state = {type:eventString(type), bubbles:!!init.bubbles, cancelable:!!init.cancelable,
+      var state = {__proto__:null,type:eventString(type), bubbles:!!init.bubbles, cancelable:!!init.cancelable,
         composed:!!init.composed, defaultPrevented:false, target:null, currentTarget:null,
         stop:false, stopImmediate:false, eventPhase:0, timeStamp:g.performance&&typeof g.performance.now==='function'?g.performance.now():Date.now()-eventClockOrigin,
-        trusted:false, dispatching:false, path:[]};
+        trusted:false, dispatching:false, passive:false, path:[]};
       setEventRecord(this,state);
       var get = ({get isTrusted(){return eventRecord(this).trusted;}});
       var trustedGetter=Object.getOwnPropertyDescriptor(get,'isTrusted').get;
