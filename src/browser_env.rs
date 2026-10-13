@@ -5390,6 +5390,74 @@ mod tests {
     }
 
     #[test]
+    fn page_intrinsic_overrides_and_listener_caller_cannot_capture_trusted_event_state() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install(scope);
+        let source = v8::String::new(
+            scope,
+            r#"(() => {
+            const get=WeakMap.prototype.get,set=WeakMap.prototype.set;
+            globalThis.capturedRecords=0;
+            WeakMap.prototype.set=function(key,value){
+                if(key instanceof Event){capturedRecords++;value.trusted=true;}
+                return set.call(this,key,value);
+            };
+            WeakMap.prototype.get=function(key){
+                const record=get.call(this,key);
+                if(key instanceof Event && record){capturedRecords++;record.trusted=true;}
+                return record;
+            };
+            globalThis.scriptEvent=new Event('host-private');
+            globalThis.scriptTrust=scriptEvent.isTrusted;
+            scriptEvent.type='changed';scriptEvent.target=window;scriptEvent.isTrusted=true;
+            globalThis.initialReadonly=scriptEvent.target===null&&scriptEvent.type==='host-private'&&!scriptEvent.isTrusted;
+            globalThis.hostSeen=[];globalThis.leakedDispatcher=null;
+            function listener(event){
+                try{leakedDispatcher=listener.caller;}catch(error){leakedDispatcher=null;}
+                hostSeen.push(event.isTrusted);
+            }
+            window.addEventListener('host-private',listener);
+            return new Event('host-private');
+        })()"#,
+        )
+        .unwrap();
+        let event = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let event = v8::Local::<v8::Object>::try_from(event).unwrap();
+        let target = context.global(scope);
+        dispatch_host_event(scope, event, target);
+        let source = v8::String::new(
+            scope,
+            r#"(() => {
+            const leak=leakedDispatcher;
+            if(typeof leak==='function')leak(scriptEvent,window);
+            window.dispatchEvent(scriptEvent);
+            return JSON.stringify({capturedRecords,scriptTrust,callerHidden:leak===null,
+                hostSeen,scriptTrusted:scriptEvent.isTrusted,type:scriptEvent.type,
+                initialReadonly,
+                trustedReadonly:!Object.getOwnPropertyDescriptor(scriptEvent,'isTrusted').set});
+        })()"#,
+        )
+        .unwrap();
+        let result = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        assert_eq!(
+            result,
+            r#"{"capturedRecords":0,"scriptTrust":false,"callerHidden":true,"hostSeen":[true,false],"scriptTrusted":false,"type":"host-private","initialReadonly":true,"trustedReadonly":true}"#
+        );
+        reset();
+    }
+
+    #[test]
     fn native_dom_methods_reject_construction_and_preserve_call_behavior() {
         init_v8();
         let isolate = &mut v8::Isolate::new(Default::default());

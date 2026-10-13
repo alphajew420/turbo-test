@@ -183,11 +183,13 @@
   // Event records stay private: readonly Web-IDL getters and native dispatch
   // share this state without exposing writable bookkeeping to page scripts.
   var eventRecords = new WeakMap();
+  var getEventRecord = WeakMap.prototype.get.bind(eventRecords);
+  var setEventRecord = WeakMap.prototype.set.bind(eventRecords);
   var eventClockOrigin = Date.now();
   var nativeEventRecord = g.__nativeEventRecord;
   delete g.__nativeEventRecord;
   function eventRecord(event) {
-    var record = eventRecords.get(event);
+    var record = getEventRecord(event);
     if (!record && nativeEventRecord) record = nativeEventRecord(event);
     if (!record) throw new TypeError('Illegal invocation');
     return record;
@@ -206,7 +208,7 @@
         composed:!!init.composed, defaultPrevented:false, target:null, currentTarget:null,
         stop:false, stopImmediate:false, eventPhase:0, timeStamp:g.performance&&typeof g.performance.now==='function'?g.performance.now():Date.now()-eventClockOrigin,
         trusted:false, dispatching:false, path:[]};
-      eventRecords.set(this,state);
+      setEventRecord(this,state);
       var get = ({get isTrusted(){return eventRecord(this).trusted;}});
       var trustedGetter=Object.getOwnPropertyDescriptor(get,'isTrusted').get;
       if(__ns.makeNativeFunction)trustedGetter=__ns.makeNativeFunction(trustedGetter,'get isTrusted',0);
@@ -319,7 +321,7 @@
     sub('CompositionEvent'); sub('DragEvent'); sub('TouchEvent'); sub('ClipboardEvent');
     g.document.createEvent = function(){ return new Event('', {}); };
     // The installer captures and deletes this function before guest execution.
-    g.__captureEventRecord=function(event){return eventRecords.get(event);};
+    g.__captureEventRecord=function(event){return getEventRecord(event);};
     __ns.ttEvent=true;
   }
 const __domExceptionState = new WeakMap();
@@ -517,6 +519,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   }
   // Captured privately by the host before page scripts can run.
   g.__captureHostEventDispatch=function(event,target){
+    'use strict';
     var state=beginEventDispatch(event,target,[target],true);
     // Chrome's Window lifecycle dispatch retains its legacy target/path/dispatch state.
     // Independently verified with raw CDP; ordinary dispatch still clears its state.
