@@ -38,6 +38,7 @@ pub fn capture_popover_scheduler(scope: &mut v8::PinScope) {
 
 pub fn clear_interface_records(isolate: &mut v8::Isolate) {
     collection_records::clear(isolate);
+    range_live::clear(isolate);
 }
 
 /// Access a host-created interface record in the isolate's private ephemeron registry.
@@ -1086,6 +1087,7 @@ fn el_remove_child(
         return;
     }
     html_popover::disconnect(scope, child, true);
+    range_live::removing(scope, child);
     with_tree_mut(|tree| tree.remove_child(parent, child));
     rv.set(args.get(0));
 }
@@ -1112,13 +1114,50 @@ fn el_replace_child(
 }
 
 // ---- CharacterData methods (text/comment nodes) ----------------------------------------------
-fn arg_usize(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments, i: i32) -> usize {
-    let n = args.get(i).integer_value(scope).unwrap_or(0);
-    if n < 0 {
-        0
+fn arg_usize(
+    scope: &mut v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    i: i32,
+) -> Option<usize> {
+    args.get(i).uint32_value(scope).map(|value| value as usize)
+}
+fn character_units(node: Handle) -> Vec<u16> {
+    with_tree(|tree| {
+        tree.node_value(node)
+            .unwrap_or_default()
+            .encode_utf16()
+            .collect()
+    })
+    .unwrap_or_default()
+}
+fn checked_character_offset(scope: &mut v8::PinScope, node: Handle, offset: usize) -> bool {
+    if offset > character_units(node).len() {
+        throw_dom_error(
+            scope,
+            "IndexSizeError",
+            "CharacterData offset exceeds its length",
+        );
+        false
     } else {
-        n as usize
+        true
     }
+}
+fn replace_character_data(
+    scope: &mut v8::PinScope,
+    node: Handle,
+    offset: usize,
+    count: usize,
+    data: &str,
+) {
+    let mut units = character_units(node);
+    if !checked_character_offset(scope, node, offset) {
+        return;
+    }
+    let count = count.min(units.len() - offset);
+    let inserted: Vec<_> = data.encode_utf16().collect();
+    range_live::replacing_data(scope, node, offset, count, inserted.len());
+    units.splice(offset..offset + count, inserted);
+    with_tree_mut(|tree| tree.set_text_content(node, &String::from_utf16_lossy(&units)));
 }
 fn el_insert_data(
     scope: &mut v8::PinScope,
@@ -1126,12 +1165,14 @@ fn el_insert_data(
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[3, 4, 8]) else {
+    let Some(h) = receiver_handle(scope, &args, &[3, 4, 7, 8]) else {
         return;
     };
-    let off = arg_usize(scope, &args, 0);
+    let Some(off) = arg_usize(scope, &args, 0) else {
+        return;
+    };
     let data = arg_str(scope, &args, 1);
-    with_tree_mut(|t| t.insert_data(h, off, &data));
+    replace_character_data(scope, h, off, 0, &data);
 }
 fn el_delete_data(
     scope: &mut v8::PinScope,
@@ -1139,12 +1180,16 @@ fn el_delete_data(
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[3, 4, 8]) else {
+    let Some(h) = receiver_handle(scope, &args, &[3, 4, 7, 8]) else {
         return;
     };
-    let off = arg_usize(scope, &args, 0);
-    let count = arg_usize(scope, &args, 1);
-    with_tree_mut(|t| t.delete_data(h, off, count));
+    let Some(off) = arg_usize(scope, &args, 0) else {
+        return;
+    };
+    let Some(count) = arg_usize(scope, &args, 1) else {
+        return;
+    };
+    replace_character_data(scope, h, off, count, "");
 }
 fn el_append_data(
     scope: &mut v8::PinScope,
@@ -1152,11 +1197,12 @@ fn el_append_data(
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[3, 4, 8]) else {
+    let Some(h) = receiver_handle(scope, &args, &[3, 4, 7, 8]) else {
         return;
     };
     let data = arg_str(scope, &args, 0);
-    with_tree_mut(|t| t.append_data(h, &data));
+    let offset = character_units(h).len();
+    replace_character_data(scope, h, offset, 0, &data);
 }
 fn el_replace_data(
     scope: &mut v8::PinScope,
@@ -1164,13 +1210,17 @@ fn el_replace_data(
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[3, 4, 8]) else {
+    let Some(h) = receiver_handle(scope, &args, &[3, 4, 7, 8]) else {
         return;
     };
-    let off = arg_usize(scope, &args, 0);
-    let count = arg_usize(scope, &args, 1);
+    let Some(off) = arg_usize(scope, &args, 0) else {
+        return;
+    };
+    let Some(count) = arg_usize(scope, &args, 1) else {
+        return;
+    };
     let data = arg_str(scope, &args, 2);
-    with_tree_mut(|t| t.replace_data(h, off, count, &data));
+    replace_character_data(scope, h, off, count, &data);
 }
 fn el_substring_data(
     scope: &mut v8::PinScope,
@@ -1178,13 +1228,25 @@ fn el_substring_data(
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[3, 4, 8]) else {
+    let Some(h) = receiver_handle(scope, &args, &[3, 4, 7, 8]) else {
         return;
     };
-    let off = arg_usize(scope, &args, 0);
-    let count = arg_usize(scope, &args, 1);
-    let s = with_tree(|t| t.substring_data(h, off, count)).unwrap_or_default();
-    rv.set(v8::String::new(scope, &s).unwrap().into());
+    let Some(off) = arg_usize(scope, &args, 0) else {
+        return;
+    };
+    let Some(count) = arg_usize(scope, &args, 1) else {
+        return;
+    };
+    if !checked_character_offset(scope, h, off) {
+        return;
+    }
+    let units = character_units(h);
+    let end = off.saturating_add(count).min(units.len());
+    rv.set(
+        v8::String::new_from_two_byte(scope, &units[off..end], v8::NewStringType::Normal)
+            .unwrap()
+            .into(),
+    );
 }
 fn el_split_text(
     scope: &mut v8::PinScope,
@@ -1195,10 +1257,25 @@ fn el_split_text(
     let Some(h) = receiver_handle(scope, &args, &[3, 4]) else {
         return;
     };
-    let off = arg_usize(scope, &args, 0);
-    let Some(new_h) = with_tree_mut(|t| t.split_text(h, off)) else {
+    let Some(off) = arg_usize(scope, &args, 0) else {
         return;
     };
+    if !checked_character_offset(scope, h, off) {
+        return;
+    }
+    let units = character_units(h);
+    let Some(new_h) = with_tree_mut(|tree| {
+        tree.set_text_content(h, &String::from_utf16_lossy(&units[..off]));
+        let next = tree.create_text_node(&String::from_utf16_lossy(&units[off..]));
+        if let Some(parent) = tree.parent(h) {
+            let reference = tree.next_sibling(h);
+            tree.insert_before(parent, next, reference);
+        }
+        next
+    }) else {
+        return;
+    };
+    range_live::splitting(scope, h, new_h, off);
     let node = wrap(scope, new_h);
     rv.set(node.into());
 }
@@ -2268,6 +2345,7 @@ fn set_inner_html(
     };
     let html = value.to_rust_string_lossy(scope);
     html_popover::disconnect(scope, h, false);
+    range_live::replacing_children(scope, h);
     with_tree_mut(|t| t.set_inner_html(h, &html));
     css_policy::invalidate_sheet(h);
 }
@@ -2633,6 +2711,7 @@ fn el_remove_self(
     let parent = with_tree(|t| NodeRef::new(t, h).parent().map(|p| p.handle())).flatten();
     if let Some(p) = parent {
         html_popover::disconnect(scope, h, true);
+        range_live::removing(scope, h);
         with_tree_mut(|t| t.remove_child(p, h));
     }
 }
@@ -3128,6 +3207,17 @@ fn set_text_content(
     let txt = value.to_rust_string_lossy(scope);
     html_popover::attribute_node_change(scope, h, Some(&txt));
     html_popover::disconnect(scope, h, false);
+    if with_tree(|tree| matches!(tree.node_type_id(h), 3 | 4 | 7 | 8)).unwrap_or(false) {
+        range_live::replacing_data(
+            scope,
+            h,
+            0,
+            character_units(h).len(),
+            txt.encode_utf16().count(),
+        );
+    } else {
+        range_live::replacing_children(scope, h);
+    }
     with_tree_mut(|t| t.set_text_content(h, &txt));
     element_relations::attribute_node_changed(scope, h);
     css_policy::invalidate_sheet(h);
@@ -4101,6 +4191,13 @@ fn set_node_data(
         value.to_rust_string_lossy(scope)
     };
     html_popover::attribute_node_change(scope, h, Some(&data));
+    range_live::replacing_data(
+        scope,
+        h,
+        0,
+        character_units(h).len(),
+        data.encode_utf16().count(),
+    );
     with_tree_mut(|t| t.set_text_content(h, &data));
     element_relations::attribute_node_changed(scope, h);
 }
@@ -4838,6 +4935,11 @@ fn native_range_record(
         if args.length() > 1 && args.get(1).is_object() {
             let record = args.get(1);
             receiver.set_private(scope, key, record);
+            if args.get(0).is_undefined() {
+                if let Ok(record) = v8::Local::<v8::Object>::try_from(record) {
+                    range_live::register(scope, record);
+                }
+            }
             rv.set(if args.get(0).is_undefined() {
                 receiver.into()
             } else {
@@ -5458,6 +5560,8 @@ const BOOTSTRAP: &str = include_str!("browser_env.js");
 
 #[path = "range_contents.rs"]
 mod range_contents;
+#[path = "range_live.rs"]
+mod range_live;
 
 /// Reset the per-thread DOM (call between test files when reusing an isolate).
 pub fn reset() {

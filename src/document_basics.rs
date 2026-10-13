@@ -241,6 +241,7 @@ pub fn adopt<'s>(
         html_popover::attribute_node_change(scope, source_handle, None);
         html_popover::disconnect(scope, source_handle, true);
         element_relations::attribute_node_changed(scope, source_handle);
+        range_live::removing(scope, source_handle);
         with_tree_mut(|tree| {
             if let Some(owner) = tree.attribute_owner(source_handle) {
                 let _ = tree.remove_attribute_node(owner, source_handle);
@@ -262,6 +263,7 @@ pub fn adopt<'s>(
         html_popover::attribute_node_change(scope, source_handle, None);
         html_popover::disconnect(scope, source_handle, true);
         element_relations::attribute_node_changed(scope, source_handle);
+        range_live::removing(scope, source_handle);
         with_tree_mut(|tree| {
             if let Some(owner) = tree.attribute_owner(source_handle) {
                 let _ = tree.remove_attribute_node(owner, source_handle);
@@ -346,13 +348,13 @@ pub fn adopt<'s>(
 }
 
 // Preserve native node identity and embedder state: no JS remove/insert hooks run.
-// Live Range/iterator adjustment and custom-element reactions remain host work.
+// Range adjustment follows pre-remove semantics without running JS node hooks.
 fn move_node(
-    tree: &mut Tree,
+    tree: &Tree,
     parent: Handle,
     node: Handle,
     child: Option<Handle>,
-) -> Result<(), &'static str> {
+) -> Result<Option<Handle>, &'static str> {
     fn root(tree: &Tree, mut node: Handle) -> Handle {
         while let Some(parent) = tree.parent(node).or_else(|| tree.shadow_host(node)) {
             node = parent;
@@ -389,7 +391,9 @@ fn move_node(
             let children = tree.children(parent);
             let reference =
                 child.and_then(|child| children.iter().position(|value| *value == child));
-            if children.iter().any(|child| tree.node_type_id(*child) == 1)
+            if children
+                .iter()
+                .any(|child| *child != node && tree.node_type_id(*child) == 1)
                 || reference.is_some_and(|reference| {
                     children[reference..]
                         .iter()
@@ -400,8 +404,7 @@ fn move_node(
             }
         }
     }
-    tree.insert_before(parent, node, child);
-    Ok(())
+    Ok(child)
 }
 
 pub fn dispatch<'s>(
@@ -419,6 +422,17 @@ pub fn dispatch<'s>(
     };
     let kind = with_tree(|tree| tree.node_type_id(handle)).unwrap_or(0);
     match operation.as_str() {
+        "normalize" => range_live::normalize(scope, handle),
+        "replaceCharacterData" if matches!(kind, 3 | 4 | 7 | 8) => {
+            let Some(offset) = args.get(2).uint32_value(scope) else {
+                return;
+            };
+            let Some(count) = args.get(3).uint32_value(scope) else {
+                return;
+            };
+            let data = args.get(4).to_rust_string_lossy(scope);
+            replace_character_data(scope, handle, offset as usize, count as usize, &data);
+        }
         "stamp" => {
             let stamp =
                 with_tree(|tree| format!("{}:{}", DOM_ID.with(|id| id.get()), tree.version))
@@ -466,8 +480,28 @@ pub fn dispatch<'s>(
                 Some(child_handle)
             };
             if error.is_none() {
-                error = with_tree_mut(|tree| move_node(tree, handle, moved_handle, reference))
-                    .and_then(Result::err);
+                match with_tree(|tree| move_node(tree, handle, moved_handle, reference)) {
+                    Some(Ok(reference)) => {
+                        range_live::removing(scope, moved_handle);
+                        let index = with_tree(|tree| {
+                            let children: Vec<_> = tree
+                                .children(handle)
+                                .into_iter()
+                                .filter(|&child| child != moved_handle)
+                                .collect();
+                            reference
+                                .and_then(|reference| {
+                                    children.iter().position(|&node| node == reference)
+                                })
+                                .unwrap_or(children.len())
+                        })
+                        .unwrap_or(0);
+                        range_live::inserting(scope, handle, index, 1);
+                        with_tree_mut(|tree| tree.insert_before(handle, moved_handle, reference));
+                    }
+                    Some(Err(name)) => error = Some(name),
+                    None => return,
+                }
             }
             if let Some(error) = error {
                 rv.set(v8::String::new(scope, error).unwrap().into());

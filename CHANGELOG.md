@@ -6,12 +6,18 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Update live Range boundaries through private weak native records for text edits,
+  UTF-16 offsets, splitting, insertion, removal, bulk child replacement, normalization,
+  state-preserving moves and node adoption. Match an independent Chrome155.0.8059.79
+  control without guest DOM getter/method hooks; cover foreign trees and actual V8
+  garbage collection. Geometry, remaining parsing/text mutation seams and lossless
+  unpaired UTF-16 storage remain open.
 - Implement native-tree Range clone/extract/delete/surround content operations,
   real selected text, boundary ordering/offset/root validation, node intersections
   and atomic insertion preflight. Preserve extracted node identity and nested
   partial shells, genuine receiver checks and private final exception constructors.
   Saved Chrome155 content/error controls and hostile DOM-method regressions cover
-  this subset; mutation-adjusted live boundaries and layout geometry remain open.
+  this subset; layout geometry and remaining mutation-seam coverage remain open.
 - Build DOM collection snapshots, private event paths and returned composed-path
   copies through intrinsic own elements, bypassing guest numeric setters,
   constructors/species and iterators while retaining live/native node identities.

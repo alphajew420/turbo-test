@@ -115,12 +115,28 @@ pub(super) fn insert(
             html_popover::disconnect(scope, node, true);
         }
     }
-    with_tree_mut(|tree| {
-        for node in plan.remove {
-            if !plan.nodes.contains(&node) {
-                tree.remove_child(parent, node);
-            }
+    for node in plan.remove {
+        if !plan.nodes.contains(&node) {
+            range_live::removing(scope, node);
+            with_tree_mut(|tree| tree.remove_child(parent, node));
         }
+    }
+    // Detach the complete sequence before insertion, as the DOM insertion algorithm does.
+    for &node in &plan.nodes {
+        if let Some(old_parent) = with_tree(|tree| tree.parent(node)).flatten() {
+            range_live::removing(scope, node);
+            with_tree_mut(|tree| tree.remove_child(old_parent, node));
+        }
+    }
+    let index = with_tree(|tree| {
+        let children = tree.children(parent);
+        plan.reference
+            .and_then(|reference| children.iter().position(|&node| node == reference))
+            .unwrap_or(children.len())
+    })
+    .unwrap_or(0);
+    range_live::inserting(scope, parent, index, plan.nodes.len());
+    with_tree_mut(|tree| {
         for node in plan.nodes {
             tree.insert_before(parent, node, plan.reference);
         }

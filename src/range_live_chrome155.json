@@ -1,0 +1,197 @@
+{
+  "collectedAt": "2026-10-13T23:31:19.187Z",
+  "browserVersion": "Chrome/155.0.8059.79",
+  "browserV8Version": "15.5.35.23",
+  "effectiveExtensionFlags": [
+    "--disable-extensions"
+  ],
+  "collectorSha256": "1a72ce7ee31ed610e51ba9218e99fc88e270af950c45bde4412ca6e5755cd813",
+  "result": {
+    "character": [
+      [
+        "#text",
+        4,
+        "#text",
+        7,
+        "cde"
+      ],
+      [
+        "#text",
+        3,
+        "#text",
+        5,
+        "de"
+      ],
+      [
+        "#text",
+        0,
+        "#text",
+        2,
+        "Xe"
+      ],
+      [
+        "#text",
+        0,
+        "#text",
+        0,
+        ""
+      ]
+    ],
+    "split": [
+      [
+        "#text",
+        1,
+        "#text",
+        2,
+        "bcde"
+      ],
+      true,
+      [
+        "P",
+        2,
+        "P",
+        2,
+        ""
+      ],
+      "abcdef"
+    ],
+    "removal": [
+      [
+        "P",
+        1,
+        "P",
+        2,
+        "d"
+      ],
+      "<i>a</i><u>d</u>"
+    ],
+    "insertion": [
+      [
+        [
+          "P",
+          1,
+          "P",
+          4,
+          "xbc"
+        ],
+        [
+          "P",
+          3,
+          "P",
+          6,
+          "xbc"
+        ],
+        [
+          "P",
+          2,
+          "P",
+          5,
+          "xbc"
+        ]
+      ],
+      "yz<em>x</em><b>b</b><u>c</u><i>a</i>"
+    ],
+    "replacement": [
+      [
+        "P",
+        0,
+        "P",
+        0,
+        ""
+      ],
+      [
+        "P",
+        0,
+        "P",
+        0,
+        ""
+      ],
+      "new"
+    ],
+    "markup": [
+      [
+        "P",
+        0,
+        "P",
+        0,
+        ""
+      ],
+      "<em>new</em>"
+    ],
+    "utf16": [
+      [
+        "#text",
+        1,
+        "#text",
+        4,
+        "Xbc"
+      ],
+      "aXbc",
+      "Xb"
+    ],
+    "normalize": [
+      [
+        "#text",
+        3,
+        "#text",
+        4,
+        "d"
+      ],
+      [
+        "#text",
+        2,
+        "P",
+        1,
+        "cd"
+      ],
+      true,
+      1,
+      "abcd"
+    ],
+    "move": [
+      [
+        "P",
+        0,
+        "P",
+        0,
+        ""
+      ],
+      [
+        "P",
+        0,
+        "P",
+        0,
+        ""
+      ],
+      "<i>def</i><u>ghi</u><b>abc</b>"
+    ],
+    "adoption": [
+      [
+        "P",
+        0,
+        "P",
+        1,
+        "def"
+      ],
+      "<i>def</i>"
+    ],
+    "errors": [
+      [
+        "IndexSizeError",
+        "IndexSizeError",
+        "IndexSizeError",
+        "IndexSizeError",
+        "IndexSizeError",
+        "TypeError"
+      ],
+      "abc",
+      [
+        "#text",
+        0,
+        "#text",
+        3,
+        "abc"
+      ]
+    ]
+  }
+}
