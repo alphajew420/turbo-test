@@ -6,6 +6,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Expose native-only generic EventTarget listener observation for embedding lifetime
+  management, using genuine private listener state and the creation realm. Cover
+  add/remove/once/abort cleanup, foreign targets and forged receivers without guest
+  getters or page-visible registration capabilities.
 - Update live Range boundaries through private weak native records for text edits,
   UTF-16 offsets, splitting, insertion, removal, bulk child replacement, normalization,
   state-preserving moves and node adoption. Match an independent Chrome155.0.8059.79

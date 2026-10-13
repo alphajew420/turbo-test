@@ -61,6 +61,89 @@ pub fn register_native_event_target(
     target.set_private(scope, key, record.into()) == Some(true)
 }
 
+/// A native observer of Generic EventTarget listener changes, never a guest capability.
+pub type NativeEventTargetObserver = fn(&mut v8::PinScope, v8::Local<v8::Object>);
+struct TargetObserver(NativeEventTargetObserver);
+
+/// Register in the current realm before guest code. The callback must not expose records.
+pub fn set_native_event_target_observer(
+    scope: &mut v8::PinScope,
+    observer: NativeEventTargetObserver,
+) {
+    scope
+        .get_current_context()
+        .set_slot(std::rc::Rc::new(TargetObserver(observer)));
+}
+
+pub(super) fn notify_native_event_target(scope: &mut v8::PinScope, target: v8::Local<v8::Object>) {
+    let Some(context) = target.get_creation_context(scope) else {
+        return;
+    };
+    let Some(observer) = context.get_slot::<TargetObserver>() else {
+        return;
+    };
+    let scope = &mut v8::ContextScope::new(scope, context);
+    (observer.0)(scope, target);
+}
+
+/// Check a genuine Generic EventTarget's private listener state without guest properties.
+/// Node/Document/Window registries use different dispatch paths and are not covered here.
+pub fn native_event_target_has_listener(
+    scope: &mut v8::PinScope,
+    target: v8::Local<v8::Object>,
+    event_type: &str,
+) -> bool {
+    let Some(name) = v8::String::new(scope, "turbo-dom.Abort.target") else {
+        return false;
+    };
+    let key = v8::Private::for_api(scope, Some(name));
+    let Some(record) = target
+        .get_private(scope, key)
+        .and_then(|value| v8::Local::<v8::Object>::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(name) = v8::String::new(scope, "listeners") else {
+        return false;
+    };
+    let Some(listeners) = record
+        .get(scope, name.into())
+        .and_then(|value| v8::Local::<v8::Array>::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(type_key) = v8::String::new(scope, "type") else {
+        return false;
+    };
+    let Some(removed_key) = v8::String::new(scope, "removed") else {
+        return false;
+    };
+    let Some(wanted) = v8::String::new(scope, event_type) else {
+        return false;
+    };
+    for index in 0..listeners.length() {
+        if scope.is_execution_terminating() {
+            return false;
+        }
+        let Some(listener) = listeners
+            .get_index(scope, index)
+            .and_then(|value| v8::Local::<v8::Object>::try_from(value).ok())
+        else {
+            continue;
+        };
+        let removed = listener
+            .get(scope, removed_key.into())
+            .is_some_and(|value| value.is_true());
+        let matches = listener
+            .get(scope, type_key.into())
+            .is_some_and(|value| value.strict_equals(wanted.into()));
+        if !removed && matches {
+            return true;
+        }
+    }
+    false
+}
+
 /// Native EventTarget/Abort platform objects, without public instance properties.
 pub fn is_native_event_target(scope: &mut v8::PinScope, event: v8::Local<v8::Object>) -> bool {
     private_platform_record(scope, event, "target")
@@ -84,6 +167,86 @@ fn private_platform_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    thread_local! {
+        static LISTENER_OBSERVATIONS: std::cell::RefCell<Vec<(bool, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    fn observe_listener_state(scope: &mut v8::PinScope, target: v8::Local<v8::Object>) {
+        if is_native_abort_object(scope, target) {
+            return;
+        }
+        let has_listener = native_event_target_has_listener(scope, target, "probe");
+        let owner_realm = target.get_creation_context(scope) == Some(scope.get_current_context());
+        LISTENER_OBSERVATIONS
+            .with(|observations| observations.borrow_mut().push((has_listener, owner_realm)));
+    }
+    #[test]
+    fn native_listener_observers_follow_once_remove_abort_and_creation_realms() {
+        super::super::tests::init_v8();
+        LISTENER_OBSERVATIONS.with(|observations| observations.borrow_mut().clear());
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let parent = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, parent);
+        super::super::install(scope);
+        set_native_event_target_observer(scope, observe_listener_state);
+        let source = v8::String::new(scope, r#"(()=>{
+          const target=new EventTarget(), callback=()=>{}, controller=new AbortController();
+          Object.defineProperty(target,'listeners',{get(){throw new Error('guest state read')}});
+          target.addEventListener('probe',callback,{once:true});
+          target.dispatchEvent(new Event('probe'));
+          target.addEventListener('probe',callback);target.addEventListener('probe',callback);
+          target.removeEventListener('probe',callback);
+          target.addEventListener('probe',callback,{signal:controller.signal});controller.abort('authored');
+          return [target,Object.create(EventTarget.prototype),new Event('probe')];
+        })()"#).unwrap();
+        let values = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let values = v8::Local::<v8::Array>::try_from(values).unwrap();
+        for index in 0..values.length() {
+            let object =
+                v8::Local::<v8::Object>::try_from(values.get_index(scope, index).unwrap()).unwrap();
+            assert!(!native_event_target_has_listener(scope, object, "probe"));
+        }
+        let child = v8::Context::new(scope, Default::default());
+        child.set_security_token(parent.get_security_token(scope));
+        let foreign = {
+            let scope = &mut v8::ContextScope::new(scope, child);
+            install_independent_html(scope, "<!doctype html><body>");
+            set_native_event_target_observer(scope, observe_listener_state);
+            let source = v8::String::new(scope, "new EventTarget()").unwrap();
+            v8::Script::compile(scope, source, None)
+                .unwrap()
+                .run(scope)
+                .unwrap()
+        };
+        let name = v8::String::new(scope, "foreignTarget").unwrap();
+        parent
+            .global(scope)
+            .create_data_property(scope, name.into(), foreign);
+        let source = v8::String::new(scope,"{ const callback=()=>{};foreignTarget.addEventListener('probe',callback);foreignTarget.removeEventListener('probe',callback); }").unwrap();
+        v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        LISTENER_OBSERVATIONS.with(|observations| {
+            assert_eq!(
+                *observations.borrow(),
+                vec![
+                    (true, true),
+                    (false, true),
+                    (true, true),
+                    (false, true),
+                    (true, true),
+                    (false, true),
+                    (true, true),
+                    (false, true)
+                ]
+            )
+        });
+        reset();
+    }
     #[test]
     fn opaque_host_targets_are_initialized_privately_without_guest_brand_hooks() {
         super::super::tests::init_v8();

@@ -12,6 +12,10 @@ fn records(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv
     let Ok(object) = v8::Local::<v8::Object>::try_from(args.get(1)) else {
         return;
     };
+    if operation == "targetChanged" {
+        event_brands::notify_native_event_target(scope, object);
+        return;
+    }
     if operation == "subscription" {
         let Ok(hook) = v8::Local::<v8::Function>::try_from(args.get(2)) else {
             return;
