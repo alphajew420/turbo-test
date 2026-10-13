@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "turbo-test"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "base64",
  "cssparser",

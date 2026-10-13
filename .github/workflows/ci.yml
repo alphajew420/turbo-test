@@ -73,6 +73,31 @@ jobs:
             echo "::error::bin/${{ matrix.binname }} crashed at startup (exit $rc)"; exit 1
           fi
 
+      - name: Rust tests
+        run: cargo test --locked --target ${{ matrix.target }}
+
+      - name: Install test dependencies
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
+        run: npm ci --ignore-scripts
+
+      - name: CLI compatibility and type tests
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
+        run: npm test
+
+      - name: Native DOM compatibility fixtures
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
+        run: >-
+          node cli.js --reporter json
+          fixtures/compat/constructable-stylesheet.test.ts
+          fixtures/compat/control-dirty-values.test.ts
+          fixtures/compat/css-style-declaration.test.ts
+          fixtures/compat/css-stylesheet-contracts.test.ts
+          fixtures/compat/cssom-grammar.test.ts
+          fixtures/compat/dom-prototype.test.ts
+          fixtures/compat/namespace-attributes.test.ts
+          fixtures/compat/reflected-attributes.test.ts
+          fixtures/compat/ui-event-contracts.test.ts
+
       - uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.target }}

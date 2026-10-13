@@ -5,6 +5,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-13
+
 ### Fixed
 - Validate native DOM insertion before changing parent links: reject ordinary and shadow-host
   ancestor cycles, enforce final Document element/doctype/text constraints, preserve nodes on
