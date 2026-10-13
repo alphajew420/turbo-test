@@ -5,6 +5,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-13
+
 ### Fixed
 - Back popover show/hide/toggle with native per-document state, auto/hint/manual ancestry
   and source relationships, cancellable trusted beforetoggle events and coalesced trusted
