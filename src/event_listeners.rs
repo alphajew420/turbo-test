@@ -195,6 +195,13 @@ pub fn capture_window_event_interfaces(scope: &mut v8::PinScope) {
     let function = v8::Local::new(scope, &updater.0);
     let global = context.global(scope);
     let values = v8::Object::new(scope);
+    let key = v8::String::new(scope, "DOMException").unwrap();
+    if let Some(exception) = global
+        .get(scope, key.into())
+        .filter(|value| value.is_function())
+    {
+        set_prop(scope, values, "DOMException", exception);
+    }
     for (interface, names) in [
         (
             "AbortSignal",
@@ -402,6 +409,38 @@ mod tests {
         fixture(
             r#"(()=>{let rows=[];window.addEventListener('direct',()=>{throw new Error('listener failure')},true);window.addEventListener('direct',e=>rows.push([e.currentTarget===window,e.eventPhase,e.isTrusted,e.composedPath().length]));const event=new Event('direct');window.dispatchEvent(event);if(JSON.stringify(rows)!=='[[true,2,false,1]]'||event.currentTarget!==null||event.eventPhase!==0)throw new Error('listener cleanup '+JSON.stringify(rows));window.addEventListener('immediate',e=>{rows.push('capture');e.stopImmediatePropagation()},true);window.addEventListener('immediate',()=>rows.push('bad'));window.dispatchEvent(new Event('immediate'));if(rows.at(-1)!=='capture')throw new Error('immediate');let brand;try{window.dispatchEvent(Object.create(Event.prototype))}catch(error){brand=error.name}if(brand!=='TypeError')throw new Error('forged event');const node=document.createElement('div'),NativeException=DOMException;let intercepted=0;DOMException=function(){intercepted++;return new Error('fake')};let native=false;try{node.dispatchEvent(new Event(''))}catch(error){native=error instanceof NativeException&&error.name==='InvalidStateError'}if(!native||intercepted)throw new Error('public constructor intercepted dispatch');return true})()"#,
         );
+    }
+    #[test]
+    fn refreshed_private_abort_errors_keep_their_realm_and_genuine_brand() {
+        super::super::tests::init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let parent = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, parent);
+        super::super::install(scope);
+        let replacement="globalThis.HostException=class DOMException extends globalThis.DOMException {};globalThis.DOMException=HostException";
+        run_js(scope, replacement);
+        capture_window_event_interfaces(scope);
+        let child = v8::Context::new(scope, Default::default());
+        child.set_security_token(parent.get_security_token(scope));
+        {
+            let scope = &mut v8::ContextScope::new(scope, child);
+            install_independent_html(scope, "<!doctype html><body>");
+            run_js(scope, replacement);
+            capture_window_event_interfaces(scope);
+            run_js(scope,"globalThis.controller=new AbortController();globalThis.DOMException=function(){throw new Error('guest exception constructor')};controller.abort();");
+        }
+        let scope = &mut v8::ContextScope::new(scope, parent);
+        let global = parent.global(scope);
+        let child_global = child.global(scope);
+        set_prop(scope, global, "child", child_global.into());
+        let code=v8::String::new(scope,"(()=>{DOMException=function(){throw new Error('guest exception constructor')};const controller=new AbortController(),node=document.createElement('div');let calls=0;node.addEventListener('abort-test',()=>calls++,{once:true,signal:child.controller.signal});node.dispatchEvent(new Event('abort-test'));controller.abort();const reason=controller.signal.reason,foreign=child.controller.signal.reason;return reason instanceof HostException&&reason.name==='AbortError'&&reason.code===20&&foreign instanceof child.HostException&&!(foreign instanceof HostException)&&calls===0&&reason.message==='signal is aborted without reason'})()").unwrap();
+        assert!(v8::Script::compile(scope, code, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .is_true());
+        reset();
     }
     fn fixture(source: &str) {
         super::super::tests::init_v8();

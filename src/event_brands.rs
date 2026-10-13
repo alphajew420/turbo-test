@@ -6,6 +6,15 @@ pub fn is_native_event(scope: &mut v8::PinScope, event: v8::Local<v8::Object>) -
     event_record(scope, event).is_some()
 }
 
+/// Host-only mutable dispatch state from the genuine Event's originating realm.
+/// Embeddings must keep this record inside private native/closure capabilities.
+pub fn native_event_record<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    event: v8::Local<v8::Object>,
+) -> Option<v8::Local<'s, v8::Object>> {
+    event_record(scope, event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,6 +69,15 @@ mod tests {
         assert!(is_native_event(scope, foreign));
         assert!(!is_native_event(scope, forged));
         assert!(!is_native_event(scope, plain));
+        let record = native_event_record(scope, genuine).unwrap();
+        assert_eq!(get_str_prop(scope, record, "type").as_deref(), Some("real"));
+        let record = native_event_record(scope, foreign).unwrap();
+        assert_eq!(
+            get_str_prop(scope, record, "type").as_deref(),
+            Some("foreign")
+        );
+        assert!(native_event_record(scope, forged).is_none());
+        assert!(native_event_record(scope, plain).is_none());
         reset();
     }
 }

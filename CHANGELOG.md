@@ -13,7 +13,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   foreign event/signal brands, listener objects and native handler registration order.
   Window onerror receives genuine ErrorEvent's five source/error arguments and return-true
   cancellation; ordinary on* handlers receive one Event and cancel on return false.
-  Capture final trusted ErrorEvent/AbortSignal interfaces after host environment installation.
+  Capture final trusted ErrorEvent/AbortSignal interfaces and the default AbortError
+  DOMException constructor after host environment installation. Expose dispatch records through
+  a Rust-only native_event_record seam with genuine/foreign/forged Event brand checks.
   Complete shadow retargeting/composed host crossing, generic EventTarget option behavior and
   listener exception reporting remain explicit followups.
 - Implement Document XPath evaluation/compiled expressions and XPathEvaluator over bounded
