@@ -751,6 +751,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   // getOwnPropertyDescriptor(element)) AND on the interface .prototype (React's value-tracker reads
   // node.constructor.prototype). No setPrototypeOf — avoids touching the native proto chain.
   var currentSheetGetter;
+  var sheetTagName=__ns.domAccessor('tagName',false,'Element'),sheetConnected=__ns.domAccessor('isConnected',false,'Node');
   (function(){
     var mkSheet = function(el){return linkedSheet(el,el.textContent||'',null);};
     var orig = d.createElement.bind(d);
@@ -1348,11 +1349,11 @@ if(typeof __ns.makeNativeFunction==='function'){
       // WITHOUT a descriptor guard (the NON_MASKING interceptor makes every lookup
       // report a descriptor, so a guard would wrongly skip). Caches per element.
       currentSheetGetter=function(){
-          var tag = this.tagName;
+          var tag = sheetTagName.call(this);
           if (!tag) return null;
           tag=String(tag).toUpperCase();if(tag!=='STYLE'&&tag!=='LINK')return null;
           var cached=elementSheets.get(this);
-          if (!this.isConnected) {if(cached)detachSheet(cached.sheet);elementSheets.delete(this);return null;}
+          if (!sheetConnected.call(this)) {if(cached)detachSheet(cached.sheet);elementSheets.delete(this);return null;}
           if(tag==='LINK')return cached?cached.sheet:null;
           if(!inlineSheetAllowed.call(this)){if(cached)detachSheet(cached.sheet);elementSheets.set(this,{sheet:null,text:null});return null;}
           var text=String(this.textContent||'');
