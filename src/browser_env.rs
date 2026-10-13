@@ -20,6 +20,9 @@ mod collection_records;
 mod css_policy;
 #[path = "event_handlers.rs"]
 mod event_handlers;
+#[path = "event_brands.rs"]
+mod event_brands;
+pub use event_brands::is_native_event;
 
 /// Capture the trusted host timer after the runtime has installed its scheduler.
 /// Guest code cannot install or replace this private lifecycle capability.
