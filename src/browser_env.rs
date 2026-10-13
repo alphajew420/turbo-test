@@ -44,6 +44,8 @@ pub fn set_interface_record<'s>(
 mod document_basics;
 #[path = "element_relations.rs"]
 mod element_relations;
+#[path = "html_text.rs"]
+mod html_text;
 
 pub fn node_nonce(scope: &mut v8::PinScope, node: v8::Local<v8::Object>) -> Option<String> {
     document_basics::nonce(scope, node)
@@ -4920,6 +4922,9 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     run_js(scope, include_str!("element_tokens.js"));
     run_js(scope, include_str!("element_relations.js"));
     run_js(scope, include_str!("document_basics.js"));
+    bind_method(scope, global, "__htmlTextNative", html_text::dispatch);
+    run_js(scope, include_str!("html_text.js"));
+    run_js(scope, include_str!("html_popover.js"));
     let key = v8::String::new(scope, "__captureEventRecord").unwrap();
     if let Some(accessor) = global
         .get(scope, key.into())
