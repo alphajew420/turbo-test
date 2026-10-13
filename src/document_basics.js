@@ -185,6 +185,7 @@
   Object.defineProperty(g, 'DocumentType', { value: documentType, writable: true, configurable: true });
   for (const [index, name] of ['name', 'publicId', 'systemId'].entries()) property(documentTypeProto, name, function () { return native('doctypeFields', this)[index]; });
   for (const name of ['before', 'after', 'remove', 'replaceWith']) Object.defineProperty(documentTypeProto, name, Object.getOwnPropertyDescriptor(g.Element.prototype, name));
+  if(Object.hasOwn(g.document,'title'))delete g.document.title;
   property(g.Document.prototype, 'designMode', function () { return state(this).designMode || 'off'; }, function (value) {
     const record = state(this); value = string(value).toLowerCase(); if (value === 'on' || value === 'off') record.designMode = value;
   });
