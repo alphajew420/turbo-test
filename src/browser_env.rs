@@ -16,6 +16,8 @@ mod cssom_parser;
 
 #[path = "collection_records.rs"]
 mod collection_records;
+#[path = "css_policy.rs"]
+mod css_policy;
 
 pub fn clear_interface_records(isolate: &mut v8::Isolate) {
     collection_records::clear(isolate);
@@ -293,6 +295,7 @@ struct DomState {
     nonces: HashMap<Handle, String>,
     basics_state: Option<v8::Global<v8::Object>>,
     control_clone: Option<v8::Global<v8::Function>>,
+    css_policy: css_policy::PolicyState,
 }
 
 thread_local! {
@@ -446,6 +449,7 @@ pub fn parse_html_document<'s>(
             shadow_modes: HashMap::new(),
             basics_state: None,
             control_clone,
+            css_policy: Default::default(),
         })
     });
     let context = scope.get_current_context();
@@ -1110,6 +1114,11 @@ fn el_split_text(
     rv.set(node.into());
 }
 
+/// Install immutable host CSS authorization for this native document before page scripts.
+pub fn install_css_policy(scope: &mut v8::PinScope, callback: v8::Local<v8::Function>) {
+    css_policy::install(scope, callback);
+}
+
 // rtdom's native style cascade (turbo-dom `cascade::computed_style`) resolves a property's computed
 // value WITH inheritance for the inherited set (color, visibility, font-*, …). getComputedStyle's
 // JS cascade only sees an element's OWN matched rules + inline style, so an inherited property like
@@ -1126,8 +1135,9 @@ fn el_cascade_prop(
         return;
     };
     let name = arg_str(scope, &args, 0);
+    let policy = css_policy::cascade_policy(scope);
     let val = with_tree(|t| {
-        turbo_dom_parser::rtdom::cascade::computed_style(t, h)
+        turbo_dom_parser::rtdom::cascade::computed_style_with_policy(t, h, &policy)
             .get(&name)
             .cloned()
     })
@@ -1426,6 +1436,9 @@ fn el_set_attribute_ns<'s, 'i>(
         return;
     }
     with_tree_mut(|tree| tree.set_attribute_ns(node, namespace.as_deref(), &qualified, &value));
+    if namespace.is_none() && qualified == "style" {
+        css_policy::attribute_changed(scope, node);
+    }
     if namespace.is_none() && qualified == "nonce" {
         update_node_nonce(scope, args.this(), &value);
     }
@@ -1449,6 +1462,9 @@ fn el_remove_attribute_ns<'s, 'i>(
         return;
     };
     with_tree_mut(|tree| tree.remove_attribute_ns(node, namespace.as_deref(), &local));
+    if namespace.is_none() && local == "style" {
+        css_policy::attribute_changed(scope, node);
+    }
     if namespace.is_none() && local == "nonce" {
         update_node_nonce(scope, args.this(), "");
     }
@@ -1500,6 +1516,9 @@ fn el_set_attribute(
         name.clone()
     };
     with_tree_mut(|t| t.set_attribute(h, &key, &value));
+    if key == "style" {
+        css_policy::attribute_changed(scope, h);
+    }
     if key == "nonce" {
         DOM.with(|dom| {
             dom.borrow_mut()
@@ -1674,6 +1693,14 @@ fn el_set_attribute_node<'s, 'i>(
     match with_tree_mut(|tree| tree.set_attribute_node(owner, node)) {
         Some(Ok(replaced)) => {
             sync_attr_nonce(scope, args.this(), node);
+            if with_tree(|tree| {
+                tree.attribute_data(node)
+                    .is_some_and(|data| data.namespace.is_none() && data.local_name == "style")
+            })
+            .unwrap_or(false)
+            {
+                css_policy::attribute_changed(scope, owner);
+            }
             rv.set(wrap_opt(scope, replaced));
         }
         Some(Err(error)) => throw_dom_error(scope, error, "The attribute could not be attached"),
@@ -1713,8 +1740,16 @@ fn el_remove_attribute_node<'s, 'i>(
             .is_some_and(|data| data.namespace.is_none() && data.local_name == "nonce")
     })
     .unwrap_or(false);
+    let style = with_tree(|tree| {
+        tree.attribute_data(node)
+            .is_some_and(|data| data.namespace.is_none() && data.local_name == "style")
+    })
+    .unwrap_or(false);
     match with_tree_mut(|tree| tree.remove_attribute_node(owner, node)) {
         Some(Ok(_)) => {
+            if style {
+                css_policy::attribute_changed(scope, owner);
+            }
             if nonce {
                 update_node_nonce(scope, args.this(), "");
             }
@@ -1866,6 +1901,15 @@ fn set_attr_value<'s, 'i, T>(
     if let Some(owner) = with_tree(|tree| tree.attribute_owner(node)).flatten() {
         let owner = wrap(scope, owner);
         sync_attr_nonce(scope, owner, node);
+        if with_tree(|tree| {
+            tree.attribute_data(node)
+                .is_some_and(|data| data.namespace.is_none() && data.local_name == "style")
+        })
+        .unwrap_or(false)
+        {
+            let handle = handle_of(scope, owner).unwrap();
+            css_policy::attribute_changed(scope, handle);
+        }
     }
 }
 
@@ -1914,6 +1958,9 @@ fn el_remove_attribute(
             t.remove_attribute(h, &lower);
         }
     });
+    if lower == "style" {
+        css_policy::attribute_changed(scope, h);
+    }
 }
 
 /// element-scoped querySelector via NodeRef.
@@ -1962,6 +2009,7 @@ fn set_inner_html(
     };
     let html = value.to_rust_string_lossy(scope);
     with_tree_mut(|t| t.set_inner_html(h, &html));
+    css_policy::invalidate_sheet(h);
 }
 fn get_outer_html(
     scope: &mut v8::PinScope,
@@ -2775,6 +2823,7 @@ fn set_text_content(
     };
     let txt = value.to_rust_string_lossy(scope);
     with_tree_mut(|t| t.set_text_content(h, &txt));
+    css_policy::invalidate_sheet(h);
 }
 
 fn get_id(
@@ -4706,6 +4755,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
             shadow_modes: HashMap::new(),
             basics_state: None,
             control_clone: None,
+            css_policy: Default::default(),
         });
     });
 
@@ -4744,6 +4794,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     global.set(scope, factory_key.into(), factory.into());
     bind_method(scope, global, "__nativeEventRecord", lookup_event_record);
     collection_records::register(scope);
+    css_policy::register(scope);
     run_js(scope, BOOTSTRAP);
     let name = v8::String::new(scope, "ts").unwrap();
     let key = v8::Symbol::for_key(scope, name);
@@ -5631,6 +5682,100 @@ mod tests {
         );
         assert_eq!(v["getAttr"], "x", "{out}");
         assert_eq!(v["inBody"], true, "{out}");
+        reset();
+    }
+
+    #[test]
+    fn private_css_policy_preserves_authored_dom_and_effective_cssom() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_with_html(scope,"<style id=early>#a{color:red}</style><meta http-equiv=Content-Security-Policy content=deny><style id=late>#a{color:blue}</style><div id=a style='color:blue'><span id=child></span></div>");
+        let source=v8::String::new(scope,"(function(doc,node,kind,text,metas){return kind==='style-src-elem' && Array.isArray(metas) && metas.length===0;})").unwrap();
+        let function = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        install_css_policy(
+            scope,
+            v8::Local::<v8::Function>::try_from(function).unwrap(),
+        );
+        let source=v8::String::new(scope,r#"(()=>{const a=document.getElementById('a'),early=document.getElementById('early'),late=document.getElementById('late');
+            const initial=early.sheet!==null && late.sheet===null && document.styleSheets.length===1 && a.getAttribute('style')==='color:blue' && a.style.color==='';
+            early.remove();a.style.color='green';const cssom=a.style.color==='green' && a.getAttribute('style')==='color: green;';
+            a.setAttribute('style','color:red');const blocked=a.style.color==='green' && a.getAttribute('style')==='color:red' && getComputedStyle(a).color==='green';
+            const inherited=globalThis[Symbol.for('ts')].cascadeProp.call(document.getElementById('child'),'color')==='rgb(0, 128, 0)';
+            a.removeAttribute('style');const removed=a.style.color==='';
+            const privateHooks=typeof globalThis.__writeAppliedInlineStyle==='undefined' && !globalThis[Symbol.for('ts')].attachLinkedStyleSheet && !globalThis[Symbol.for('ts')].readStyleSheetRules;
+            return JSON.stringify({initial,cssom,blocked,inherited,removed,privateHooks});})()"#).unwrap();
+        let result = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        for field in [
+            "initial",
+            "cssom",
+            "blocked",
+            "inherited",
+            "removed",
+            "privateHooks",
+        ] {
+            assert_eq!(result[field], true, "{field}: {result}");
+        }
+        reset();
+    }
+
+    #[test]
+    fn css_shared_records_allow_cross_realm_borrowed_getters_and_guard_opaque_sheets() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let first = v8::Context::new(scope, Default::default());
+        let retained = {
+            let scope = &mut v8::ContextScope::new(scope, first);
+            install(scope);
+            let source=v8::String::new(scope,"(()=>{const sheet=new CSSStyleSheet({media:'screen'});sheet.replaceSync('.a {color:red}');return sheet;})()").unwrap();
+            let sheet = v8::Script::compile(scope, source, None)
+                .unwrap()
+                .run(scope)
+                .unwrap();
+            v8::Global::new(scope, sheet)
+        };
+        let second = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, second);
+        install(scope);
+        let sheet = v8::Local::new(scope, retained);
+        let key = v8::String::new(scope, "foreignSheet").unwrap();
+        second.global(scope).set(scope, key.into(), sheet);
+        let document = wrap(scope, with_tree(Tree::root).unwrap());
+        let record = collection_records::get(scope, document)
+            .unwrap()
+            .to_object(scope)
+            .unwrap();
+        let key = v8::String::new(scope, "cssHost").unwrap();
+        let host = record.get(scope, key.into()).unwrap();
+        let key = v8::String::new(scope, "hostCSSForTest").unwrap();
+        second.global(scope).set(scope, key.into(), host);
+        let source=v8::String::new(scope,r#"(()=>{const rules=Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype,'cssRules').get.call(foreignSheet);const rule=rules[0];
+        const style=Object.getOwnPropertyDescriptor(CSSStyleRule.prototype,'style').get.call(rule);const value=CSSStyleDeclaration.prototype.getPropertyValue.call(style,'color');
+        const media=Object.getOwnPropertyDescriptor(StyleSheet.prototype,'media').get.call(foreignSheet);const crossRealm=value==='red' && Object.getOwnPropertyDescriptor(CSSRuleList.prototype,'length').get.call(rules)===1 && MediaList.prototype.item.call(media,0)==='screen';
+        const link=document.createElement('link');document.head.appendChild(link);const opaque=hostCSSForTest.attachLinked(link,'.a {color:blue}','https://other.invalid/sheet.css',false);let errors=[];
+        for(const fn of [()=>opaque.cssRules,()=>opaque.rules,()=>opaque.insertRule('.b {}'),()=>opaque.deleteRule(0)]){try{fn();}catch(error){errors.push(error.name);}}
+        const internal=hostCSSForTest.readRules(opaque).length===1;let branded=false;try{Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype,'cssRules').get.call({});}catch(error){branded=error instanceof TypeError;}
+        return JSON.stringify({crossRealm,security:errors.length===4&&errors.every(name=>name==='SecurityError'),internal,branded});})()"#).unwrap();
+        let result = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        for field in ["crossRealm", "security", "internal", "branded"] {
+            assert_eq!(result[field], true, "{field}: {result}");
+        }
         reset();
     }
 

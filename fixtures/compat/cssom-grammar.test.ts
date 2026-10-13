@@ -65,20 +65,16 @@ describe('CSSOM grammar and stylesheet ownership', () => {
     expect(() => sheet.insertRule('??? {}')).toThrow();
   });
 
-  it('attaches fetched sheets in document order and detaches on removal', () => {
+  it('keeps parser sheets in document order and detaches on removal', () => {
     const style = document.createElement('style'); style.textContent='first {}';
-    const link = document.createElement('link'); link.rel='stylesheet';
-    document.head.append(style, link);
-    const sheet = globalThis[Symbol.for('ts')].attachLinkedStyleSheet(link, '@import "child.css"; sentinel {}', 'https://example.test/main.css');
-    expect(sheet.ownerNode).toBe(link);
-    expect(sheet.href).toBe('https://example.test/main.css');
+    const imported = document.createElement('style'); imported.textContent='@import "child.css"; sentinel {}';
+    document.head.append(style, imported);
+    const sheet = imported.sheet!;
+    expect(sheet.ownerNode).toBe(imported);
     expect(sheet.cssRules[0].type).toBe(3);
-    expect(sheet.cssRules[0].href).toBe('child.css');
+    expect((sheet.cssRules[0] as CSSImportRule).href).toBe('child.css');
     expect(Array.from(document.styleSheets).slice(-2)).toEqual([style.sheet,sheet]);
-    link.remove();
-    expect(link.sheet).toBe(null);
-    expect(sheet.ownerNode).toBe(null);
-    style.remove();
+    imported.remove();expect(imported.sheet).toBe(null);expect(sheet.ownerNode).toBe(null);style.remove();
   });
 });
 it('stores style/import rule state privately behind native interface accessors',()=>{

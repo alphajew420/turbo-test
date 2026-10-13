@@ -6,6 +6,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Apply host CSS authorization without changing authored DOM attributes; preserve parser policy
+  position and separate CSP-blocked attribute text from applied declarations and CSSOM writes.
+  Keep stylesheet loader capabilities private and guard opaque stylesheet rules/mutations.
+- Share CSS interface records across same-origin V8 realms, retaining borrowed getter and method
+  behavior while rejecting unbranded receivers.
 - Preserve element and attribute namespace URIs, prefixes and qualified names across native
   creation, mutation, cloning and import; keep native Attr identity, live values and single-owner
   attachment semantics, with branded live NamedNodeMap access and namespace validation.
