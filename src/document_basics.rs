@@ -233,10 +233,13 @@ pub fn adopt<'s>(
         if with_tree(|tree| tree.is_shadow_root(source_handle)).unwrap_or(false) {
             return Err("A shadow root cannot be adopted");
         }
+        html_popover::attribute_node_change(scope, source_handle, None);
         with_tree_mut(|tree| capture(tree, source_handle)).ok_or("Node tree unavailable")??
     };
     if source_id == target_id {
         let _source = DomScope::for_object(scope, node);
+        html_popover::attribute_node_change(scope, source_handle, None);
+        html_popover::disconnect(scope, source_handle, true);
         element_relations::attribute_node_changed(scope, source_handle);
         with_tree_mut(|tree| {
             if let Some(owner) = tree.attribute_owner(source_handle) {
@@ -254,8 +257,10 @@ pub fn adopt<'s>(
             .ok_or("Document tree unavailable")?;
         mapping
     };
-    let (cache, styles, listeners, nonces, modes) = {
+    let (cache, styles, listeners, nonces, modes, handlers) = {
         let _source = DomScope::for_object(scope, node);
+        html_popover::attribute_node_change(scope, source_handle, None);
+        html_popover::disconnect(scope, source_handle, true);
         element_relations::attribute_node_changed(scope, source_handle);
         with_tree_mut(|tree| {
             if let Some(owner) = tree.attribute_owner(source_handle) {
@@ -310,9 +315,11 @@ pub fn adopt<'s>(
                 *active = None;
             }
         });
-        (cache, styles, listeners, nonces, modes)
+        let handlers = event_handlers::take_adopted_sources(&mapping);
+        (cache, styles, listeners, nonces, modes, handlers)
     };
     let _target = DomScope::for_object(scope, document);
+    event_handlers::restore_adopted_sources(handlers);
     for (handle, object) in cache {
         let local = v8::Local::new(scope, &object);
         let handle_value = v8::Integer::new_from_unsigned(scope, handle.raw());

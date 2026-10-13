@@ -21,6 +21,12 @@ mod css_policy;
 #[path = "event_handlers.rs"]
 mod event_handlers;
 
+/// Capture the trusted host timer after the runtime has installed its scheduler.
+/// Guest code cannot install or replace this private lifecycle capability.
+pub fn capture_popover_scheduler(scope: &mut v8::PinScope) {
+    html_popover::capture_scheduler(scope);
+}
+
 pub fn clear_interface_records(isolate: &mut v8::Isolate) {
     collection_records::clear(isolate);
 }
@@ -46,6 +52,8 @@ mod document_basics;
 mod dom_mutations;
 #[path = "element_relations.rs"]
 mod element_relations;
+#[path = "html_popover.rs"]
+mod html_popover;
 #[path = "html_text.rs"]
 mod html_text;
 
@@ -306,6 +314,7 @@ struct DomState {
     control_clone: Option<v8::Global<v8::Function>>,
     css_policy: css_policy::PolicyState,
     event_handlers: event_handlers::State,
+    popover: html_popover::State,
 }
 
 thread_local! {
@@ -461,6 +470,7 @@ pub fn parse_html_document<'s>(
             control_clone,
             css_policy: Default::default(),
             event_handlers: Default::default(),
+            popover: Default::default(),
         })
     });
     let context = scope.get_current_context();
@@ -1049,6 +1059,7 @@ fn el_remove_child(
         );
         return;
     }
+    html_popover::disconnect(scope, child, true);
     with_tree_mut(|tree| tree.remove_child(parent, child));
     rv.set(args.get(0));
 }
@@ -1416,6 +1427,9 @@ fn el_toggle_attribute<'s>(
         None
     };
     let previous = with_tree(|t| t.has_attribute(h, &name)).unwrap_or(false);
+    if name == "popover" && previous && force != Some(true) {
+        html_popover::attribute_change(scope, h, None);
+    }
     let present = with_tree_mut(|t| t.toggle_attribute(h, &name, force)).unwrap_or(false);
     if previous != present {
         element_relations::attribute_changed(scope, args.this(), &name);
@@ -1578,6 +1592,9 @@ fn el_set_attribute_ns<'s, 'i>(
         throw_dom_error(scope, error, "Invalid namespace or qualified name");
         return;
     }
+    if namespace.is_none() && qualified == "popover" {
+        html_popover::attribute_change(scope, node, Some(&value));
+    }
     with_tree_mut(|tree| tree.set_attribute_ns(node, namespace.as_deref(), &qualified, &value));
     if namespace.is_none() {
         event_handlers::changed(scope, node, &qualified);
@@ -1608,6 +1625,9 @@ fn el_remove_attribute_ns<'s, 'i>(
     let Some(local) = dom_string(scope, args.get(1)) else {
         return;
     };
+    if namespace.is_none() && local == "popover" {
+        html_popover::attribute_change(scope, node, None);
+    }
     with_tree_mut(|tree| tree.remove_attribute_ns(node, namespace.as_deref(), &local));
     if namespace.is_none() {
         event_handlers::changed(scope, node, &local);
@@ -1669,6 +1689,9 @@ fn el_set_attribute<'s>(
     } else {
         name.clone()
     };
+    if key == "popover" {
+        html_popover::attribute_change(scope, h, Some(&value));
+    }
     with_tree_mut(|t| t.set_attribute(h, &key, &value));
     event_handlers::changed(scope, h, &key);
     element_relations::attribute_changed(scope, args.this(), &key);
@@ -1846,6 +1869,15 @@ fn el_set_attribute_node<'s, 'i>(
     let Some(node) = handle_of(scope, attribute) else {
         return;
     };
+    if let Some(value) = with_tree(|tree| {
+        tree.attribute_data(node)
+            .filter(|data| data.namespace.is_none() && data.local_name == "popover")
+            .map(|data| data.value.clone())
+    })
+    .flatten()
+    {
+        html_popover::attribute_change(scope, owner, Some(&value));
+    }
     match with_tree_mut(|tree| tree.set_attribute_node(owner, node)) {
         Some(Ok(replaced)) => {
             sync_attr_nonce(scope, args.this(), node);
@@ -1900,6 +1932,15 @@ fn el_remove_attribute_node<'s, 'i>(
         attr_type_error(scope, "An Attr node is required");
         return;
     };
+    if with_tree(|tree| tree.attribute_owner(node) != Some(owner)).unwrap_or(true) {
+        throw_dom_error(
+            scope,
+            "NotFoundError",
+            "The attribute does not belong to this element",
+        );
+        return;
+    }
+    html_popover::attribute_node_change(scope, node, None);
     let aria_name = with_tree(|tree| {
         tree.attribute_data(node)
             .filter(|data| data.namespace.is_none())
@@ -2071,6 +2112,7 @@ fn set_attr_value<'s, 'i, T>(
     let Some(value) = dom_string(scope, value) else {
         return;
     };
+    html_popover::attribute_node_change(scope, node, Some(&value));
     with_tree_mut(|tree| tree.set_attribute_value(node, &value));
     if let Some(owner) = with_tree(|tree| tree.attribute_owner(node)).flatten() {
         let owner = wrap(scope, owner);
@@ -2135,6 +2177,9 @@ fn el_remove_attribute<'s>(
                 .insert(h, String::new());
         });
     }
+    if lower == "popover" {
+        html_popover::attribute_change(scope, h, None);
+    }
     with_tree_mut(|t| {
         t.remove_attribute(h, &name);
         if lower != name {
@@ -2159,6 +2204,9 @@ fn el_query_selector(
         return;
     };
     let sel = arg_str(scope, &args, 0);
+    let Some(sel) = html_popover::selector(scope, h, &sel) else {
+        return;
+    };
     let found =
         with_tree(|t| NodeRef::new(t, h).query_selector(&sel).map(|n| n.handle())).flatten();
     let v = wrap_opt(scope, found);
@@ -2193,6 +2241,7 @@ fn set_inner_html(
         return;
     };
     let html = value.to_rust_string_lossy(scope);
+    html_popover::disconnect(scope, h, false);
     with_tree_mut(|t| t.set_inner_html(h, &html));
     css_policy::invalidate_sheet(h);
 }
@@ -2240,6 +2289,7 @@ fn set_outer_html(
         return;
     }
     let html = value.to_rust_string_lossy(scope);
+    html_popover::disconnect(scope, node, true);
     with_tree_mut(|tree| {
         tree.insert_adjacent_html(node, "beforebegin", &html);
         tree.remove_child(parent, node);
@@ -2544,6 +2594,7 @@ fn el_remove_self(
     };
     let parent = with_tree(|t| NodeRef::new(t, h).parent().map(|p| p.handle())).flatten();
     if let Some(p) = parent {
+        html_popover::disconnect(scope, h, true);
         with_tree_mut(|t| t.remove_child(p, h));
     }
 }
@@ -2854,6 +2905,9 @@ fn el_closest(
         return;
     };
     let sel = arg_str(scope, &args, 0);
+    let Some(sel) = html_popover::selector(scope, h, &sel) else {
+        return;
+    };
     let found = with_tree(|t| {
         let mut cur = Some(h);
         while let Some(c) = cur {
@@ -2879,6 +2933,9 @@ fn el_matches(
         return;
     };
     let sel = arg_str(scope, &args, 0);
+    let Some(sel) = html_popover::selector(scope, h, &sel) else {
+        return;
+    };
     let m = with_tree(|t| t.matches(h, &sel)).unwrap_or(false);
     rv.set(v8::Boolean::new(scope, m).into());
 }
@@ -2974,6 +3031,9 @@ fn el_query_selector_all(
         return;
     };
     let sel = arg_str(scope, &args, 0);
+    let Some(sel) = html_popover::selector(scope, h, &sel) else {
+        return;
+    };
     let handles = with_tree(|t| {
         NodeRef::new(t, h)
             .query_selector_all(&sel)
@@ -3036,6 +3096,8 @@ fn set_text_content(
         return;
     };
     let txt = value.to_rust_string_lossy(scope);
+    html_popover::attribute_node_change(scope, h, Some(&txt));
+    html_popover::disconnect(scope, h, false);
     with_tree_mut(|t| t.set_text_content(h, &txt));
     element_relations::attribute_node_changed(scope, h);
     css_policy::invalidate_sheet(h);
@@ -3861,6 +3923,7 @@ fn set_node_data(
         };
         value.to_rust_string_lossy(scope)
     };
+    html_popover::attribute_node_change(scope, h, Some(&data));
     with_tree_mut(|t| t.set_text_content(h, &data));
     element_relations::attribute_node_changed(scope, h);
 }
@@ -4089,10 +4152,13 @@ fn doc_query_selector(
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    if receiver_handle(scope, &args, &[9]).is_none() {
+    let Some(h) = receiver_handle(scope, &args, &[9]) else {
         return;
-    }
+    };
     let sel = arg_str(scope, &args, 0);
+    let Some(sel) = html_popover::selector(scope, h, &sel) else {
+        return;
+    };
     let found = with_tree(|t| t.query_selector(&sel)).flatten();
     let v = wrap_opt(scope, found);
     rv.set(v);
@@ -4104,10 +4170,13 @@ fn doc_query_selector_all(
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    if receiver_handle(scope, &args, &[9]).is_none() {
+    let Some(h) = receiver_handle(scope, &args, &[9]) else {
         return;
-    }
+    };
     let sel = arg_str(scope, &args, 0);
+    let Some(sel) = html_popover::selector(scope, h, &sel) else {
+        return;
+    };
     let handles: Vec<Handle> =
         with_tree(|t| t.query_selector_all(&sel).to_vec()).unwrap_or_default();
     let arr = v8::Array::new(scope, handles.len() as i32);
@@ -4994,6 +5063,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
             control_clone: None,
             css_policy: Default::default(),
             event_handlers: Default::default(),
+            popover: Default::default(),
         });
     });
 
@@ -5066,7 +5136,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     run_js(scope, include_str!("document_basics.js"));
     bind_method(scope, global, "__htmlTextNative", html_text::dispatch);
     run_js(scope, include_str!("html_text.js"));
-    run_js(scope, include_str!("html_popover.js"));
+    html_popover::install(scope);
     let key = v8::String::new(scope, "__captureEventRecord").unwrap();
     if let Some(accessor) = global
         .get(scope, key.into())

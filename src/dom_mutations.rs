@@ -110,6 +110,11 @@ pub(super) fn insert(
             return false;
         }
     };
+    for &node in plan.remove.iter().chain(plan.nodes.iter()) {
+        if with_tree(|tree| tree.parent(node).is_some()).unwrap_or(false) {
+            html_popover::disconnect(scope, node, true);
+        }
+    }
     with_tree_mut(|tree| {
         for node in plan.remove {
             if !plan.nodes.contains(&node) {

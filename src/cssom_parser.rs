@@ -53,6 +53,10 @@ fn deferred_value(tokens: &TokenList<'_>) -> bool {
     })
 }
 
+pub(super) fn valid_selector(source: &str) -> bool {
+    valid_rule(&format!("{source} {{ color: red }}"))
+}
+
 fn valid_rule(source: &str) -> bool {
     StyleSheet::parse(source, ParserOptions::default()).is_ok_and(|sheet| {
         !sheet.rules.0.is_empty()

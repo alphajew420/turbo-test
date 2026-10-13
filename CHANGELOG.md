@@ -6,6 +6,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Back popover show/hide/toggle with native per-document state, auto/hint/manual ancestry
+  and source relationships, cancellable trusted beforetoggle events and coalesced trusted
+  toggle tasks on a privately captured host scheduler. Keep live :popover-open selector
+  composition and shadow-root separation without changing DOM attributes or styles. Handle
+  ordinary removal/moves, state-preserving moveBefore, null-namespace attribute changes,
+  inert documents and queued event identity across adoption. Preserve assigned on* source
+  markers during cross-document adoption. Autofocus/restoration, light-dismiss/backdrop,
+  fullscreen/modal integration, stateful CSS cascade and top-layer painting remain pending.
 - Validate native DOM insertion before changing parent links: reject ordinary and shadow-host
   ancestor cycles, enforce final Document element/doctype/text constraints, preserve nodes on
   invalid insertions, and check native Node brands, references and removal membership. Route
@@ -14,7 +22,7 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   Native hierarchy errors retain genuine DOMException identity through private constructors.
 - Use published turbo-dom 0.5.2 as the canonical DOM dependency. Add native HTML innerText/outerText
   mutation and supported rendered-text flow, nullable popover reflection and branded ToggleEvent
-  records; complete CSS layout and popover top-layer lifecycle remain unsupported.
+  records; complete CSS layout and top-layer painting remain unsupported.
 - Keep native `classList` and `part` token-list identity and live indexed state,
   validate mutations atomically, and reflect ARIA element references with private
   assignment state, attribute invalidation and shadow-tree scope checks. Add native

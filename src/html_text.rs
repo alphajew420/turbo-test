@@ -303,10 +303,14 @@ pub fn dispatch(
         }
         "inner" => {
             let value = args.get(2).to_rust_string_lossy(scope);
+            html_popover::disconnect(scope, node, false);
             with_tree_mut(|tree| set_inner(tree, node, &value));
         }
         "outer" => {
             let value = args.get(2).to_rust_string_lossy(scope);
+            if with_tree(|tree| tree.parent(node).is_some()).unwrap_or(false) {
+                html_popover::disconnect(scope, node, true);
+            }
             if let Some(Err(error)) = with_tree_mut(|tree| set_outer(tree, node, &value)) {
                 rv.set(v8::String::new(scope, error).unwrap().into());
             }
