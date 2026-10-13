@@ -2498,7 +2498,20 @@ fn el_click(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
     let Some(h) = receiver_handle(scope, &args, &[1]) else {
         return;
     };
-    dispatch_synthetic(scope, h, "click", true, true);
+    let name = v8::String::new(scope, "turbo-dom.click.active").unwrap();
+    let key = v8::Private::for_api(scope, Some(name));
+    let receiver = args.this();
+    if receiver.get_private(scope, key).is_some_and(|value| value.is_true()) {
+        return;
+    }
+    let active = v8::Boolean::new(scope, true);
+    receiver.set_private(scope, key, active.into());
+    if let Some(context) = receiver.get_creation_context(scope) {
+        let context_scope = &mut v8::ContextScope::new(scope, context);
+        dispatch_synthetic_with_trust(context_scope, h, "click", true, true, false);
+    }
+    let inactive = v8::Boolean::new(scope, false);
+    receiver.set_private(scope, key, inactive.into());
 }
 fn el_scroll_into_view(
     scope: &mut v8::PinScope,
@@ -3736,26 +3749,52 @@ fn dispatch_synthetic(
     bubbles: bool,
     cancelable: bool,
 ) {
+    dispatch_synthetic_with_trust(scope, target, ty, bubbles, cancelable, true);
+}
+
+fn dispatch_synthetic_with_trust(
+    scope: &mut v8::PinScope,
+    target: Handle,
+    ty: &str,
+    bubbles: bool,
+    cancelable: bool,
+    host: bool,
+) {
     let global = scope.get_current_context().global(scope);
-    let Some(ctor) = v8::String::new(scope, "Event")
+    let constructor = if ty == "click" { "PointerEvent" } else { "Event" };
+    let Some(ctor) = v8::String::new(scope, constructor)
         .and_then(|k| global.get(scope, k.into()))
         .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
     else {
         return;
     };
     let init = v8::Object::new(scope);
-    for (k, val) in [("bubbles", bubbles), ("cancelable", cancelable)] {
+    for (k, val) in [("bubbles", bubbles), ("cancelable", cancelable), ("composed", ty == "click")] {
         if let Some(key) = v8::String::new(scope, k) {
             let b = v8::Boolean::new(scope, val);
             init.set(scope, key.into(), b.into());
         }
+    }
+    if ty == "click" {
+        let key = v8::String::new(scope, "pointerId").unwrap();
+        let value = v8::Integer::new(scope, -1);
+        init.set(scope, key.into(), value.into());
     }
     let ty_str = v8::String::new(scope, ty).unwrap();
     let Some(ev) = ctor.new_instance(scope, &[ty_str.into(), init.into()]) else {
         return;
     };
     let node = wrap(scope, target);
-    dispatch_host_event(scope, ev, node);
+    if host {
+        dispatch_host_event(scope, ev, node);
+    } else {
+        let flag = v8::Boolean::new(scope, false);
+        if let Some(function) = v8::FunctionTemplate::builder(el_dispatch_event)
+            .data(flag.into()).constructor_behavior(v8::ConstructorBehavior::Throw)
+            .build(scope).get_function(scope) {
+            function.call(scope,node.into(),&[ev.into()]);
+        }
+    }
 }
 
 // small prop helpers
@@ -4653,6 +4692,41 @@ fn native_dom_function_dispatch(
     }
 }
 
+fn native_range_record(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let key_name = v8::String::new(scope, "turbo-dom.Range.record").unwrap();
+    let key = v8::Private::for_api(scope, Some(key_name));
+    let receiver = if args.get(0).is_undefined() && args.get(1).is_object() {
+        let template = v8::ObjectTemplate::new(scope);
+        template.set_internal_field_count(1);
+        let object = template.new_instance(scope).unwrap();
+        if args.get(2).is_object() {
+            object.set_prototype(scope, args.get(2));
+        }
+        Some(object)
+    } else {
+        v8::Local::<v8::Object>::try_from(args.get(0)).ok()
+    };
+    if let Some(receiver) = receiver {
+        if args.length() > 1 && args.get(1).is_object() {
+            let record = args.get(1);
+            receiver.set_private(scope, key, record);
+            rv.set(if args.get(0).is_undefined() { receiver.into() } else { record });
+            return;
+        }
+        if let Some(record) = receiver.get_private(scope, key).filter(|value| value.is_object()) {
+            rv.set(record);
+            return;
+        }
+    }
+    let message = v8::String::new(scope, "Illegal invocation").unwrap();
+    let error = v8::Exception::type_error(scope, message);
+    scope.throw_exception(error);
+}
+
 // The implementation closure stays in V8's private function data. This is a
 // native callable over the facade's live guest state, not a source-string mask.
 fn make_native_dom_function(
@@ -5104,6 +5178,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     let factory_key = v8::String::new(scope, "__nativeDOMFunction").unwrap();
     global.set(scope, factory_key.into(), factory.into());
     bind_method(scope, global, "__nativeEventRecord", lookup_event_record);
+    bind_method(scope, global, "__nativeRangeRecord", native_range_record);
     collection_records::register(scope);
     css_policy::register(scope);
     event_handlers::register(scope);
@@ -5268,6 +5343,118 @@ mod tests {
             v8::V8::initialize_platform(platform);
             v8::V8::initialize();
         });
+    }
+
+    #[test]
+    fn native_range_clones_preserve_boundaries_without_exposing_or_forging_records() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_with_html(scope, "<body><p id=target>abcdef</p></body>");
+        let code = v8::String::new(scope, r#"(()=>{
+          const range=document.createRange(),text=document.getElementById('target').firstChild;
+          if(range.startContainer!==document||range.endContainer!==document||range.startOffset!==0||Object.keys(range).length)throw Error('initial range');
+          range.setStart(text,1);range.setEnd(text,4);
+          const clone=range.cloneRange();
+          if(clone===range||Object.getPrototypeOf(clone)!==Range.prototype||clone.startContainer!==text||clone.endContainer!==text||clone.startOffset!==1||clone.endOffset!==4||String(clone)!=='bcd')throw Error('cloned range');
+          clone.collapse(true);if(!clone.collapsed||range.collapsed||range.endOffset!==4)throw Error('independent boundaries');
+          clone.startOffset=5;if(clone.startOffset!==1)throw Error('readonly boundary');
+          if(Object.prototype.toString.call(clone)!=='[object Range]'||!Function.prototype.toString.call(Range.prototype.cloneRange).includes('[native code]'))throw Error('native shape');
+          let errors=0;for(const value of [{},Object.create(Range.prototype)])try{Range.prototype.cloneRange.call(value);}catch(e){if(e.name==='TypeError')errors++;}
+          if(errors!==2||'__nativeRangeRecord'in globalThis)throw Error('private range brand');
+          return 'ok';
+        })()"#).unwrap();
+        let catch = std::pin::pin!(v8::TryCatch::new(scope));
+        let catch = &mut catch.init();
+        let script=v8::Script::compile(catch,code,None).unwrap();
+        let value=script.run(catch).unwrap_or_else(||panic!("{}",catch.exception().unwrap().to_rust_string_lossy(catch)));
+        assert_eq!(value.to_rust_string_lossy(catch),"ok");
+        reset();
+    }
+
+    #[test]
+    fn borrowed_range_clone_uses_method_realm_and_preserves_foreign_document_boundaries() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let parent = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, parent);
+        install_with_html(scope,"<body><p>parent</p></body>");
+        let child = v8::Context::new(scope, Default::default());
+        let foreign = {
+            let child_scope=&mut v8::ContextScope::new(scope,child);
+            install_with_html(child_scope,"<body><p>foreign</p></body>");
+            let code=v8::String::new(child_scope,"(()=>{const range=document.createRange();range.selectNodeContents(document.querySelector('p').firstChild);return range;})()").unwrap();
+            let script=v8::Script::compile(child_scope,code,None).unwrap();
+            v8::Global::new(child_scope,script.run(child_scope).unwrap())
+        };
+        let foreign=v8::Local::new(scope,foreign);
+        let key=v8::String::new(scope,"foreignRange").unwrap();
+        scope.get_current_context().global(scope).set(scope,key.into(),foreign);
+        let code=v8::String::new(scope,r#"(()=>{
+          const clone=Range.prototype.cloneRange.call(foreignRange);
+          if(Object.getPrototypeOf(clone)!==Range.prototype||Object.getPrototypeOf(foreignRange)===Range.prototype||clone.startContainer!==foreignRange.startContainer||String(clone)!=='foreign')throw Error('borrowed range ownership');
+          const fragment=clone.createContextualFragment('<b>child</b>');
+          if(fragment.ownerDocument!==foreignRange.startContainer.ownerDocument||fragment.firstChild.ownerDocument!==fragment.ownerDocument)throw Error('associated document');
+          clone.collapse(true);if(foreignRange.collapsed||!clone.collapsed)throw Error('foreign independent boundaries');
+          return 'ok';
+        })()"#).unwrap();
+        let catch=std::pin::pin!(v8::TryCatch::new(scope));let catch=&mut catch.init();
+        let script=v8::Script::compile(catch,code,None).unwrap();
+        let value=script.run(catch).unwrap_or_else(||panic!("{}",catch.exception().unwrap().to_rust_string_lossy(catch)));
+        assert_eq!(value.to_rust_string_lossy(catch),"ok");
+        reset();
+    }
+
+    #[test]
+    fn native_media_queries_validate_receivers_without_advertising_unavailable_decoders() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install(scope);
+        let code=v8::String::new(scope,r#"(()=>{
+          const video=document.createElement('video'),audio=new Audio();
+          if(Object.getPrototypeOf(audio)!==HTMLAudioElement.prototype||Audio.prototype!==HTMLAudioElement.prototype||Object.prototype.toString.call(audio)!=='[object HTMLAudioElement]')throw Error('Audio ownership');
+          if(typeof video.canPlayType!=='function'||video.canPlayType.length!==1||!Function.prototype.toString.call(video.canPlayType).includes('[native code]'))throw Error('media native function');
+          let conversions=0;const type={toString(){conversions++;return 'audio/wav';}};
+          if(audio.canPlayType(type)!==''||conversions!==1||video.canPlayType('video/mp4; codecs="avc1.42E01E"')!==''||video.canPlayType('unsupported/type')!=='')throw Error('unsupported codec query');
+          let errors=0;for(const fn of [()=>video.canPlayType(),()=>video.canPlayType(Symbol()),()=>HTMLMediaElement.prototype.canPlayType.call({},'audio/wav'),()=>HTMLMediaElement.prototype.canPlayType.call(document.createElement('div'),'audio/wav')])try{fn();}catch(e){if(e.name==='TypeError')errors++;}
+          if(errors!==4)throw Error('media receiver/conversion');
+          return 'ok';
+        })()"#).unwrap();
+        let catch=std::pin::pin!(v8::TryCatch::new(scope));let catch=&mut catch.init();
+        let script=v8::Script::compile(catch,code,None).unwrap();
+        let value=script.run(catch).unwrap_or_else(||panic!("{}",catch.exception().unwrap().to_rust_string_lossy(catch)));
+        assert_eq!(value.to_rust_string_lossy(catch),"ok");
+        reset();
+    }
+
+    #[test]
+    fn native_click_prevents_recursive_activation_and_preserves_cancelable_untrusted_dispatch() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_with_html(scope,"<body><a id=link href='#target'>link</a></body>");
+        let code=v8::String::new(scope,r#"(()=>{
+          const element=document.getElementById('link');let calls=0,trusted;
+          element.addEventListener('click',event=>{calls++;trusted=event.isTrusted;event.preventDefault();if(!event.bubbles||!event.cancelable)throw Error('click flags');element.click();});
+          const result=HTMLElement.prototype.click.call(element);
+          if(result!==undefined||calls!==1||trusted!==false)throw Error('recursive click activation');
+          let failed=false;try{HTMLElement.prototype.click.call({});}catch(e){failed=e.name==='TypeError';}
+          if(!failed)throw Error('click receiver brand');
+          return 'ok';
+        })()"#).unwrap();
+        let catch=std::pin::pin!(v8::TryCatch::new(scope));let catch=&mut catch.init();
+        let script=v8::Script::compile(catch,code,None).unwrap();
+        let value=script.run(catch).unwrap_or_else(||panic!("{}",catch.exception().unwrap().to_rust_string_lossy(catch)));
+        assert_eq!(value.to_rust_string_lossy(catch),"ok");
+        reset();
     }
 
     #[test]

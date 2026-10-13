@@ -1420,10 +1420,16 @@ if(typeof __ns.makeNativeFunction==='function'){
     return 0; // disconnected
   }
   function __commonAncestor(a,b){ var A=__ancestry(a); var n=b; while(n){ if(A.indexOf(n)>=0) return n; n=n.parentNode; } return d; }
-  function Range(){ this.startContainer=d; this.startOffset=0; this.endContainer=d; this.endOffset=0; }
+  var rangeRecord = g.__nativeRangeRecord;
+  delete g.__nativeRangeRecord;
+  function Range(){
+    var state=Object.create(Range.prototype);
+    Object.defineProperties(state,{startContainer:{value:d,writable:true},startOffset:{value:0,writable:true},endContainer:{value:d,writable:true},endOffset:{value:0,writable:true},document:{value:d,writable:true}});
+    rangeRecord(state,state);return rangeRecord(undefined,state,Object.getPrototypeOf(this));
+  }
   Object.defineProperties(Range.prototype, {
-    collapsed:{ get:function(){ return this.startContainer===this.endContainer && this.startOffset===this.endOffset; } },
-    commonAncestorContainer:{ get:function(){ return __commonAncestor(this.startContainer, this.endContainer); } },
+    collapsed:{ configurable:true, enumerable:true, get:function(){ return this.startContainer===this.endContainer && this.startOffset===this.endOffset; } },
+    commonAncestorContainer:{ configurable:true, enumerable:true, get:function(){ return __commonAncestor(this.startContainer, this.endContainer); } },
   });
   Range.prototype.setStart=function(n,o){ this.startContainer=n; this.startOffset=o|0; if(__cmp(this.startContainer,this.startOffset,this.endContainer,this.endOffset)>0){ this.endContainer=n; this.endOffset=o|0; } };
   Range.prototype.setEnd=function(n,o){ this.endContainer=n; this.endOffset=o|0; if(__cmp(this.startContainer,this.startOffset,this.endContainer,this.endOffset)>0){ this.startContainer=n; this.startOffset=o|0; } };
@@ -1434,21 +1440,46 @@ if(typeof __ns.makeNativeFunction==='function'){
   Range.prototype.collapse=function(toStart){ if(toStart){ this.endContainer=this.startContainer; this.endOffset=this.startOffset; } else { this.startContainer=this.endContainer; this.startOffset=this.endOffset; } };
   Range.prototype.selectNode=function(n){ this.setStartBefore(n); this.setEndAfter(n); };
   Range.prototype.selectNodeContents=function(n){ this.startContainer=n; this.startOffset=0; this.endContainer=n; this.endOffset=(n.nodeType===3?(n.data||'').length:(n.childNodes?n.childNodes.length:0)); };
-  Range.prototype.cloneRange=function(){ var r=new Range(); r.startContainer=this.startContainer; r.startOffset=this.startOffset; r.endContainer=this.endContainer; r.endOffset=this.endOffset; return r; };
+  Range.prototype.cloneRange=function(){ var r=new Range(); var state=rangeRecord(r); state.startContainer=this.startContainer; state.startOffset=this.startOffset; state.endContainer=this.endContainer; state.endOffset=this.endOffset; state.document=this.document; return r; };
   Range.prototype.comparePoint=function(n,o){ if(__cmp(n,o,this.startContainer,this.startOffset)<0) return -1; if(__cmp(n,o,this.endContainer,this.endOffset)>0) return 1; return 0; };
   Range.prototype.isPointInRange=function(n,o){ return this.comparePoint(n,o)===0; };
   Range.prototype.compareBoundaryPoints=function(how,other){ return __cmp(this.startContainer,this.startOffset,other.startContainer,other.startOffset); };
   Range.prototype.insertNode=function(node){ var c=this.startContainer, o=this.startOffset; if(c.nodeType===3){ var txt=c.data||''; var after=c.splitText?c.splitText(o):null; c.parentNode.insertBefore(node, after||c.nextSibling); } else { var ref=c.childNodes?c.childNodes[o]:null; c.insertBefore(node, ref||null); } };
   Range.prototype.deleteContents=function(){ if(this.collapsed) return; var sc=this.startContainer; if(sc===this.endContainer && sc.nodeType===3){ var t=sc.data||''; if(sc.deleteData) sc.deleteData(this.startOffset, this.endOffset-this.startOffset); else sc.data=t.slice(0,this.startOffset)+t.slice(this.endOffset); this.endOffset=this.startOffset; this.endContainer=sc; return; } var ca=this.commonAncestorContainer; var kids=ca.childNodes?Array.prototype.slice.call(ca.childNodes):[]; for(var i=0;i<kids.length;i++){ var k=kids[i]; if(this.comparePoint(k,0)===0 && this.comparePoint(k, (k.nodeType===3?(k.data||'').length:(k.childNodes?k.childNodes.length:0)))===0 && k.parentNode){ k.parentNode.removeChild(k); } } this.collapse(true); };
-  Range.prototype.cloneContents=function(){ var f=d.createDocumentFragment(); return f; };
+  Range.prototype.cloneContents=function(){ var f=this.document.createDocumentFragment(); return f; };
   Range.prototype.extractContents=function(){ var f=this.cloneContents(); this.deleteContents(); return f; };
   Range.prototype.surroundContents=function(node){ this.insertNode(node); };
   Range.prototype.getClientRects=function(){ return []; };
   Range.prototype.getBoundingClientRect=function(){ return __zeroRect(); };
-  Range.prototype.createContextualFragment=function(html){ var f=d.createDocumentFragment(); var t=d.createElement('div'); t.innerHTML=html; while(t.firstChild) f.appendChild(t.firstChild); return f; };
+  Range.prototype.createContextualFragment=function(html){ var f=this.document.createDocumentFragment(); var t=this.document.createElement('div'); t.innerHTML=html; while(t.firstChild) f.appendChild(t.firstChild); return f; };
   Range.prototype.detach=function(){};
   Range.prototype.toString=function(){ var sc=this.startContainer; if(sc===this.endContainer && sc.nodeType===3){ return (sc.data||'').slice(this.startOffset, this.endOffset); } return ''; };
-  d.createRange=function(){ var r=new Range(); r.startContainer=d.body||d; r.endContainer=d.body||d; return r; };
+  if (__ns.makeNativeFunction) {
+    var rangeImplementation=Range;
+    Range=__ns.makeNativeFunction(rangeImplementation,'Range',0,true);
+    Range.prototype=rangeImplementation.prototype;
+    Object.defineProperty(Range.prototype,'constructor',{value:Range,writable:true,configurable:true});
+    Object.defineProperty(Range,'prototype',{writable:false});
+  }
+  ['startContainer','startOffset','endContainer','endOffset'].forEach(function(name){
+    var getter=function(){return rangeRecord(this)[name];};
+    if(__ns.makeNativeFunction)getter=__ns.makeNativeFunction(getter,'get '+name,0);
+    Object.defineProperty(Range.prototype,name,{get:getter,enumerable:true,configurable:true});
+  });
+  Object.getOwnPropertyNames(Range.prototype).forEach(function(name){
+    if(name==='constructor')return;
+    var descriptor=Object.getOwnPropertyDescriptor(Range.prototype,name);
+    ['value','get'].forEach(function(kind){
+      var implementation=descriptor[kind];if(typeof implementation!=='function')return;
+      var delegate=function(){return implementation.apply(rangeRecord(this),arguments);};
+      descriptor[kind]=__ns.makeNativeFunction?__ns.makeNativeFunction(delegate,kind==='get'?'get '+name:name,implementation.length):delegate;
+    });
+    descriptor.enumerable=true;descriptor.configurable=true;
+    if('value'in descriptor)descriptor.writable=true;
+    Object.defineProperty(Range.prototype,name,descriptor);
+  });
+  Object.defineProperty(Range.prototype,Symbol.toStringTag,{value:'Range',configurable:true});
+  d.createRange=function(){return new Range();};
   if(g.Range===undefined) g.Range=Range;
   if (!d.getRootNode) d.getRootNode = function(){ return d; };
   // document.write / writeln: parse the written markup and append it to <body>. Real browsers splice
@@ -1744,6 +1775,25 @@ if(typeof __ns.makeNativeFunction==='function'){
       defineInterface(name,htmlProto,proto===oldBase?null:proto);
     });
     ['HTMLAudioElement','HTMLVideoElement'].forEach(function(name){Object.setPrototypeOf(prototypes[name],prototypes.HTMLMediaElement);Object.setPrototypeOf(g[name],g.HTMLMediaElement);});
+    // The native DOM has no HTML-media playback decoder. Query that empty
+    // capability set without claiming codec support from unrelated offline DSP.
+    delete prototypes.HTMLAnchorElement.click;
+    var mediaTypes=new Set();
+    var mediaNode=__ns.domAccessor('nodeType',false,'HTMLElement');
+    Object.defineProperty(prototypes.HTMLMediaElement,'canPlayType',{value:__ns.makeNativeFunction(function(type){
+      mediaNode.call(this);
+      if(this.namespaceURI!=='http://www.w3.org/1999/xhtml'||!['audio','video'].includes(this.localName))throw new TypeError('Illegal invocation');
+      if(arguments.length<1)throw new TypeError("Failed to execute 'canPlayType' on 'HTMLMediaElement': 1 argument required, but only 0 present.");
+      if(typeof type==='symbol')throw new TypeError('Cannot convert a Symbol value to a string');
+      var mime=String(type).split(';',1)[0].trim().toLowerCase();
+      return mediaTypes.has(mime)?'maybe':'';
+    },'canPlayType',1),writable:true,enumerable:true,configurable:true});
+    if(typeof g.Audio==='function'){
+      var audioConstructor=__ns.makeNativeFunction(function(src){var element=d.createElement('audio');if(src!==undefined)element.src=src;return element;},'Audio',0,true,false,false);
+      audioConstructor.prototype=prototypes.HTMLAudioElement;Object.defineProperty(audioConstructor,'prototype',{writable:false});
+      Object.defineProperty(g,'Audio',{value:audioConstructor,writable:true,configurable:true});
+    }
+
     // Keep existing compatibility behavior while separating the base interfaces;
     // the native members below replace these descriptors on their proper owner.
     Reflect.ownKeys(oldBase).forEach(function(key){
