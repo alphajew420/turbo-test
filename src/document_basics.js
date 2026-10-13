@@ -158,8 +158,10 @@
     name = string(name); const receiver = this;
     return cached(receiver, 'name:' + name, () => descendants(receiver, node => namespace.call(node) === html && getAttribute.call(node, 'name') === name), false);
   }, 1);
-  const createElement = Object.getOwnPropertyDescriptor(g.document, 'createElement');
-  if (createElement) { Object.defineProperty(g.Document.prototype, 'createElement', {...createElement, enumerable: true}); delete g.document.createElement; }
+  for (const name of ['createElement','createAttribute','createAttributeNS']) {
+    const descriptor=Object.getOwnPropertyDescriptor(g.document,name);
+    if(descriptor){Object.defineProperty(g.Document.prototype,name,{...descriptor,enumerable:true});delete g.document[name];}
+  }
   property(g.Document.prototype, 'documentElement', function () { check(this, [9]); return Array.from(rawChildren.call(this)).find(node => type.call(node) === 1) || null; });
   property(g.Document.prototype, 'head', function () { check(this, [9]); const root=this.documentElement; return root ? Array.from(rawChildren.call(root)).find(node => type.call(node) === 1 && node.localName === 'head' && namespace.call(node) === html) || null : null; });
   property(g.Document.prototype, 'body', function () { check(this, [9]); const root=this.documentElement; return root ? Array.from(rawChildren.call(root)).find(node => type.call(node) === 1 && ['body','frameset'].includes(node.localName) && namespace.call(node) === html) || null : null; }, function (value) {
