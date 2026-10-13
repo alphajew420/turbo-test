@@ -32,10 +32,12 @@ function buildAddon() {
   // (turbo-test) at load time, exactly like a real prebuilt napi-rs .node.
   const r = spawnSync(
     'cc',
-    ['-shared', '-undefined', 'dynamic_lookup', '-o', ADDON, path.join(FIX, 'bad_addon.c')],
+    ['-shared', ...(process.platform === 'darwin' ? ['-undefined', 'dynamic_lookup'] : ['-fPIC']),
+      '-o', ADDON, path.join(FIX, 'bad_addon.c')],
     { encoding: 'utf8' }
   );
-  return r.status === 0;
+  assert.equal(r.status, 0, `failed to build fixture addon:\n${r.stderr}`);
+  return true;
 }
 
 function run(args) {

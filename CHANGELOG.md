@@ -3,6 +3,96 @@
 All notable changes to `@miaskiewicz/turbo-test`. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project uses semantic versioning.
 
+## [Unreleased]
+
+## [0.4.6] - 2026-10-13
+
+### Fixed
+- Validate native DOM insertion before changing parent links: reject ordinary and shadow-host
+  ancestor cycles, enforce final Document element/doctype/text constraints, preserve nodes on
+  invalid insertions, and check native Node brands, references and removal membership. Route
+  variadic, adjacent and replacement operations through the shared validator; preserve valid
+  fragment transfer, repeated-node ordering, string insertion and self-reference behavior.
+  Native hierarchy errors retain genuine DOMException identity through private constructors.
+- Use published turbo-dom 0.5.2 as the canonical DOM dependency. Add native HTML innerText/outerText
+  mutation and supported rendered-text flow, nullable popover reflection and branded ToggleEvent
+  records; complete CSS layout and popover top-layer lifecycle remain unsupported.
+- Keep native `classList` and `part` token-list identity and live indexed state,
+  validate mutations atomically, and reflect ARIA element references with private
+  assignment state, attribute invalidation and shadow-tree scope checks. Add native
+  `moveBefore` hierarchy/root checks and preserve node/focus/control/handler identity;
+  complete Range/iterator/slot/custom-element move reactions remain unsupported.
+- Compile authored HTML event-handler attributes as real V8 functions with native element,
+  form and document scope; keep assigned-function overrides and host CSP authorization private.
+- Initiate inline stylesheet imports through private host state and include imported declarations
+  in live computed styles; cache native policy filtering by the actual tree mutation version.
+- Create native ProcessingInstruction nodes with CharacterData inheritance, XML-name/data
+  validation, serialization, identity-preserving adoption and clone/import support. CharacterData
+  methods now use UTF-16 offsets and reject invalid ranges; HTML CDATA creation throws the
+  measured NotSupportedError. Preserve actual supported HTML XML-metadata state.
+- Apply host CSS authorization without changing authored DOM attributes; preserve parser policy
+  position and separate CSP-blocked attribute text from applied declarations and CSSOM writes.
+  Keep stylesheet loader capabilities private and guard opaque stylesheet rules/mutations.
+- Share CSS interface records across same-origin V8 realms, retaining borrowed getter and method
+  behavior while rejecting unbranded receivers.
+- Preserve element and attribute namespace URIs, prefixes and qualified names across native
+  creation, mutation, cloning and import; keep native Attr identity, live values and single-owner
+  attachment semantics, with branded live NamedNodeMap access and namespace validation.
+- Back CSSStyleSheet, StyleSheet and MediaList interfaces with private records and native branded
+  callbacks; retain live lists, owner/import metadata and media mutations, detach removed rules,
+  reject invalid single-rule insertions, and filter imports from constructed replacements.
+- Share CSSStyleDeclaration native prototype callbacks across private inline, rule and
+  read-only computed records; synchronize inline mutations and external attribute edits,
+  retain stable identity and validate supported properties with the stylesheet parser.
+- Reflect editing and accessibility attributes with native branded accessors, including enum
+  normalization, hidden union conversion, spellcheck/translation inheritance, associated-form
+  auto-capitalization/correction and draggable image/link defaults.
+- Isolate DOM trees, native node ownership, style state and listeners by V8 context.
+- Separate input/textarea live values from defaults; retain reflected hidden values, default select
+  selection and intentional empty selections.
+- Validate CSS selectors and supported property values with Lightning CSS, recover malformed rules,
+  and retain strings, custom properties, grouping rules, and deferred `var()`/`env()` values.
+- Represent fetched linked stylesheets in document order, preserve their URL and import rules,
+  and detach stylesheet ownership when their link leaves the document.
+- Expose CSSRuleList and StyleSheetList as branded indexed collections rather than arrays;
+  rule-list identity survives replacement and the document stylesheet list tracks tree changes.
+- Separate native Node/Element/HTMLElement/Document and character-data interface prototypes;
+  shared native accessors remain live and reject invalid receivers. Document-specific instance
+  properties and compatibility APIs still have partial Web IDL coverage.
+- Normalize Event constructor required arguments, string types and optional initialization,
+  including CustomEvent's default detail.
+- Back CSS list methods/accessors and DOM interface constructors with native V8 callbacks;
+  preserve constructor inheritance, read-only prototype properties and non-enumerable globals.
+  Rebuilding a document refreshes interface constructors without losing native tree bindings.
+- Preserve class construction, subclass `new.target`, live instance state and exceptions through
+  the native callable bridge used by host runtimes.
+- Create genuine native document fragments, flatten their children on insertion, and retain
+  fragment clone/query identity. Native shadow roots preserve host/mode and scoped tree queries.
+- Put Node constants, DOM event methods and form-control methods on their owning interfaces;
+  retain native DOM listeners and subclass EventTarget state without exposing cascade helpers.
+- Keep event state private, expose read-only event fields and distinguish host-generated trusted
+  dispatch from script dispatch across DOM, custom EventTarget and window listeners.
+- Preserve CSS list receiver identity across document replacement and same-origin frame access;
+  new style elements use the current document's CSSOM closures.
+- Project supported document collections and creation methods onto Document; normalize text nodes,
+  replace children and compare actual native tree positions through Node methods.
+- Store element event-handler properties privately and invoke them during native event dispatch;
+  preserve measured legacy Window load/pageshow state and real DOMException errors.
+- Read HTML/SVG/MathML namespace identity from the native tree, retain foreign-element case and
+  namespaces during cloning, and resolve native namespace prefixes through ancestor elements.
+- Reflect scalar ARIA and basic HTML attributes through native node storage; expose attribute
+  enumeration and adjacent text insertion on Element, and move link/script/control properties
+  onto their HTML interfaces without copying them onto unrelated elements.
+- Put style/import rule fields behind native, branded prototype accessors with private state;
+  selector/style setters update serialization, and import ownership uses an internal loader seam.
+
+- Add live native indexed HTMLCollection/NodeList views over document collections and native
+  children, with static querySelectorAll results and private cross-realm receiver records.
+- Preserve native node/Attr/shadow identities, ownership, listeners and control/nonce state
+  during adoption; clone/import supported private live values through captured document helpers.
+- Read DocumentType metadata and compatibility mode from the real HTML parser; implement
+  supported Document scalar reflection, handler ordering, nonce state and tabIndex conversion.
+
 ## [0.4.5] — 2026-10-10
 
 ### Fixed
