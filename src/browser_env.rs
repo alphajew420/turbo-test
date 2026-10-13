@@ -14,13 +14,70 @@
 #[path = "cssom_parser.rs"]
 mod cssom_parser;
 
+#[path = "collection_records.rs"]
+mod collection_records;
+
+pub fn clear_interface_records(isolate:&mut v8::Isolate) { collection_records::clear(isolate); }
+
+/// Access a host-created interface record in the isolate's private ephemeron registry.
+pub fn get_interface_record<'s>(scope:&mut v8::PinScope<'s,'_>,object:v8::Local<'s,v8::Object>)->Option<v8::Local<'s,v8::Value>> { collection_records::get(scope,object) }
+pub fn set_interface_record<'s>(scope:&mut v8::PinScope<'s,'_>,object:v8::Local<'s,v8::Object>,record:v8::Local<'s,v8::Value>)->bool { collection_records::set(scope,object,record) }
+
+#[path = "document_basics.rs"]
+mod document_basics;
+
+pub fn node_nonce(scope: &mut v8::PinScope, node: v8::Local<v8::Object>) -> Option<String> {
+    document_basics::nonce(scope, node)
+}
+pub fn hide_node_nonce(scope: &mut v8::PinScope, node: v8::Local<v8::Object>) {
+    let Some(value) = node_nonce(scope, node) else {
+        return;
+    };
+    let _dom = DomScope::for_object(scope, node);
+    let Some(handle) = handle_of(scope, node) else {
+        return;
+    };
+    DOM.with(|dom| {
+        dom.borrow_mut()
+            .as_mut()
+            .unwrap()
+            .nonces
+            .insert(handle, value);
+    });
+    with_tree_mut(|tree| {
+        if tree.get_attribute(handle, "nonce").is_some() {
+            tree.set_attribute(handle, "nonce", "");
+        }
+    });
+}
+fn initial_nonces(tree: &Tree) -> HashMap<Handle, String> {
+    tree.query_selector_all("[nonce]")
+        .iter()
+        .copied()
+        .filter_map(|handle| {
+            tree.get_attribute(handle, "nonce")
+                .map(|value| (handle, value.to_owned()))
+        })
+        .collect()
+}
+pub fn update_node_nonce(scope: &mut v8::PinScope, node: v8::Local<v8::Object>, value: &str) {
+    let _dom = DomScope::for_object(scope, node);
+    if let Some(handle) = handle_of(scope, node) {
+        DOM.with(|dom| {
+            if let Some(state) = dom.borrow_mut().as_mut() {
+                state.nonces.insert(handle, value.to_owned());
+            }
+        });
+    }
+}
+
 #[path = "html_documents.rs"]
 mod html_documents;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use turbo_dom_parser::rtdom::tree::{Handle, Namespace, Tree};
+use turbo_dom_parser::rtdom::tree::{AttributeData, Handle, Tree};
 use turbo_dom_parser::rtdom::NodeRef;
 
 /// The all-Rust DOM (rtdom) is now the ONLY DOM environment — the JS turbo-dom bootstrap
@@ -220,6 +277,9 @@ struct DomState {
     /// shared element object template (internal_field_count = 2).
     el_template: v8::Global<v8::ObjectTemplate>,
     shadow_modes: HashMap<Handle, String>,
+    nonces: HashMap<Handle, String>,
+    basics_state: Option<v8::Global<v8::Object>>,
+    control_clone: Option<v8::Global<v8::Function>>,
 }
 
 thread_local! {
@@ -345,6 +405,18 @@ pub fn parse_html_document<'s>(
         next.set(id + 1);
         id
     });
+    let control_clone = {
+        let current = scope.get_current_context();
+        let owner = current
+            .get_slot::<DomContextId>()
+            .map_or(DOM_ID.with(|id| id.get()), |id| id.0);
+        let _owner = DomScope::enter(owner);
+        DOM.with(|dom| {
+            dom.borrow()
+                .as_ref()
+                .and_then(|state| state.control_clone.clone())
+        })
+    };
     let _dom = DomScope::enter(id);
     let mut tree = Tree::parse(html);
     if sanitize {
@@ -354,10 +426,13 @@ pub fn parse_html_document<'s>(
     let template = v8::Global::new(scope, template);
     DOM.with(|dom| {
         *dom.borrow_mut() = Some(DomState {
+            nonces: initial_nonces(&tree),
             tree,
             cache: HashMap::new(),
             el_template: template,
             shadow_modes: HashMap::new(),
+            basics_state: None,
+            control_clone,
         })
     });
     let context = scope.get_current_context();
@@ -388,41 +463,40 @@ pub fn create_document_element<'s>(
 pub fn import_document_node<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     document: v8::Local<v8::Object>,
-    node: v8::Local<v8::Object>,
+    node: v8::Local<'s, v8::Object>,
     deep: bool,
 ) -> Result<v8::Local<'s, v8::Object>, &'static str> {
+    let source_node = node;
     struct Snapshot {
         kind: u8,
         name: String,
         value: String,
-        namespace: Namespace,
-        attributes: Vec<(String, String)>,
+        public_id: String,
+        system_id: String,
+        namespace: Option<String>,
+        attributes: Vec<AttributeData>,
         children: Vec<Snapshot>,
     }
     fn capture(tree: &Tree, node: Handle, deep: bool) -> Result<Snapshot, &'static str> {
         let kind = tree.node_type_id(node);
-        if !matches!(kind, 1 | 3 | 8 | 11) {
+        if !matches!(kind, 1 | 2 | 3 | 8 | 10 | 11) {
             return Err("Importing this node kind is unsupported");
         }
         if kind == 1 && tree.local_name(node) == Some("template") {
             return Err("Importing template content is unsupported");
         }
-        let mut attributes = Vec::new();
-        tree.for_each_attr_full(node, |prefix, name, value| {
-            attributes.push((
-                if prefix.is_empty() {
-                    name.to_string()
-                } else {
-                    format!("{prefix}:{name}")
-                },
-                value.to_string(),
-            ))
-        });
+        let attributes = tree.attributes_namespaced(node);
         Ok(Snapshot {
             kind,
-            name: tree.local_name(node).unwrap_or_default().to_string(),
+            name: tree
+                .qualified_name(node)
+                .or_else(|| tree.doctype_name(node))
+                .unwrap_or_default()
+                .to_string(),
             value: tree.node_value(node).unwrap_or_default(),
-            namespace: tree.namespace(node),
+            public_id: tree.doctype_public_id(node).unwrap_or_default().to_owned(),
+            system_id: tree.doctype_system_id(node).unwrap_or_default().to_owned(),
+            namespace: tree.namespace_uri(node).map(str::to_owned),
             attributes,
             children: if deep {
                 tree.children(node)
@@ -436,13 +510,26 @@ pub fn import_document_node<'s>(
     }
     fn materialize(tree: &mut Tree, snapshot: Snapshot) -> Handle {
         let node = match snapshot.kind {
+            2 => tree.create_attribute(
+                snapshot.namespace.as_deref(),
+                &snapshot.name,
+                &snapshot.value,
+            ),
             3 => tree.create_text_node(&snapshot.value),
             8 => tree.create_comment(&snapshot.value),
+            10 => {
+                tree.create_document_type(&snapshot.name, &snapshot.public_id, &snapshot.system_id)
+            }
             11 => tree.create_document_fragment(),
-            _ => tree.create_element_ns(&snapshot.name, snapshot.namespace),
+            _ => tree.create_element_namespace(snapshot.namespace.as_deref(), &snapshot.name),
         };
-        for (name, value) in snapshot.attributes {
-            tree.set_attribute(node, &name, &value);
+        for attribute in snapshot.attributes {
+            tree.set_attribute_ns(
+                node,
+                attribute.namespace.as_deref(),
+                &attribute.qualified_name,
+                &attribute.value,
+            );
         }
         for child in snapshot.children {
             let child = materialize(tree, child);
@@ -462,7 +549,37 @@ pub fn import_document_node<'s>(
     }
     let node =
         with_tree_mut(|tree| materialize(tree, snapshot)).ok_or("Document tree unavailable")?;
-    Ok(wrap(scope, node))
+    let clone = wrap(scope, node);
+    copy_control_state(scope, source_node, clone, deep);
+    document_basics::copy_nonces(scope, source_node, clone, deep);
+    Ok(clone)
+}
+
+fn copy_control_state<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    source: v8::Local<'s, v8::Object>,
+    clone: v8::Local<'s, v8::Object>,
+    deep: bool,
+) {
+    let function = {
+        let _source = DomScope::for_object(scope, source);
+        DOM.with(|dom| {
+            dom.borrow()
+                .as_ref()
+                .and_then(|state| state.control_clone.clone())
+        })
+    };
+    let Some(function) = function else {
+        return;
+    };
+    let function = v8::Local::new(scope, function);
+    let Some(context) = function.get_creation_context(scope) else {
+        return;
+    };
+    let scope = &mut v8::ContextScope::new(scope, context);
+    let deep = v8::Boolean::new(scope, deep);
+    let receiver = v8::undefined(scope).into();
+    function.call(scope, receiver, &[source.into(), clone.into(), deep.into()]);
 }
 
 /// Read a node object's handle from internal field 0.
@@ -860,7 +977,7 @@ fn el_append_child(
     let Some(child) = arg_handle(scope, &args, 0) else {
         return;
     };
-    if with_tree(|t| t.is_shadow_root(child)).unwrap_or(false) {
+    if with_tree(|t| t.node_type_id(child) == 2 || t.is_shadow_root(child)).unwrap_or(false) {
         throw_dom_error(
             scope,
             "HierarchyRequestError",
@@ -1139,19 +1256,188 @@ fn el_toggle_attribute(
     let present = with_tree_mut(|t| t.toggle_attribute(h, &name, force)).unwrap_or(false);
     rv.set(v8::Boolean::new(scope, present).into());
 }
-fn el_get_attribute_ns(
+fn dom_string<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: v8::Local<'s, v8::Value>,
+) -> Option<String> {
+    if value.is_symbol() {
+        let message = v8::String::new(scope, "Cannot convert a Symbol to a string").unwrap();
+        let error = v8::Exception::type_error(scope, message);
+        scope.throw_exception(error);
+        return None;
+    }
+    value
+        .to_string(scope)
+        .map(|value| value.to_rust_string_lossy(scope))
+}
+fn namespace_argument<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: &v8::FunctionCallbackArguments<'s>,
+) -> Option<Option<String>> {
+    let value = args.get(0);
+    if value.is_null_or_undefined() {
+        return Some(None);
+    }
+    dom_string(scope, value).map(|value| (!value.is_empty()).then_some(value))
+}
+fn require_arguments(
     scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+    args: &v8::FunctionCallbackArguments,
+    count: i32,
+) -> bool {
+    if args.length() >= count {
+        return true;
+    }
+    let message = v8::String::new(scope, "Not enough arguments").unwrap();
+    let error = v8::Exception::type_error(scope, message);
+    scope.throw_exception(error);
+    false
+}
+fn validate_namespace_name(
+    namespace: Option<&str>,
+    qualified: &str,
+    attribute: bool,
+) -> Result<(), &'static str> {
+    let (prefix, local) = qualified
+        .split_once(':')
+        .map_or((None, qualified), |(prefix, local)| (Some(prefix), local));
+    let forbidden = |value: &str, attribute: bool| {
+        value.chars().any(|c| {
+            matches!(c, '\0' | '\t' | '\n' | '\x0C' | '\r' | ' ' | '/' | '>')
+                || attribute && c == '='
+        })
+    };
+    if prefix.is_some_and(|prefix| prefix.is_empty() || forbidden(prefix, false))
+        || local.is_empty()
+        || forbidden(local, attribute)
+    {
+        return Err("InvalidCharacterError");
+    }
+    if !attribute {
+        let first = local.chars().next().unwrap();
+        if !first.is_ascii_alphabetic()
+            && (!(first == '_' || first == ':' || !first.is_ascii())
+                || local.chars().skip(1).any(|c| {
+                    c.is_ascii()
+                        && !c.is_ascii_alphanumeric()
+                        && !matches!(c, '-' | '.' | ':' | '_')
+                }))
+        {
+            return Err("InvalidCharacterError");
+        }
+    }
+    if prefix.is_some() && namespace.is_none()
+        || prefix == Some("xml") && namespace != Some("http://www.w3.org/XML/1998/namespace")
+        || (qualified == "xmlns" || prefix == Some("xmlns"))
+            && namespace != Some("http://www.w3.org/2000/xmlns/")
+        || namespace == Some("http://www.w3.org/2000/xmlns/")
+            && qualified != "xmlns"
+            && prefix != Some("xmlns")
+    {
+        return Err("NamespaceError");
+    }
+    Ok(())
+}
+fn el_get_attribute_ns<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1]) else {
+    let Some(node) = receiver_handle(scope, &args, &[1]) else {
         return;
     };
-    let local = arg_str(scope, &args, 1);
-    match with_tree(|t| t.get_attribute_ns(h, None, &local)).flatten() {
-        Some(s) => rv.set(v8::String::new(scope, &s).unwrap().into()),
+    if !require_arguments(scope, &args, 2) {
+        return;
+    }
+    let Some(namespace) = namespace_argument(scope, &args) else {
+        return;
+    };
+    let Some(local) = dom_string(scope, args.get(1)) else {
+        return;
+    };
+    match with_tree(|tree| tree.get_attribute_ns(node, namespace.as_deref(), &local)).flatten() {
+        Some(value) => rv.set(v8::String::new(scope, &value).unwrap().into()),
         None => rv.set(v8::null(scope).into()),
+    }
+}
+fn el_has_attribute_ns<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(node) = receiver_handle(scope, &args, &[1]) else {
+        return;
+    };
+    if !require_arguments(scope, &args, 2) {
+        return;
+    }
+    let Some(namespace) = namespace_argument(scope, &args) else {
+        return;
+    };
+    let Some(local) = dom_string(scope, args.get(1)) else {
+        return;
+    };
+    rv.set_bool(
+        with_tree(|tree| {
+            tree.get_attribute_ns(node, namespace.as_deref(), &local)
+                .is_some()
+        })
+        .unwrap_or(false),
+    );
+}
+fn el_set_attribute_ns<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(node) = receiver_handle(scope, &args, &[1]) else {
+        return;
+    };
+    if !require_arguments(scope, &args, 3) {
+        return;
+    }
+    let Some(namespace) = namespace_argument(scope, &args) else {
+        return;
+    };
+    let Some(qualified) = dom_string(scope, args.get(1)) else {
+        return;
+    };
+    let Some(value) = dom_string(scope, args.get(2)) else {
+        return;
+    };
+    if let Err(error) = validate_namespace_name(namespace.as_deref(), &qualified, true) {
+        throw_dom_error(scope, error, "Invalid namespace or qualified name");
+        return;
+    }
+    with_tree_mut(|tree| tree.set_attribute_ns(node, namespace.as_deref(), &qualified, &value));
+    if namespace.is_none() && qualified == "nonce" {
+        update_node_nonce(scope, args.this(), &value);
+    }
+}
+fn el_remove_attribute_ns<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(node) = receiver_handle(scope, &args, &[1]) else {
+        return;
+    };
+    if !require_arguments(scope, &args, 2) {
+        return;
+    }
+    let Some(namespace) = namespace_argument(scope, &args) else {
+        return;
+    };
+    let Some(local) = dom_string(scope, args.get(1)) else {
+        return;
+    };
+    with_tree_mut(|tree| tree.remove_attribute_ns(node, namespace.as_deref(), &local));
+    if namespace.is_none() && local == "nonce" {
+        update_node_nonce(scope, args.this(), "");
     }
 }
 
@@ -1168,7 +1454,7 @@ fn el_insert_before(
         return;
     };
     let reference = arg_handle(scope, &args, 1);
-    if with_tree(|t| t.is_shadow_root(child)).unwrap_or(false) {
+    if with_tree(|t| t.node_type_id(child) == 2 || t.is_shadow_root(child)).unwrap_or(false) {
         throw_dom_error(
             scope,
             "HierarchyRequestError",
@@ -1201,6 +1487,15 @@ fn el_set_attribute(
         name.clone()
     };
     with_tree_mut(|t| t.set_attribute(h, &key, &value));
+    if key == "nonce" {
+        DOM.with(|dom| {
+            dom.borrow_mut()
+                .as_mut()
+                .unwrap()
+                .nonces
+                .insert(h, value.clone());
+        });
+    }
 
     // When an <input> becomes a checkbox/radio (React sets `type` via setAttribute after createElement),
     // strip the value-change tracker: those inputs track `checked`, not `value`, so a value-tracker
@@ -1229,7 +1524,7 @@ fn attr_get(t: &Tree, h: Handle, name: &str) -> Option<String> {
         return Some(v.to_string());
     }
     let lower = name.to_ascii_lowercase();
-    if lower != name {
+    if t.namespace_id(h) == 0 && lower != name {
         if let Some(v) = t.get_attribute(h, &lower) {
             return Some(v.to_string());
         }
@@ -1254,93 +1549,311 @@ fn el_get_attribute(
     }
 }
 
-fn el_get_attribute_node(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn attr_type_error(scope: &mut v8::PinScope, message: &str) {
+    let message = v8::String::new(scope, message).unwrap();
+    let error = v8::Exception::type_error(scope, message);
+    scope.throw_exception(error);
+}
+fn el_get_attribute_node<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1]) else {
+    let Some(owner) = receiver_handle(scope, &args, &[1]) else {
         return;
     };
-    let name = arg_str(scope, &args, 0);
-    let val = with_tree(|t| attr_get(t, h, &name)).flatten();
-    match val {
-        Some(v) => {
-            let o = v8::Object::new(scope);
-            for (pk, pv) in [
-                ("name", name.as_str()),
-                ("nodeName", name.as_str()),
-                ("localName", name.as_str()),
-                ("value", v.as_str()),
-                ("nodeValue", v.as_str()),
-            ] {
-                let key = v8::String::new(scope, pk).unwrap();
-                let s = v8::String::new(scope, pv).unwrap();
-                o.set(scope, key.into(), s.into());
+    if !require_arguments(scope, &args, 1) {
+        return;
+    }
+    let Some(mut name) = dom_string(scope, args.get(0)) else {
+        return;
+    };
+    if with_tree(|tree| tree.namespace_id(owner) == 0).unwrap_or(false) {
+        name.make_ascii_lowercase();
+    }
+    let data = with_tree(|tree| {
+        tree.attributes_namespaced(owner)
+            .into_iter()
+            .find(|attribute| attribute.qualified_name == name)
+    })
+    .flatten();
+    let node = data.and_then(|data| {
+        with_tree_mut(|tree| {
+            tree.attribute_node(owner, data.namespace.as_deref(), &data.local_name)
+        })
+        .flatten()
+    });
+    rv.set(wrap_opt(scope, node));
+}
+fn el_get_attribute_node_ns<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(owner) = receiver_handle(scope, &args, &[1]) else {
+        return;
+    };
+    if !require_arguments(scope, &args, 2) {
+        return;
+    }
+    let Some(namespace) = namespace_argument(scope, &args) else {
+        return;
+    };
+    let Some(local) = dom_string(scope, args.get(1)) else {
+        return;
+    };
+    let node =
+        with_tree_mut(|tree| tree.attribute_node(owner, namespace.as_deref(), &local)).flatten();
+    rv.set(wrap_opt(scope, node));
+}
+fn el_set_attribute_node<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(owner) = receiver_handle(scope, &args, &[1]) else {
+        return;
+    };
+    if !require_arguments(scope, &args, 1) {
+        return;
+    }
+    let Ok(attribute) = v8::Local::<v8::Object>::try_from(args.get(0)) else {
+        attr_type_error(scope, "An Attr node is required");
+        return;
+    };
+    let target_id = dom_id_of(scope, args.this());
+    let source_id = dom_id_of(scope, attribute);
+    let valid = {
+        let _source = DomScope::for_object(scope, attribute);
+        handle_of(scope, attribute).and_then(|node| {
+            with_tree(|tree| (tree.node_type_id(node), tree.attribute_owner(node)))
+        })
+    };
+    let Some((2, attached)) = valid else {
+        attr_type_error(scope, "An Attr node is required");
+        return;
+    };
+    if attached.is_some_and(|current| source_id != target_id || current != owner) {
+        throw_dom_error(
+            scope,
+            "InUseAttributeError",
+            "The attribute already belongs to an element",
+        );
+        return;
+    }
+    let attribute = if source_id != target_id {
+        match document_basics::adopt(scope, args.this(), attribute) {
+            Ok(attribute) => attribute,
+            Err(error) => {
+                throw_dom_error(scope, error, "The attribute could not be adopted");
+                return;
             }
-            let sk = v8::String::new(scope, "specified").unwrap();
-            let st = v8::Boolean::new(scope, true);
-            o.set(scope, sk.into(), st.into());
-            rv.set(o.into());
         }
-        None => rv.set(v8::null(scope).into()),
-    }
-}
-
-// setAttributeNode(attr) / removeAttributeNode(attr) — operate on an Attr node (the plain object
-// el_get_attribute_node returns: { name, value, … }). React's releaseSingletonInstance resets the
-// <html>/<head>/<body> singletons during commit via instance.removeAttributeNode(attributes[i]);
-// without these it throws "removeAttributeNode is not a function" and aborts the commit.
-fn attr_name_value(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> Option<(String, String)> {
-    let o = v.to_object(scope)?;
-    let name = get_str_prop(scope, o, "name").or_else(|| get_str_prop(scope, o, "nodeName"))?;
-    let value = get_str_prop(scope, o, "value")
-        .or_else(|| get_str_prop(scope, o, "nodeValue"))
-        .unwrap_or_default();
-    if name.is_empty() {
-        None
     } else {
-        Some((name, value))
-    }
-}
-fn el_set_attribute_node(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1]) else {
+        attribute
+    };
+    let Some(node) = handle_of(scope, attribute) else {
         return;
     };
-    if let Some((name, value)) = attr_name_value(scope, args.get(0)) {
-        let is_html = with_tree(|t| t.namespace_id(h) == 0).unwrap_or(true);
-        let key = if is_html {
-            name.to_ascii_lowercase()
-        } else {
-            name
-        };
-        with_tree_mut(|t| t.set_attribute(h, &key, &value));
-    }
-    rv.set(v8::null(scope).into()); // replaced Attr (none modeled) → null
-}
-fn el_remove_attribute_node(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _dom = DomScope::for_object(scope, args.this());
-    let Some(h) = receiver_handle(scope, &args, &[1]) else {
-        return;
-    };
-    if let Some((name, _)) = attr_name_value(scope, args.get(0)) {
-        with_tree_mut(|t| t.remove_attribute(h, &name));
-        let lower = name.to_ascii_lowercase();
-        if lower != name {
-            with_tree_mut(|t| t.remove_attribute(h, &lower));
+    match with_tree_mut(|tree| tree.set_attribute_node(owner, node)) {
+        Some(Ok(replaced)) => {
+            sync_attr_nonce(scope, args.this(), node);
+            rv.set(wrap_opt(scope, replaced));
         }
+        Some(Err(error)) => throw_dom_error(scope, error, "The attribute could not be attached"),
+        None => {}
     }
-    rv.set(args.get(0)); // spec returns the removed Attr
+}
+fn el_remove_attribute_node<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(owner) = receiver_handle(scope, &args, &[1]) else {
+        return;
+    };
+    if !require_arguments(scope, &args, 1) {
+        return;
+    }
+    let Ok(attribute) = v8::Local::<v8::Object>::try_from(args.get(0)) else {
+        attr_type_error(scope, "An Attr node is required");
+        return;
+    };
+    if dom_id_of(scope, attribute) != dom_id_of(scope, args.this()) {
+        throw_dom_error(
+            scope,
+            "NotFoundError",
+            "The attribute does not belong to this element",
+        );
+        return;
+    }
+    let Some(node) = handle_of(scope, attribute) else {
+        attr_type_error(scope, "An Attr node is required");
+        return;
+    };
+    let nonce = with_tree(|tree| {
+        tree.attribute_data(node)
+            .is_some_and(|data| data.namespace.is_none() && data.local_name == "nonce")
+    })
+    .unwrap_or(false);
+    match with_tree_mut(|tree| tree.remove_attribute_node(owner, node)) {
+        Some(Ok(_)) => {
+            if nonce {
+                update_node_nonce(scope, args.this(), "");
+            }
+            rv.set(attribute.into());
+        }
+        Some(Err(error)) => throw_dom_error(
+            scope,
+            error,
+            "The attribute does not belong to this element",
+        ),
+        None => {}
+    }
+}
+fn sync_attr_nonce(scope: &mut v8::PinScope, owner: v8::Local<v8::Object>, attribute: Handle) {
+    if let Some(value) = with_tree(|tree| {
+        tree.attribute_data(attribute)
+            .filter(|data| data.namespace.is_none() && data.local_name == "nonce")
+            .map(|data| data.value.to_string())
+    })
+    .flatten()
+    {
+        update_node_nonce(scope, owner, &value);
+    }
+}
+fn doc_create_attribute<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    if receiver_handle(scope, &args, &[9]).is_none() || !require_arguments(scope, &args, 1) {
+        return;
+    }
+    let Some(mut name) = dom_string(scope, args.get(0)) else {
+        return;
+    };
+    if name.is_empty()
+        || name.chars().any(|c| {
+            matches!(
+                c,
+                '\0' | '\t' | '\n' | '\x0C' | '\r' | ' ' | '/' | '=' | '>'
+            )
+        })
+    {
+        throw_dom_error(scope, "InvalidCharacterError", "Invalid attribute name");
+        return;
+    }
+    name.make_ascii_lowercase();
+    if let Some(node) = with_tree_mut(|tree| tree.create_attribute(None, &name, "")) {
+        let object = wrap(scope, node);
+        rv.set(object.into());
+    }
+}
+fn doc_create_attribute_ns<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    if receiver_handle(scope, &args, &[9]).is_none() || !require_arguments(scope, &args, 2) {
+        return;
+    }
+    let Some(namespace) = namespace_argument(scope, &args) else {
+        return;
+    };
+    let Some(name) = dom_string(scope, args.get(1)) else {
+        return;
+    };
+    if let Err(error) = validate_namespace_name(namespace.as_deref(), &name, true) {
+        throw_dom_error(scope, error, "Invalid namespace or qualified name");
+        return;
+    }
+    if let Some(node) = with_tree_mut(|tree| tree.create_attribute(namespace.as_deref(), &name, ""))
+    {
+        let object = wrap(scope, node);
+        rv.set(object.into());
+    }
+}
+fn get_named_node_name(
+    scope: &mut v8::PinScope,
+    name: v8::Local<v8::Name>,
+    args: v8::PropertyCallbackArguments,
+    rv: v8::ReturnValue<v8::Value>,
+) {
+    get_node_name(scope, name, args, rv);
+}
+fn get_doctype_public(
+    scope: &mut v8::PinScope,
+    _name: v8::Local<v8::Name>,
+    args: v8::PropertyCallbackArguments,
+    mut rv: v8::ReturnValue<v8::Value>,
+) {
+    let _dom = DomScope::for_object(scope, args.holder());
+    let value = handle_of(scope, args.holder())
+        .and_then(|node| {
+            with_tree(|tree| tree.doctype_public_id(node).map(str::to_owned)).flatten()
+        })
+        .unwrap_or_default();
+    rv.set(v8::String::new(scope, &value).unwrap().into());
+}
+fn get_doctype_system(
+    scope: &mut v8::PinScope,
+    _name: v8::Local<v8::Name>,
+    args: v8::PropertyCallbackArguments,
+    mut rv: v8::ReturnValue<v8::Value>,
+) {
+    let _dom = DomScope::for_object(scope, args.holder());
+    let value = handle_of(scope, args.holder())
+        .and_then(|node| {
+            with_tree(|tree| tree.doctype_system_id(node).map(str::to_owned)).flatten()
+        })
+        .unwrap_or_default();
+    rv.set(v8::String::new(scope, &value).unwrap().into());
+}
+fn get_attr_owner(
+    scope: &mut v8::PinScope,
+    _name: v8::Local<v8::Name>,
+    args: v8::PropertyCallbackArguments,
+    mut rv: v8::ReturnValue<v8::Value>,
+) {
+    let _dom = DomScope::for_object(scope, args.holder());
+    let owner = handle_of(scope, args.holder())
+        .and_then(|node| with_tree(|tree| tree.attribute_owner(node)).flatten());
+    rv.set(wrap_opt(scope, owner));
+}
+fn get_attr_specified(
+    _scope: &mut v8::PinScope,
+    _name: v8::Local<v8::Name>,
+    _args: v8::PropertyCallbackArguments,
+    mut rv: v8::ReturnValue<v8::Value>,
+) {
+    rv.set_bool(true);
+}
+fn set_attr_value<'s, 'i, T>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    _name: v8::Local<'s, v8::Name>,
+    value: v8::Local<'s, v8::Value>,
+    args: v8::PropertyCallbackArguments<'s>,
+    _rv: v8::ReturnValue<T>,
+) {
+    let _dom = DomScope::for_object(scope, args.holder());
+    let Some(node) = handle_of(scope, args.holder()) else {
+        return;
+    };
+    let Some(value) = dom_string(scope, value) else {
+        return;
+    };
+    with_tree_mut(|tree| tree.set_attribute_value(node, &value));
+    if let Some(owner) = with_tree(|tree| tree.attribute_owner(node)).flatten() {
+        let owner = wrap(scope, owner);
+        sync_attr_nonce(scope, owner, node);
+    }
 }
 
 fn el_has_attribute(
@@ -1354,9 +1867,11 @@ fn el_has_attribute(
     };
     let name = arg_str(scope, &args, 0);
     let lower = name.to_ascii_lowercase();
-    let has =
-        with_tree(|t| t.has_attribute(h, &name) || (lower != name && t.has_attribute(h, &lower)))
-            .unwrap_or(false);
+    let has = with_tree(|t| {
+        t.has_attribute(h, &name)
+            || (t.namespace_id(h) == 0 && lower != name && t.has_attribute(h, &lower))
+    })
+    .unwrap_or(false);
     rv.set(v8::Boolean::new(scope, has).into());
 }
 
@@ -1371,6 +1886,15 @@ fn el_remove_attribute(
     };
     let name = arg_str(scope, &args, 0);
     let lower = name.to_ascii_lowercase();
+    if lower == "nonce" {
+        DOM.with(|dom| {
+            dom.borrow_mut()
+                .as_mut()
+                .unwrap()
+                .nonces
+                .insert(h, String::new());
+        });
+    }
     with_tree_mut(|t| {
         t.remove_attribute(h, &name);
         if lower != name {
@@ -1550,19 +2074,9 @@ fn get_namespace_uri(
     let Some(h) = handle_of(scope, args.holder()) else {
         return;
     };
-    let namespace = with_tree(|tree| {
-        if tree.node_type_id(h) != 1 {
-            return None;
-        }
-        Some(match tree.namespace_id(h) {
-            1 => "http://www.w3.org/2000/svg",
-            2 => "http://www.w3.org/1998/Math/MathML",
-            _ => "http://www.w3.org/1999/xhtml",
-        })
-    })
-    .flatten();
+    let namespace = with_tree(|tree| tree.namespace_uri(h).map(str::to_owned)).flatten();
     match namespace {
-        Some(namespace) => rv.set(v8::String::new(scope, namespace).unwrap().into()),
+        Some(namespace) => rv.set(v8::String::new(scope, &namespace).unwrap().into()),
         None => rv.set(v8::null(scope).into()),
     }
 }
@@ -1574,13 +2088,8 @@ fn get_prefix(
     mut rv: v8::ReturnValue<v8::Value>,
 ) {
     let _dom = DomScope::for_object(scope, args.holder());
-    let prefix = handle_of(scope, args.holder()).and_then(|h| {
-        with_tree(|tree| {
-            tree.local_name(h)
-                .and_then(|name| name.split_once(':').map(|(prefix, _)| prefix.to_string()))
-        })
-        .flatten()
-    });
+    let prefix = handle_of(scope, args.holder())
+        .and_then(|h| with_tree(|tree| tree.prefix(h).map(str::to_owned)).flatten());
     match prefix {
         Some(prefix) => rv.set(v8::String::new(scope, &prefix).unwrap().into()),
         None => rv.set(v8::null(scope).into()),
@@ -1772,33 +2281,30 @@ fn el_remove_self(
 }
 
 // document native methods (reliable — no JS-bootstrap dependency).
-fn doc_create_element_ns(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn doc_create_element_ns<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
     if receiver_handle(scope, &args, &[9]).is_none() {
         return;
     }
-    let ns = arg_str(scope, &args, 0).to_ascii_lowercase();
-    let tag = arg_str(scope, &args, 1);
-    // Map the namespace URI to rtdom's ns id (svg=1, math=2, html=0) so SVG/MathML elements keep
-    // their namespace + case-preserved attributes (e.g. `viewBox`), unlike HTML which lowercases.
-    let ns_id: u8 = if ns.contains("svg") {
-        1
-    } else if ns.contains("mathml") || ns.contains("math") {
-        2
-    } else {
-        0
+    if !require_arguments(scope, &args, 2) {
+        return;
+    }
+    let Some(namespace) = namespace_argument(scope, &args) else {
+        return;
     };
-    let made = with_tree_mut(|t| {
-        if ns_id == 0 {
-            t.create_element(&tag)
-        } else {
-            t.create_element_ns(&tag, Namespace::from_id(ns_id))
-        }
-    });
+    let Some(qualified) = dom_string(scope, args.get(1)) else {
+        return;
+    };
+    if let Err(error) = validate_namespace_name(namespace.as_deref(), &qualified, false) {
+        throw_dom_error(scope, error, "Invalid namespace or qualified name");
+        return;
+    }
+    let made =
+        with_tree_mut(|tree| tree.create_element_namespace(namespace.as_deref(), &qualified));
     if let Some(h) = made {
         let node = wrap(scope, h);
         rv.set(node.into());
@@ -1838,14 +2344,31 @@ fn doc_create_comment(
 fn clone_subtree(t: &mut Tree, h: Handle, deep: bool) -> Handle {
     let nt = t.node_type_id(h);
     let new_h = match nt {
+        2 => {
+            let data = t.attribute_data(h).unwrap().clone();
+            t.create_attribute(data.namespace.as_deref(), &data.qualified_name, &data.value)
+        }
         3 => t.create_text_node(&t.node_value(h).unwrap_or_default()),
         8 => t.create_comment(&t.node_value(h).unwrap_or_default()),
+        10 => {
+            let name = t.doctype_name(h).unwrap_or_default().to_owned();
+            let public = t.doctype_public_id(h).unwrap_or_default().to_owned();
+            let system = t.doctype_system_id(h).unwrap_or_default().to_owned();
+            t.create_document_type(&name, &public, &system)
+        }
         11 => t.create_document_fragment(),
         _ => {
-            let tag = t.tag_name(h).unwrap_or_else(|| "div".into());
-            let e = t.create_element_ns(&tag, t.namespace(h));
-            for (k, v) in t.attributes(h) {
-                t.set_attribute(e, &k, &v);
+            let tag = t.qualified_name(h).unwrap_or("div").to_owned();
+            let namespace = t.namespace_uri(h).map(str::to_owned);
+            let attributes = t.attributes_namespaced(h);
+            let e = t.create_element_namespace(namespace.as_deref(), &tag);
+            for attribute in attributes {
+                t.set_attribute_ns(
+                    e,
+                    attribute.namespace.as_deref(),
+                    &attribute.qualified_name,
+                    &attribute.value,
+                );
             }
             e
         }
@@ -1894,9 +2417,9 @@ fn el_get_root_node(
     }
 }
 
-fn el_clone_node(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_clone_node<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -1909,6 +2432,7 @@ fn el_clone_node(
     }
     let deep = args.get(0).boolean_value(scope);
     if let Some(new_h) = with_tree_mut(|t| clone_subtree(t, h, deep)) {
+        document_basics::clone_nonces(h, new_h, deep);
         let node = wrap(scope, new_h);
         // Carry over the source's JS prototype so a cloned control element keeps its interface
         // accessors (type/value/checked/selected). createElement applies these protos, but cloneNode
@@ -1918,31 +2442,7 @@ fn el_clone_node(
         if let Some(p) = src_proto {
             node.set_prototype(scope, p);
         }
-        let owner = DOM_CONTEXTS.with(|d| d.borrow().get(&DOM_ID.with(|id| id.get())).cloned());
-        if let Some(owner) = owner {
-            let context = v8::Local::new(scope, owner);
-            let scope = &mut v8::ContextScope::new(scope, context);
-            let global = context.global(scope);
-            let name = v8::String::new(scope, "ts").unwrap();
-            let key = v8::Symbol::for_key(scope, name);
-            if let Some(namespace) = global
-                .get(scope, key.into())
-                .and_then(|v| v.to_object(scope))
-            {
-                let key = v8::String::new(scope, "cloneControlState").unwrap();
-                if let Some(function) = namespace
-                    .get(scope, key.into())
-                    .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
-                {
-                    let deep = v8::Boolean::new(scope, deep);
-                    function.call(
-                        scope,
-                        namespace.into(),
-                        &[args.this().into(), node.into(), deep.into()],
-                    );
-                }
-            }
-        }
+        copy_control_state(scope, args.this(), node, deep);
         rv.set(node.into());
     }
 }
@@ -2002,7 +2502,7 @@ fn el_contains_node(
     rv.set(v8::Boolean::new(scope, yes).into());
 }
 
-/// `attributes` → array of `{ name, value, nodeName, nodeValue }` (NamedNodeMap-lite, indexable).
+/// Native Attr snapshot backing the public live NamedNodeMap projection.
 fn get_attributes(
     scope: &mut v8::PinScope,
     _name: v8::Local<v8::Name>,
@@ -2013,21 +2513,18 @@ fn get_attributes(
     let Some(h) = handle_of(scope, args.holder()) else {
         return;
     };
-    let attrs = with_tree(|t| t.attributes(h)).unwrap_or_default();
+    let attrs = with_tree_mut(|tree| {
+        let records = tree.attributes_namespaced(h);
+        records
+            .into_iter()
+            .filter_map(|data| tree.attribute_node(h, data.namespace.as_deref(), &data.local_name))
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
     let arr = v8::Array::new(scope, attrs.len() as i32);
-    for (i, (k, v)) in attrs.into_iter().enumerate() {
-        let o = v8::Object::new(scope);
-        for (pk, pv) in [
-            ("name", k.as_str()),
-            ("nodeName", k.as_str()),
-            ("value", v.as_str()),
-            ("nodeValue", v.as_str()),
-        ] {
-            let key = v8::String::new(scope, pk).unwrap();
-            let val = v8::String::new(scope, pv).unwrap();
-            o.set(scope, key.into(), val.into());
-        }
-        arr.set_index(scope, i as u32, o.into());
+    for (index, node) in attrs.into_iter().enumerate() {
+        let object = wrap(scope, node);
+        arr.set_index(scope, index as u32, object.into());
     }
     // NamedNodeMap accessors (`attributes.item(i)` / `attributes.namedItem(name)`).
     bind_method(scope, arr.into(), "item", nodelist_item);
@@ -3055,7 +3552,7 @@ fn get_node_data(
         return;
     };
     let nt = with_tree(|t| t.node_type_id(h)).unwrap_or(1);
-    if nt == 3 || nt == 8 {
+    if nt == 2 || nt == 3 || nt == 8 {
         let data = with_tree(|t| t.node_value(h)).flatten().unwrap_or_default();
         rv.set(v8::String::new(scope, &data).unwrap().into());
     } else {
@@ -3089,12 +3586,7 @@ fn get_local_name(
     let Some(h) = handle_of(scope, args.holder()) else {
         return;
     };
-    match with_tree(|t| {
-        t.local_name(h)
-            .map(|s| s.rsplit(':').next().unwrap_or(s).to_string())
-    })
-    .flatten()
-    {
+    match with_tree(|t| t.local_name(h).map(str::to_owned)).flatten() {
         Some(ln) => rv.set(v8::String::new(scope, &ln).unwrap().into()),
         None => rv.set(v8::null(scope).into()),
     }
@@ -3112,9 +3604,13 @@ fn get_node_name(
     };
     let (nt, tag) = with_tree(|t| (t.node_type_id(h), t.tag_name(h))).unwrap_or((1, None));
     let name = match nt {
+        2 => with_tree(|tree| tree.qualified_name(h).unwrap_or_default().to_owned())
+            .unwrap_or_default(),
         3 => "#text".to_string(),
         8 => "#comment".to_string(),
         9 => "#document".to_string(),
+        10 => with_tree(|tree| tree.doctype_name(h).unwrap_or_default().to_owned())
+            .unwrap_or_default(),
         11 => "#document-fragment".to_string(),
         _ => tag.unwrap_or_default(),
     };
@@ -3334,6 +3830,8 @@ fn method_arity(name: &str) -> i32 {
         "appendChild"
         | "removeChild"
         | "getAttribute"
+        | "createAttribute"
+        | "setAttributeNodeNS"
         | "getAttributeNode"
         | "setAttributeNode"
         | "removeAttributeNode"
@@ -3373,10 +3871,14 @@ fn method_arity(name: &str) -> i32 {
         | "substringData"
         | "insertAdjacentElement"
         | "insertAdjacentHTML"
+        | "createAttributeNS"
+        | "getAttributeNodeNS"
+        | "hasAttributeNS"
+        | "removeAttributeNS"
         | "getAttributeNS"
         | "setProperty"
         | "createElementNS" => 2,
-        "replaceData" | "set" => 3,
+        "replaceData" | "set" | "setAttributeNS" => 3,
         _ => 0,
     }
 }
@@ -3460,6 +3962,14 @@ fn build_el_template<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
     tmpl_method(scope, tmpl, "setAttribute", el_set_attribute);
     tmpl_method(scope, tmpl, "getAttribute", el_get_attribute);
     tmpl_method(scope, tmpl, "getAttributeNode", el_get_attribute_node);
+    tmpl_method(scope, tmpl, "getAttributeNodeNS", el_get_attribute_node_ns);
+    tmpl_method(scope, tmpl, "setAttributeNodeNS", el_set_attribute_node);
+    tmpl_accessor(scope, tmpl, "__attrValue", get_node_data, set_attr_value);
+    tmpl_getter(scope, tmpl, "__attrOwner", get_attr_owner);
+    tmpl_getter(scope, tmpl, "__attrSpecified", get_attr_specified);
+    tmpl_getter(scope, tmpl, "__nodeName", get_named_node_name);
+    tmpl_getter(scope, tmpl, "publicId", get_doctype_public);
+    tmpl_getter(scope, tmpl, "systemId", get_doctype_system);
     tmpl_method(scope, tmpl, "setAttributeNode", el_set_attribute_node);
     tmpl_method(scope, tmpl, "removeAttributeNode", el_remove_attribute_node);
     tmpl_method(scope, tmpl, "hasAttribute", el_has_attribute);
@@ -3522,6 +4032,9 @@ fn build_el_template<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
     tmpl_method(scope, tmpl, "insertAdjacentHTML", el_insert_adjacent_html);
     tmpl_method(scope, tmpl, "toggleAttribute", el_toggle_attribute);
     tmpl_method(scope, tmpl, "getAttributeNS", el_get_attribute_ns);
+    tmpl_method(scope, tmpl, "hasAttributeNS", el_has_attribute_ns);
+    tmpl_method(scope, tmpl, "setAttributeNS", el_set_attribute_ns);
+    tmpl_method(scope, tmpl, "removeAttributeNS", el_remove_attribute_ns);
 
     tmpl_getter(scope, tmpl, "tagName", get_tag_name);
     tmpl_getter(scope, tmpl, "parentNode", get_parent_node);
@@ -3655,6 +4168,8 @@ fn dom_accessor_dispatch(
                 match owner {
                     "Node" => true,
                     "Element" => kind == 1,
+                    "Attr" => kind == 2,
+                    "DocumentType" => kind == 10,
                     "HTMLElement" => kind == 1 && tree.namespace_id(h) == 0,
                     "CharacterData" => matches!(kind, 3 | 4 | 8),
                     "Document" => kind == 9,
@@ -4171,10 +4686,13 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     };
     DOM.with(|d| {
         *d.borrow_mut() = Some(DomState {
+            nonces: initial_nonces(&tree),
             tree,
             cache: HashMap::new(),
             el_template,
             shadow_modes: HashMap::new(),
+            basics_state: None,
+            control_clone: None,
         });
     });
 
@@ -4212,7 +4730,30 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     let factory_key = v8::String::new(scope, "__nativeDOMFunction").unwrap();
     global.set(scope, factory_key.into(), factory.into());
     bind_method(scope, global, "__nativeEventRecord", lookup_event_record);
+    collection_records::register(scope);
     run_js(scope, BOOTSTRAP);
+    let name = v8::String::new(scope, "ts").unwrap();
+    let key = v8::Symbol::for_key(scope, name);
+    if let Some(namespace) = global
+        .get(scope, key.into())
+        .and_then(|value| value.to_object(scope))
+    {
+        let key = v8::String::new(scope, "cloneControlState").unwrap();
+        if let Some(function) = namespace
+            .get(scope, key.into())
+            .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+        {
+            let function = v8::Global::new(scope, function);
+            DOM.with(|dom| dom.borrow_mut().as_mut().unwrap().control_clone = Some(function));
+        }
+    }
+    bind_method(
+        scope,
+        global,
+        "__documentBasicsNative",
+        document_basics::dispatch,
+    );
+    run_js(scope, include_str!("document_basics.js"));
     let key = v8::String::new(scope, "__captureEventRecord").unwrap();
     if let Some(accessor) = global
         .get(scope, key.into())
@@ -4251,6 +4792,13 @@ fn bind_document(scope: &mut v8::PinScope) {
     bind_method(scope, document, "querySelector", doc_query_selector);
     bind_method(scope, document, "querySelectorAll", doc_query_selector_all);
     bind_method(scope, document, "createElementNS", doc_create_element_ns);
+    bind_method(scope, document, "createAttribute", doc_create_attribute);
+    bind_method(
+        scope,
+        document,
+        "createAttributeNS",
+        doc_create_attribute_ns,
+    );
     bind_method(
         scope,
         document,
@@ -4333,6 +4881,135 @@ mod tests {
             v8::V8::initialize_platform(platform);
             v8::V8::initialize();
         });
+    }
+
+    #[test]
+    fn native_namespace_attributes_preserve_uri_identity_ownership_and_scope() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install(scope);
+        let source=v8::String::new(scope,r#"(()=>{
+          const element=document.createElementNS('urn:element','p:Mixed');
+          const other=document.createElement('div');
+          element.setAttributeNS('urn:first','one:value','first');
+          element.setAttributeNS('urn:second','two:value','second');
+          element.setAttribute('value','plain');
+          const attribute=element.getAttributeNodeNS('urn:first','value');
+          const errors=[];for(const action of [()=>element.setAttributeNS(null,'p:value','x'),()=>element.setAttributeNS('urn:wrong','xml:lang','x'),()=>other.setAttributeNode(attribute),()=>other.setAttributeNode({name:'fake',value:'x'}),()=>element.appendChild(attribute)])try{action();errors.push('missing')}catch(error){errors.push(error.name)}
+          attribute.value='live';const clone=attribute.cloneNode();
+          const before=[element instanceof Element,!(element instanceof HTMLElement),element.namespaceURI,element.prefix,element.localName,element.tagName,attribute instanceof Attr,attribute instanceof Node,attribute.nodeType,attribute.ownerElement===element,attribute.ownerDocument===document,attribute===element.getAttributeNode('one:value'),attribute===element.attributes[0],element.getAttributeNS('urn:first','value'),element.getAttributeNS('urn:second','value'),element.getAttributeNS(null,'value'),element.getAttributeNS('urn:absent','value'),clone.value,clone.ownerElement];
+          const replacement=document.createAttributeNS('urn:first','new:value');replacement.value='replaced';
+          const removed=element.setAttributeNodeNS(replacement);before.push(removed===attribute,attribute.ownerElement===null,replacement.ownerElement===element,element.getAttributeNodeNS('urn:first','value')===replacement);
+          element.removeAttributeNS('urn:first','value');before.push(replacement.ownerElement===null,replacement.value,!element.hasAttributeNS('urn:first','value'));
+          const xmlns='http://www.w3.org/2000/xmlns/';element.setAttributeNS(xmlns,'xmlns:q','urn:lookup');
+          const child=document.createElementNS(null,'child');element.appendChild(child);
+          before.push(child.lookupNamespaceURI('q'),child.lookupPrefix('urn:lookup'),child.lookupNamespaceURI('xml'),element.lookupNamespaceURI('p'),element.getAttributeNodeNS(xmlns,'q').lookupNamespaceURI('q'));
+          const copy=element.cloneNode(true);before.push(copy.namespaceURI,copy.prefix,copy.localName,copy.getAttributeNS('urn:second','value'));
+          return JSON.stringify([before,errors]);
+        })()"#).unwrap();
+        let script = v8::Script::compile(scope, source, None).unwrap();
+        let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
+        assert_eq!(
+            result,
+            r#"[[true,true,"urn:element","p","Mixed","p:Mixed",true,true,2,true,true,true,true,"live","second","plain",null,"live",null,true,true,true,true,true,"replaced",true,"urn:lookup","q","http://www.w3.org/XML/1998/namespace","urn:element","urn:lookup","urn:element","p","Mixed","second"],["NamespaceError","NamespaceError","InUseAttributeError","TypeError","HierarchyRequestError"]]"#
+        );
+        reset();
+    }
+
+    #[test]
+    fn document_collections_and_adoption_preserve_live_native_nodes() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_independent_html(scope,"<!doctype html><body><form id='first' name='named'></form><img><a href='/'></a><a name='anchor'></a><embed></body>");
+        let parsed = parse_html_document(scope, "<!doctype html><body></body>", false);
+        let key = v8::String::new(scope, "targetDocument").unwrap();
+        scope
+            .get_current_context()
+            .global(scope)
+            .set(scope, key.into(), parsed.into());
+        let child = v8::Context::new(scope, Default::default());
+        let child_collection = {
+            let child_scope = &mut v8::ContextScope::new(scope, child);
+            install_independent_html(
+                child_scope,
+                "<!doctype html><body><span id='child'></span><span></span></body>",
+            );
+            let code = v8::String::new(child_scope, "document.body.children").unwrap();
+            let script = v8::Script::compile(child_scope, code, None).unwrap();
+            let value = script.run(child_scope).unwrap();
+            v8::Global::new(child_scope, value)
+        };
+        let value = v8::Local::new(scope, child_collection);
+        let key = v8::String::new(scope, "childCollection").unwrap();
+        scope
+            .get_current_context()
+            .global(scope)
+            .set(scope, key.into(), value);
+        let code = v8::String::new(scope,r#"(()=>{
+          const fail=message=>{throw new Error(message)};
+          const forms=document.forms, children=document.body.children, nodes=document.body.childNodes;
+          if(Object.getOwnPropertyDescriptor(HTMLCollection.prototype,'length').get.call(childCollection)!==2||HTMLCollection.prototype.namedItem.call(childCollection,'child')!==childCollection[0])fail('cross-realm collection brand');
+          const forged=globalThis[Symbol.for('ts')].makeNamedObject(HTMLCollection.prototype,()=>({kind:'HTMLCollection',read:()=>[]}),true);let rejected=false;try{Object.getOwnPropertyDescriptor(HTMLCollection.prototype,'length').get.call(forged)}catch(e){rejected=e instanceof TypeError;}if(!rejected)fail('forged collection');
+
+          if(Array.isArray(forms)||!(forms instanceof HTMLCollection)||forms!==document.forms||forms.first!==forms[0]||forms.namedItem('named')!==forms[0])fail('collection brand/identity/names');
+          const descriptor=Object.getOwnPropertyDescriptor(forms,'0');
+          if(descriptor.writable||!descriptor.enumerable||!descriptor.configurable||Object.getOwnPropertyDescriptor(forms,'first').enumerable)fail('collection descriptors');
+          const first=forms[0];Reflect.set(forms,'0',null);Reflect.defineProperty(forms,'0',{value:null});if(forms[0]!==first||Reflect.deleteProperty(forms,'0'))fail('collection mutation');
+          forms.expando=7;if(forms.expando!==7)fail('collection expando');
+          const extra=document.createElement('form');document.body.append(extra);
+          if(forms.length!==2||children.length!==6||nodes.length!==6||!(nodes instanceof NodeList)||Array.from(forms)[1]!==extra)fail('live children');
+          const staticList=document.querySelectorAll('form');document.body.append(document.createElement('form'));
+          if(staticList.length!==2||forms.length!==3||!(staticList instanceof NodeList)||staticList.namedItem!==undefined)fail('static NodeList');
+          if(document.images.length!==1||document.links.length!==1||document.anchors.length!==1||document.embeds!==document.plugins||document.applets.length)fail('document collections');
+          const byName=document.getElementsByName('named');first.setAttribute('name','changed');if(byName.length||!(byName instanceof NodeList))fail('live name query');
+          if(document.compatMode!=='CSS1Compat'||!(document.doctype instanceof DocumentType)||document.doctype.name!=='html'||document.doctype.nodeName!=='html'||document.doctype.ownerDocument!==document)fail('doctype');
+          const doctype=document.doctype;doctype.remove();if(document.doctype!==null||document.compatMode!=='CSS1Compat')fail('doctype mode persistence');
+          targetDocument.doctype.remove();if(targetDocument.adoptNode(doctype)!==doctype||doctype.ownerDocument!==targetDocument)fail('doctype adoption');targetDocument.insertBefore(doctype,targetDocument.documentElement);if(targetDocument.doctype!==doctype||doctype.name!=='html')fail('adopted doctype tree');
+          document.designMode='ON';document.designMode='invalid';if(document.designMode!=='on')fail('designMode');
+          document.dir='RTL';document.bgColor='red';if(document.dir!=='rtl'||document.documentElement.getAttribute('dir')!=='RTL'||document.body.getAttribute('bgcolor')!=='red')fail('document reflected state');
+          const div=document.createElement('div'),input=document.createElement('input');div.append(input);document.body.append(div);input.value='dirty';div.nonce='private';div.setAttribute('nonce','updated');
+          div.nonce='private';if(div.cloneNode(true).nonce!=='private')fail('private nonce clone');div.setAttribute('nonce','updated');
+          let events=0;input.addEventListener('change',()=>events++);
+          const attr=div.getAttributeNode('nonce');const shadow=div.attachShadow({mode:'closed'});const shadowText=document.createTextNode('shadow');shadow.append(shadowText);
+          const moved=targetDocument.adoptNode(div);
+          if(attr.ownerElement!==div||attr.ownerDocument!==targetDocument||div.getAttributeNode('nonce')!==attr||shadow.host!==div||shadow.ownerDocument!==targetDocument||shadowText.ownerDocument!==targetDocument||shadow.firstChild!==shadowText)fail('adoption attr/shadow ownership');
+          if(moved!==div||div.parentNode||input.ownerDocument!==targetDocument||div.ownerDocument!==targetDocument||input.value!=='dirty'||div.nonce!=='updated')fail('adoption identity/state');
+          targetDocument.querySelector('body').append(div);input.dispatchEvent(new Event('change'));
+          if(events!==1||targetDocument.querySelector('input')!==input||document.querySelector('input'))fail('adoption listeners/tree');
+          document.adoptNode(div);document.body.append(div);if(input.ownerDocument!==document)fail('adoption roundtrip');
+          let order=[];document.onabort=()=>order.push('first');document.addEventListener('abort',()=>order.push('listener'));document.onabort=()=>order.push('replacement');document.dispatchEvent(new Event('abort'));if(order.join()!=='replacement,listener')fail('document handler ordering');
+          return 'ok';
+        })()"#).unwrap();
+        let script = v8::Script::compile(scope, code, None).unwrap();
+        let catch = std::pin::pin!(v8::TryCatch::new(scope));
+        let catch = &mut catch.init();
+        let value = script.run(catch).unwrap_or_else(|| {
+            panic!("{}", catch.exception().unwrap().to_rust_string_lossy(catch))
+        });
+        assert_eq!(value.to_rust_string_lossy(catch), "ok");
+        let code = v8::String::new(
+            catch,
+            "document.querySelector('div').nonce='unreflected';document.querySelector('div')",
+        )
+        .unwrap();
+        let script = v8::Script::compile(catch, code, None).unwrap();
+        let source = v8::Local::<v8::Object>::try_from(script.run(catch).unwrap()).unwrap();
+        let copied = import_document_node(catch, parsed, source, true).unwrap();
+        let key = v8::String::new(catch, "importedNode").unwrap();
+        catch
+            .get_current_context()
+            .global(catch)
+            .set(catch, key.into(), copied.into());
+        let code=v8::String::new(catch,"importedNode.nonce==='unreflected'&&importedNode.firstChild.value==='dirty'&&importedNode.ownerDocument===targetDocument&&importedNode!==document.querySelector('div')").unwrap();
+        let script = v8::Script::compile(catch, code, None).unwrap();
+        assert!(script.run(catch).unwrap().is_true());
+        reset();
     }
 
     #[test]

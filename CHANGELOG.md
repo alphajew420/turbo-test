@@ -6,6 +6,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Preserve element and attribute namespace URIs, prefixes and qualified names across native
+  creation, mutation, cloning and import; keep native Attr identity, live values and single-owner
+  attachment semantics, with branded live NamedNodeMap access and namespace validation.
 - Back CSSStyleSheet, StyleSheet and MediaList interfaces with private records and native branded
   callbacks; retain live lists, owner/import metadata and media mutations, detach removed rules,
   reject invalid single-rule insertions, and filter imports from constructed replacements.
@@ -53,6 +56,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   onto their HTML interfaces without copying them onto unrelated elements.
 - Put style/import rule fields behind native, branded prototype accessors with private state;
   selector/style setters update serialization, and import ownership uses an internal loader seam.
+
+- Add live native indexed HTMLCollection/NodeList views over document collections and native
+  children, with static querySelectorAll results and private cross-realm receiver records.
+- Preserve native node/Attr/shadow identities, ownership, listeners and control/nonce state
+  during adoption; clone/import supported private live values through captured document helpers.
+- Read DocumentType metadata and compatibility mode from the real HTML parser; implement
+  supported Document scalar reflection, handler ordering, nonce state and tabIndex conversion.
 
 ## [0.4.5] — 2026-10-10
 

@@ -2021,7 +2021,7 @@ dependencies = [
 [[package]]
 name = "turbo-dom"
 version = "0.5.1"
-source = "git+https://github.com/miaskiewicz/turbo-dom?rev=ab52475ec4e067ced19eb309327701708c3293c0#ab52475ec4e067ced19eb309327701708c3293c0"
+source = "git+https://github.com/miaskiewicz/turbo-dom?rev=6f58ca45488c5841579ca920f62d8d8fd0dcc649#6f58ca45488c5841579ca920f62d8d8fd0dcc649"
 dependencies = [
  "html5ever",
  "markup5ever_rcdom",

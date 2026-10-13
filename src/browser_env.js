@@ -1,5 +1,6 @@
 (function(){
   var g = globalThis;
+  var collectionGet=g.__getCollectionRecord,collectionSet=g.__setCollectionRecord;
   // turbo-surf shares this binding; its internal cross-context state lives on a Symbol-keyed
   // namespace (absent from getOwnPropertyNames(window) — real Chrome has no such __* globals),
   // not as `__*` string globals. Reachable from every realm via globalThis[Symbol.for('ts')].
@@ -380,7 +381,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     // DOM node/collection/CSS interfaces app bundles do `instanceof` against (an
     // undefined RHS throws "not an object" and aborts the chunk — a single missing
     // `Response`/`NodeList` cascades through webpack init and kills React hydration).
-    'CharacterData','Attr','CDATASection','ProcessingInstruction','NodeList','HTMLCollection',
+    'CharacterData','Attr','DocumentType','CDATASection','ProcessingInstruction','NodeList','HTMLCollection',
     'DOMTokenList','NamedNodeMap','CSSStyleDeclaration','CSSRule','StyleSheet','MediaList',
     'DOMStringMap','MutationRecord','MediaQueryList','DOMRect','DOMRectReadOnly','DOMPoint'];
   ctors.forEach(function(n){ if (typeof g[n] === "undefined") { var f = function(){}; f.prototype = {}; try { Object.defineProperty(f, "name", { value: n, configurable: true }); } catch(e){} g[n] = f; } });
@@ -999,13 +1000,14 @@ if(typeof __ns.makeNativeFunction==='function'){
           if (hit) selection.emptySelects.delete(this);
         } });
     })();
-    __ns.cloneControlState = function(source, clone, deep){
+    var cloneChildren=__ns.domAccessor('childNodes',false,'Node');
+    __ns.cloneControlState = function cloneControlState(source, clone, deep){
       if (controlValues.has(source)) clone.value = controlValues.get(source);
       if (selection.optionStates.has(source)) selection.optionStates.set(clone, selection.optionStates.get(source));
       if (selection.emptySelects.has(source)) selection.emptySelects.add(clone);
       if (deep) {
-        var originals = source.childNodes || [], copies = clone.childNodes || [];
-        for (var i=0;i<originals.length && i<copies.length;i++) __ns.cloneControlState(originals[i], copies[i], true);
+        var originals = cloneChildren.call(source), copies = cloneChildren.call(clone);
+        for (var i=0;i<originals.length && i<copies.length;i++) cloneControlState(originals[i], copies[i], true);
       }
     };
     // <label>: htmlFor + control resolution. testing-library's getByLabelText filters
@@ -1672,7 +1674,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   (function(){
     if (typeof __ns.domAccessor !== 'function') return;
     var oldBase=g.HTMLElement.prototype,oldDocument=g.Document.prototype;
-    var nodeConstructors=['Node','Element','HTMLElement','Document','HTMLDocument','CharacterData','Text','Comment','CDATASection','DocumentFragment','ShadowRoot','SVGElement','SVGSVGElement'];
+    var nodeConstructors=['Node','Element','HTMLElement','Document','HTMLDocument','CharacterData','Attr','DocumentType','NamedNodeMap','Text','Comment','CDATASection','DocumentFragment','ShadowRoot','SVGElement','SVGSVGElement'];
     Object.getOwnPropertyNames(g).forEach(function(name){if(/^HTML.*Element$/.test(name)&&typeof g[name]==='function'&&nodeConstructors.indexOf(name)<0)nodeConstructors.push(name);});
     nodeConstructors.forEach(function(name){var previous=g[name];var ctor=__ns.makeNativeFunction(function(){throw new TypeError('Illegal constructor');},name,0,true);ctor.prototype=previous.prototype;Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});});
     var prototypes={};
@@ -1711,6 +1713,8 @@ if(typeof __ns.makeNativeFunction==='function'){
     var documentProto=defineInterface('Document',nodeProto);
     defineInterface('HTMLDocument',documentProto);
     var characterProto=defineInterface('CharacterData',nodeProto);
+    defineInterface('Attr',nodeProto);
+    defineInterface('DocumentType',nodeProto);
     defineInterface('Text',characterProto);
     defineInterface('Comment',characterProto);
     defineInterface('CDATASection',characterProto);
@@ -1743,6 +1747,7 @@ if(typeof __ns.makeNativeFunction==='function'){
       Element:['namespaceURI','prefix','localName','tagName','id','className','attributes','innerHTML','outerHTML','children','firstElementChild','shadowRoot'],
       HTMLElement:['style','dataset','contentEditable','isContentEditable'],
       CharacterData:['data'],
+      DocumentType:['publicId','systemId'],
       Document:['activeElement','children','firstElementChild'],
       DocumentFragment:['children','firstElementChild'],
       ShadowRoot:['host','mode','innerHTML']
@@ -1757,6 +1762,13 @@ if(typeof __ns.makeNativeFunction==='function'){
         Object.defineProperty(prototypes[owner],name,descriptor);
       });
     });
+    [['name','nodeName'],['value','__attrValue'],['ownerElement','__attrOwner'],['specified','__attrSpecified'],['namespaceURI','namespaceURI'],['prefix','prefix'],['localName','localName']].forEach(function(pair){
+      var name=pair[0],raw=pair[1],get=__ns.domAccessor(raw,false,'Attr');
+      var descriptor={configurable:true,enumerable:true,get:raw===name?get:__ns.makeNativeFunction(function(){return get.call(this);},'get '+name,0)};
+      if(name==='value'){var set=__ns.domAccessor(raw,true,'Attr');descriptor.set=__ns.makeNativeFunction(function(value){set.call(this,value);},'set value',1);}
+      Object.defineProperty(prototypes.Attr,name,descriptor);
+    });
+    var doctypeName=__ns.domAccessor('__nodeName',false,'DocumentType');Object.defineProperty(prototypes.DocumentType,'name',{get:__ns.makeNativeFunction(function(){return doctypeName.call(this);},'get name',0),enumerable:true,configurable:true});
     var inlineStyle=Object.getOwnPropertyDescriptor(htmlProto,'style');inlineStyle.set=__ns.makeNativeFunction(function(value){var style=inlineStyle.get.call(this);Object.getOwnPropertyDescriptor(declarationPrototype,'cssText').set.call(style,value);},'set style',1);Object.defineProperty(htmlProto,'style',inlineStyle);
     ['Element','Document','DocumentFragment'].forEach(function(owner){
       var children=Object.getOwnPropertyDescriptor(prototypes[owner],'children').get;
@@ -1768,10 +1780,30 @@ if(typeof __ns.makeNativeFunction==='function'){
     var getType=Object.getOwnPropertyDescriptor(nodeProto,'nodeType').get;
     var getTag=Object.getOwnPropertyDescriptor(elementProto,'tagName').get;
     var getNamespace=Object.getOwnPropertyDescriptor(elementProto,'namespaceURI').get;
+    var getLocalTag=Object.getOwnPropertyDescriptor(elementProto,'localName').get;
+    var nativeAttributes=Object.getOwnPropertyDescriptor(elementProto,'attributes').get;
+    var mapRecords=new WeakMap(),mapsByElement=new WeakMap(),namedFactory=__ns.makeNamedObject;
+    var namedMapCtor=defineInterface('NamedNodeMap',Object.prototype),namedMapProto=namedMapCtor;
+    function mapOwner(map){var record=collectionGet?collectionGet(map):null,owner=record&&record.kind==='NamedNodeMap'?record.owner:collectionGet?null:mapRecords.get(map);if(!owner)throw new TypeError('Illegal invocation');return owner;}
+    function mapEntries(map){return nativeAttributes.call(mapOwner(map));}
+    function mapIndex(value){return Number(value)>>>0;}
+    var mapMethods={
+      item(index){return mapEntries(this)[mapIndex(index)]||null;},
+      getNamedItem(name){name=attributeString(name);return mapOwner(this).getAttributeNode(name);},
+      getNamedItemNS(namespace,local){return mapOwner(this).getAttributeNodeNS(namespace,local);},
+      setNamedItem(attribute){return mapOwner(this).setAttributeNode(attribute);},
+      setNamedItemNS(attribute){return mapOwner(this).setAttributeNodeNS(attribute);},
+      removeNamedItem(name){var owner=mapOwner(this),attribute=owner.getAttributeNode(attributeString(name));if(!attribute)throw new g.DOMException('The attribute is absent','NotFoundError');return owner.removeAttributeNode(attribute);},
+      removeNamedItemNS(namespace,local){var owner=mapOwner(this),attribute=owner.getAttributeNodeNS(namespace,local);if(!attribute)throw new g.DOMException('The attribute is absent','NotFoundError');return owner.removeAttributeNode(attribute);}
+    };
+    Object.keys(mapMethods).forEach(function(name){var delegate=mapMethods[name];Object.defineProperty(namedMapProto,name,{value:__ns.makeNativeFunction(function(){mapOwner(this);if(arguments.length<delegate.length)throw new TypeError('Not enough arguments');return delegate.apply(this,arguments);},name,delegate.length),writable:true,enumerable:true,configurable:true});});
+    Object.defineProperty(namedMapProto,'length',{get:__ns.makeNativeFunction(function(){return mapEntries(this).length;},'get length',0),enumerable:true,configurable:true});
+    Object.defineProperty(namedMapProto,Symbol.iterator,{value:__ns.makeNativeFunction(function(){var map=this;mapOwner(map);var index=0;return {next(){var entries=mapEntries(map);return index<entries.length?{value:entries[index++],done:false}:{value:undefined,done:true};},[Symbol.iterator](){return this;}};},'values',0),writable:true,configurable:true});
+    Object.defineProperty(elementProto,'attributes',{get:__ns.makeNativeFunction(function(){getTag.call(this);var owner=this,map=mapsByElement.get(owner);if(map)return map;map=namedFactory(namedMapProto,function(operation,key,value){var entries=nativeAttributes.call(owner),index=/^(0|[1-9]\d*)$/.test(key)?Number(key):null,attribute=index===null?Array.from(entries).find(function(entry){return entry.name===key;}):entries[index];if(operation==='indices')return Array.from(entries,function(_,index){return index;});if(operation==='keys')return Array.from(new Set(Array.from(entries,function(entry){return entry.name;})));if(operation==='get')return attribute;if(operation==='has')return !!attribute;if(operation==='descriptor')return attribute?{value:attribute,writable:false,enumerable:index!==null,configurable:true}:undefined;if(operation==='set'||operation==='define')return attribute?true:undefined;if(operation==='delete')return attribute?false:undefined;},true);mapRecords.set(map,owner);if(collectionSet)collectionSet(map,{kind:'NamedNodeMap',owner:owner});mapsByElement.set(owner,map);return map;},'get attributes',0),enumerable:true,configurable:true});
     var isShadowRoot=__ns.domAccessor('__isShadowRoot',false,'Node');
     var probe=d.createElement('div');
     __ns.cascadeProp=Object.getOwnPropertyDescriptor(probe,'__cascadeProp').value;
-    nativeKeys.push('__cascadeProp','__isShadowRoot','host','mode','containsNode','activeElement');
+    nativeKeys.push('__nodeName','__attrValue','__attrOwner','__attrSpecified','__cascadeProp','__isShadowRoot','host','mode','containsNode','activeElement');
     var constants={ELEMENT_NODE:1,ATTRIBUTE_NODE:2,TEXT_NODE:3,CDATA_SECTION_NODE:4,ENTITY_REFERENCE_NODE:5,ENTITY_NODE:6,PROCESSING_INSTRUCTION_NODE:7,COMMENT_NODE:8,DOCUMENT_NODE:9,DOCUMENT_TYPE_NODE:10,DOCUMENT_FRAGMENT_NODE:11,NOTATION_NODE:12,DOCUMENT_POSITION_DISCONNECTED:1,DOCUMENT_POSITION_PRECEDING:2,DOCUMENT_POSITION_FOLLOWING:4,DOCUMENT_POSITION_CONTAINS:8,DOCUMENT_POSITION_CONTAINED_BY:16,DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC:32};
     Object.keys(constants).forEach(function(name){
       nativeKeys.push(name);
@@ -1801,7 +1833,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     });
     var methodOwners={
       Node:['appendChild','removeChild','insertBefore','contains','hasChildNodes','cloneNode','getRootNode'],
-      Element:['setAttribute','getAttribute','getAttributeNode','setAttributeNode','removeAttributeNode','hasAttribute','removeAttribute','querySelector','querySelectorAll','matches','closest','append','prepend','remove','before','after','replaceWith','replaceChildren','insertAdjacentElement','insertAdjacentHTML','toggleAttribute','getAttributeNS','scrollIntoView','scrollTo','scrollBy','getBoundingClientRect','attachShadow'],
+      Element:['setAttribute','getAttribute','getAttributeNode','getAttributeNodeNS','setAttributeNode','setAttributeNodeNS','removeAttributeNode','hasAttribute','removeAttribute','querySelector','querySelectorAll','matches','closest','append','prepend','remove','before','after','replaceWith','replaceChildren','insertAdjacentElement','insertAdjacentHTML','toggleAttribute','getAttributeNS','hasAttributeNS','setAttributeNS','removeAttributeNS','scrollIntoView','scrollTo','scrollBy','getBoundingClientRect','attachShadow'],
       HTMLElement:['focus','blur','click'],
       CharacterData:['insertData','deleteData','appendData','replaceData','substringData'],
       Text:['splitText']
@@ -1907,8 +1939,8 @@ if(typeof __ns.makeNativeFunction==='function'){
         },'set '+name,1)});
     });
     var nodeOperations={
-      lookupNamespaceURI(prefix){prefix=prefix==null||prefix===''?null:String(prefix);var element=this.nodeType===9?this.documentElement:this.nodeType===1?this:this.parentElement;while(element){if(element.namespaceURI&&element.prefix===prefix)return element.namespaceURI;element=element.parentElement;}return null;},
-      lookupPrefix(namespace){namespace=namespace==null||namespace===''?null:String(namespace);if(namespace===null)return null;var element=this.nodeType===9?this.documentElement:this.nodeType===1?this:this.parentElement;while(element){if(element.prefix&&element.namespaceURI===namespace&&this.lookupNamespaceURI(element.prefix)===namespace)return element.prefix;element=element.parentElement;}return null;},
+      lookupNamespaceURI(prefix){prefix=prefix==null||prefix===''?null:attributeString(prefix);var element=this.nodeType===9?this.documentElement:this.nodeType===2?this.ownerElement:this.nodeType===1?this:this.parentElement;while(element){if(prefix==='xml')return 'http://www.w3.org/XML/1998/namespace';if(prefix==='xmlns')return 'http://www.w3.org/2000/xmlns/';if(element.namespaceURI&&element.prefix===prefix)return element.namespaceURI;var declaration=element.getAttributeNodeNS('http://www.w3.org/2000/xmlns/',prefix===null?'xmlns':prefix);if(declaration&&(prefix===null?declaration.prefix===null:declaration.prefix==='xmlns'))return declaration.value||null;element=element.parentElement;}return null;},
+      lookupPrefix(namespace){namespace=namespace==null||namespace===''?null:attributeString(namespace);if(namespace===null)return null;var element=this.nodeType===9?this.documentElement:this.nodeType===2?this.ownerElement:this.nodeType===1?this:this.parentElement;while(element){if(element.prefix&&element.namespaceURI===namespace&&this.lookupNamespaceURI(element.prefix)===namespace)return element.prefix;var attributes=element.attributes;for(var index=0;index<attributes.length;index++){var attribute=attributes[index];if(attribute.namespaceURI==='http://www.w3.org/2000/xmlns/'&&attribute.prefix==='xmlns'&&attribute.value===namespace&&this.lookupNamespaceURI(attribute.localName)===namespace)return attribute.localName;}element=element.parentElement;}return null;},
       isDefaultNamespace(namespace){namespace=namespace==null||namespace===''?null:String(namespace);return this.lookupNamespaceURI(null)===namespace;},
       replaceChild(node,old){getType.call(node);getType.call(old);if(old.parentNode!==this)throw new g.DOMException('The node is not a child.','NotFoundError');if(node!==old){this.insertBefore(node,old);this.removeChild(old);}return old;},
       normalize(){var nodes=this.childNodes;for(var index=0;index<nodes.length;){var node=nodes[index];if(node.nodeType!==3){node.normalize();index++;continue;}while(index+1<nodes.length&&nodes[index+1].nodeType===3){node.data+=nodes[index+1].data;this.removeChild(nodes[index+1]);nodes=this.childNodes;}if(!node.data){this.removeChild(node);nodes=this.childNodes;}else index++;}},
@@ -1924,9 +1956,9 @@ if(typeof __ns.makeNativeFunction==='function'){
       if(projected.has(obj))return obj;
       var type=getType.call(obj),name;
       if(type===1){
-        var tag=getTag.call(obj),namespace=getNamespace.call(obj);
-        name=String(namespace||'').indexOf('svg')>=0?(String(tag).split(':').pop()==='svg'?'SVGSVGElement':'SVGElement'):(tags[String(tag).toUpperCase()]||'HTMLElement');
-      }else name=type===11&&isShadowRoot.call(obj)?'ShadowRoot':({3:'Text',4:'CDATASection',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
+        var tag=getLocalTag.call(obj),namespace=getNamespace.call(obj);
+        name=namespace==='http://www.w3.org/2000/svg'?(String(tag).split(':').pop()==='svg'?'SVGSVGElement':'SVGElement'):namespace==='http://www.w3.org/1999/xhtml'?(tags[String(tag).toUpperCase()]||'HTMLElement'):'Element';
+      }else name=type===11&&isShadowRoot.call(obj)?'ShadowRoot':({2:'Attr',10:'DocumentType',3:'Text',4:'CDATASection',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
       Object.setPrototypeOf(obj,prototypes[name]);
       projected.add(obj);
       nativeKeys.forEach(function(key){if(Object.prototype.hasOwnProperty.call(obj,key))delete obj[key];});

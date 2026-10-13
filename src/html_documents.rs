@@ -2,7 +2,7 @@
 //! from Chrome154's public Sanitizer.get() API; parsing and filtering happen here.
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use turbo_dom_parser::rtdom::tree::{Namespace, Tree};
+use turbo_dom_parser::rtdom::tree::Tree;
 
 struct Policy {
     global: HashSet<String>,
@@ -43,13 +43,6 @@ fn policy() -> &'static Policy {
         }
     })
 }
-fn namespace(value: Namespace) -> &'static str {
-    match value {
-        Namespace::Html => "http://www.w3.org/1999/xhtml",
-        Namespace::Svg => "http://www.w3.org/2000/svg",
-        Namespace::MathMl => "http://www.w3.org/1998/Math/MathML",
-    }
-}
 fn executable_url(value: &str) -> bool {
     // HTML character references were decoded by the actual parser. URL parsing
     // strips ASCII tab/newline characters and leading C0 control/space characters.
@@ -76,7 +69,7 @@ pub(super) fn sanitize(tree: &mut Tree) {
         }
         if kind == 1 {
             let key = (
-                namespace(tree.namespace(node)).to_string(),
+                tree.namespace_uri(node).unwrap_or("").to_owned(),
                 tree.local_name(node).unwrap_or_default().to_string(),
             );
             let Some(allowed) = policy.elements.get(&key) else {
