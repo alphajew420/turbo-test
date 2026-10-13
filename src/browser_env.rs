@@ -17,11 +17,24 @@ mod cssom_parser;
 #[path = "collection_records.rs"]
 mod collection_records;
 
-pub fn clear_interface_records(isolate:&mut v8::Isolate) { collection_records::clear(isolate); }
+pub fn clear_interface_records(isolate: &mut v8::Isolate) {
+    collection_records::clear(isolate);
+}
 
 /// Access a host-created interface record in the isolate's private ephemeron registry.
-pub fn get_interface_record<'s>(scope:&mut v8::PinScope<'s,'_>,object:v8::Local<'s,v8::Object>)->Option<v8::Local<'s,v8::Value>> { collection_records::get(scope,object) }
-pub fn set_interface_record<'s>(scope:&mut v8::PinScope<'s,'_>,object:v8::Local<'s,v8::Object>,record:v8::Local<'s,v8::Value>)->bool { collection_records::set(scope,object,record) }
+pub fn get_interface_record<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+) -> Option<v8::Local<'s, v8::Value>> {
+    collection_records::get(scope, object)
+}
+pub fn set_interface_record<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+    record: v8::Local<'s, v8::Value>,
+) -> bool {
+    collection_records::set(scope, object, record)
+}
 
 #[path = "document_basics.rs"]
 mod document_basics;
