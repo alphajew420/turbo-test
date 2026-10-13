@@ -42,6 +42,8 @@ pub fn set_interface_record<'s>(
 
 #[path = "document_basics.rs"]
 mod document_basics;
+#[path = "element_relations.rs"]
+mod element_relations;
 
 pub fn node_nonce(scope: &mut v8::PinScope, node: v8::Local<v8::Object>) -> Option<String> {
     document_basics::nonce(scope, node)
@@ -1286,9 +1288,9 @@ fn el_insert_adjacent_html(
     let html = arg_str(scope, &args, 1);
     with_tree_mut(|t| t.insert_adjacent_html(h, &pos, &html));
 }
-fn el_toggle_attribute(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_toggle_attribute<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -1301,7 +1303,11 @@ fn el_toggle_attribute(
     } else {
         None
     };
+    let previous = with_tree(|t| t.has_attribute(h, &name)).unwrap_or(false);
     let present = with_tree_mut(|t| t.toggle_attribute(h, &name, force)).unwrap_or(false);
+    if previous != present {
+        element_relations::attribute_changed(scope, args.this(), &name);
+    }
     rv.set(v8::Boolean::new(scope, present).into());
 }
 fn dom_string<'s>(
@@ -1463,6 +1469,7 @@ fn el_set_attribute_ns<'s, 'i>(
     with_tree_mut(|tree| tree.set_attribute_ns(node, namespace.as_deref(), &qualified, &value));
     if namespace.is_none() {
         event_handlers::changed(scope, node, &qualified);
+        element_relations::attribute_changed(scope, args.this(), &qualified);
     }
     if namespace.is_none() && qualified == "style" {
         css_policy::attribute_changed(scope, node);
@@ -1492,6 +1499,7 @@ fn el_remove_attribute_ns<'s, 'i>(
     with_tree_mut(|tree| tree.remove_attribute_ns(node, namespace.as_deref(), &local));
     if namespace.is_none() {
         event_handlers::changed(scope, node, &local);
+        element_relations::attribute_changed(scope, args.this(), &local);
     }
     if namespace.is_none() && local == "style" {
         css_policy::attribute_changed(scope, node);
@@ -1526,9 +1534,9 @@ fn el_insert_before(
     rv.set(args.get(0));
 }
 
-fn el_set_attribute(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_set_attribute<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -1548,6 +1556,7 @@ fn el_set_attribute(
     };
     with_tree_mut(|t| t.set_attribute(h, &key, &value));
     event_handlers::changed(scope, h, &key);
+    element_relations::attribute_changed(scope, args.this(), &key);
     if key == "style" {
         css_policy::attribute_changed(scope, h);
     }
@@ -1725,6 +1734,15 @@ fn el_set_attribute_node<'s, 'i>(
     match with_tree_mut(|tree| tree.set_attribute_node(owner, node)) {
         Some(Ok(replaced)) => {
             sync_attr_nonce(scope, args.this(), node);
+            if let Some(name) = with_tree(|tree| {
+                tree.attribute_data(node)
+                    .filter(|data| data.namespace.is_none())
+                    .map(|data| data.local_name.clone())
+            })
+            .flatten()
+            {
+                element_relations::attribute_changed(scope, args.this(), &name);
+            }
             if with_tree(|tree| {
                 tree.attribute_data(node)
                     .is_some_and(|data| data.namespace.is_none() && data.local_name == "style")
@@ -1767,6 +1785,12 @@ fn el_remove_attribute_node<'s, 'i>(
         attr_type_error(scope, "An Attr node is required");
         return;
     };
+    let aria_name = with_tree(|tree| {
+        tree.attribute_data(node)
+            .filter(|data| data.namespace.is_none())
+            .map(|data| data.local_name.clone())
+    })
+    .flatten();
     let nonce = with_tree(|tree| {
         tree.attribute_data(node)
             .is_some_and(|data| data.namespace.is_none() && data.local_name == "nonce")
@@ -1779,6 +1803,9 @@ fn el_remove_attribute_node<'s, 'i>(
     .unwrap_or(false);
     match with_tree_mut(|tree| tree.remove_attribute_node(owner, node)) {
         Some(Ok(_)) => {
+            if let Some(name) = &aria_name {
+                element_relations::attribute_changed(scope, args.this(), name);
+            }
             if style {
                 css_policy::attribute_changed(scope, owner);
             }
@@ -1933,6 +1960,15 @@ fn set_attr_value<'s, 'i, T>(
     if let Some(owner) = with_tree(|tree| tree.attribute_owner(node)).flatten() {
         let owner = wrap(scope, owner);
         sync_attr_nonce(scope, owner, node);
+        if let Some(name) = with_tree(|tree| {
+            tree.attribute_data(node)
+                .filter(|data| data.namespace.is_none())
+                .map(|data| data.local_name.clone())
+        })
+        .flatten()
+        {
+            element_relations::attribute_changed(scope, owner, &name);
+        }
         if with_tree(|tree| {
             tree.attribute_data(node)
                 .is_some_and(|data| data.namespace.is_none() && data.local_name == "style")
@@ -1964,9 +2000,9 @@ fn el_has_attribute(
     rv.set(v8::Boolean::new(scope, has).into());
 }
 
-fn el_remove_attribute(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_remove_attribute<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -1991,6 +2027,7 @@ fn el_remove_attribute(
         }
     });
     event_handlers::changed(scope, h, &lower);
+    element_relations::attribute_changed(scope, args.this(), &lower);
     if lower == "style" {
         css_policy::attribute_changed(scope, h);
     }
@@ -2863,6 +2900,7 @@ fn set_text_content(
     };
     let txt = value.to_rust_string_lossy(scope);
     with_tree_mut(|t| t.set_text_content(h, &txt));
+    element_relations::attribute_node_changed(scope, h);
     css_policy::invalidate_sheet(h);
 }
 
@@ -3687,6 +3725,7 @@ fn set_node_data(
         value.to_rust_string_lossy(scope)
     };
     with_tree_mut(|t| t.set_text_content(h, &data));
+    element_relations::attribute_node_changed(scope, h);
 }
 
 // `Element.localName` — the lowercase local name (rtdom stores tags lowercased). Non-elements have
@@ -4878,6 +4917,8 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
         "__documentBasicsNative",
         document_basics::dispatch,
     );
+    run_js(scope, include_str!("element_tokens.js"));
+    run_js(scope, include_str!("element_relations.js"));
     run_js(scope, include_str!("document_basics.js"));
     let key = v8::String::new(scope, "__captureEventRecord").unwrap();
     if let Some(accessor) = global
@@ -5001,7 +5042,7 @@ mod tests {
     use std::sync::Once;
 
     static INIT: Once = Once::new();
-    fn init_v8() {
+    pub(super) fn init_v8() {
         INIT.call_once(|| {
             let platform = v8::new_default_platform(0, false).make_shared();
             v8::V8::initialize_platform(platform);

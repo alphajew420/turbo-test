@@ -234,6 +234,33 @@
     check(this, [9]); if (!arguments.length) throw new TypeError('adoptNode requires 1 argument');
     const result = native('adopt', this, node); if (typeof result === 'string') throw new g.DOMException(result, 'NotSupportedError'); return result;
   }, 1);
+  for (const owner of ['Document', 'Element', 'DocumentFragment']) {
+    const allowed = owner === 'Document' ? [9] : owner === 'Element' ? [1] : [11];
+    method(g[owner].prototype, 'moveBefore', function (node, child) {
+      check(this, allowed);
+      if (arguments.length < 2) throw new TypeError('moveBefore requires 2 arguments');
+      const error = native('move', this, node, child);
+      if (typeof error === 'string') throw new g.DOMException('The node cannot be moved into this parent', error);
+    }, 2);
+  }
+  const scoped = {
+    Document: ['prepend', 'append', 'replaceChildren', 'moveBefore'],
+    DocumentFragment: ['prepend', 'append', 'replaceChildren', 'moveBefore'],
+    Element: ['prepend', 'append', 'replaceChildren', 'moveBefore', 'before', 'after', 'replaceWith', 'remove'],
+    CharacterData: ['before', 'after', 'replaceWith', 'remove'],
+    DocumentType: ['before', 'after', 'replaceWith', 'remove'],
+  };
+  for (const [owner, names] of Object.entries(scoped)) {
+    const blocked = Object.create(null);
+    for (const name of names) blocked[name] = true;
+    Object.defineProperty(g[owner].prototype, Symbol.unscopables, { value: blocked, configurable: true });
+  }
+  // Alias the current document state; parsed documents and child realms supply
+  // their own visibility/fullscreen state rather than inheriting this document's.
+  for (const [alias, name] of Object.entries({webkitHidden: 'hidden', webkitVisibilityState: 'visibilityState', webkitFullscreenElement: 'fullscreenElement', webkitCurrentFullScreenElement: 'fullscreenElement'})) {
+    property(g.Document.prototype, alias, function () { check(this, [9]); return this[name]; });
+  }
+  property(g.Document.prototype, 'webkitIsFullScreen', function () { check(this, [9]); return this.fullscreenElement != null; });
   const project = ns.projectNativeNode;
   ns.projectNativeNode = function (node) { project(node); if (type.call(node) === 10) Object.setPrototypeOf(node, documentTypeProto); return node; };
   void g.document.doctype;

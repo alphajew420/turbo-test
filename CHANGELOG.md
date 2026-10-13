@@ -6,6 +6,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Keep native `classList` and `part` token-list identity and live indexed state,
+  validate mutations atomically, and reflect ARIA element references with private
+  assignment state, attribute invalidation and shadow-tree scope checks. Add native
+  `moveBefore` hierarchy/root checks and preserve node/focus/control/handler identity;
+  complete Range/iterator/slot/custom-element move reactions remain unsupported.
 - Compile authored HTML event-handler attributes as real V8 functions with native element,
   form and document scope; keep assigned-function overrides and host CSP authorization private.
 - Initiate inline stylesheet imports through private host state and include imported declarations

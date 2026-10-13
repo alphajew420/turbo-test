@@ -237,6 +237,7 @@ pub fn adopt<'s>(
     };
     if source_id == target_id {
         let _source = DomScope::for_object(scope, node);
+        element_relations::attribute_node_changed(scope, source_handle);
         with_tree_mut(|tree| {
             if let Some(owner) = tree.attribute_owner(source_handle) {
                 let _ = tree.remove_attribute_node(owner, source_handle);
@@ -255,6 +256,7 @@ pub fn adopt<'s>(
     };
     let (cache, styles, listeners, nonces, modes) = {
         let _source = DomScope::for_object(scope, node);
+        element_relations::attribute_node_changed(scope, source_handle);
         with_tree_mut(|tree| {
             if let Some(owner) = tree.attribute_owner(source_handle) {
                 let _ = tree.remove_attribute_node(owner, source_handle);
@@ -336,6 +338,65 @@ pub fn adopt<'s>(
     Ok(node)
 }
 
+// Preserve native node identity and embedder state: no JS remove/insert hooks run.
+// Live Range/iterator adjustment and custom-element reactions remain host work.
+fn move_node(
+    tree: &mut Tree,
+    parent: Handle,
+    node: Handle,
+    child: Option<Handle>,
+) -> Result<(), &'static str> {
+    fn root(tree: &Tree, mut node: Handle) -> Handle {
+        while let Some(parent) = tree.parent(node).or_else(|| tree.shadow_host(node)) {
+            node = parent;
+        }
+        node
+    }
+    if root(tree, parent) != root(tree, node) {
+        return Err("HierarchyRequestError");
+    }
+    let mut ancestor = Some(parent);
+    while let Some(current) = ancestor {
+        if current == node {
+            return Err("HierarchyRequestError");
+        }
+        ancestor = tree.parent(current).or_else(|| tree.shadow_host(current));
+    }
+    let child = if child == Some(node) {
+        tree.next_sibling(node)
+    } else {
+        child
+    };
+    if child.is_some_and(|child| tree.parent(child) != Some(parent)) {
+        return Err("NotFoundError");
+    }
+    let kind = tree.node_type_id(node);
+    if !matches!(kind, 1 | 3 | 4 | 7 | 8) || tree.parent(node).is_none() {
+        return Err("HierarchyRequestError");
+    }
+    if tree.node_type_id(parent) == 9 {
+        if matches!(kind, 3 | 4) {
+            return Err("HierarchyRequestError");
+        }
+        if kind == 1 {
+            let children = tree.children(parent);
+            let reference =
+                child.and_then(|child| children.iter().position(|value| *value == child));
+            if children.iter().any(|child| tree.node_type_id(*child) == 1)
+                || reference.is_some_and(|reference| {
+                    children[reference..]
+                        .iter()
+                        .any(|child| tree.node_type_id(*child) == 10)
+                })
+            {
+                return Err("HierarchyRequestError");
+            }
+        }
+    }
+    tree.insert_before(parent, node, child);
+    Ok(())
+}
+
 pub fn dispatch<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
@@ -373,6 +434,37 @@ pub fn dispatch<'s>(
                     state
                 });
             rv.set(state.into());
+        }
+        "move" if matches!(kind, 1 | 9 | 11) => {
+            let Ok(moved) = v8::Local::<v8::Object>::try_from(args.get(2)) else {
+                return type_error(scope);
+            };
+            let Some(moved_handle) = handle_of(scope, moved) else {
+                return type_error(scope);
+            };
+            let mut error = (dom_id_of(scope, moved) != dom_id_of(scope, node))
+                .then_some("HierarchyRequestError");
+            let reference = if args.get(3).is_null_or_undefined() {
+                None
+            } else {
+                let Ok(child) = v8::Local::<v8::Object>::try_from(args.get(3)) else {
+                    return type_error(scope);
+                };
+                let Some(child_handle) = handle_of(scope, child) else {
+                    return type_error(scope);
+                };
+                if dom_id_of(scope, child) != dom_id_of(scope, node) {
+                    error = error.or(Some("NotFoundError"));
+                }
+                Some(child_handle)
+            };
+            if error.is_none() {
+                error = with_tree_mut(|tree| move_node(tree, handle, moved_handle, reference))
+                    .and_then(Result::err);
+            }
+            if let Some(error) = error {
+                rv.set(v8::String::new(scope, error).unwrap().into());
+            }
         }
         "createPI" if kind == 9 => {
             let target = args.get(2).to_rust_string_lossy(scope);
@@ -453,4 +545,84 @@ fn type_error(scope: &mut v8::PinScope) {
     let message = v8::String::new(scope, "Illegal invocation").unwrap();
     let error = v8::Exception::type_error(scope, message);
     scope.throw_exception(error);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_script(source: &str) {
+        super::super::tests::init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_with_html(
+            scope,
+            "<!DOCTYPE html><html><head></head><body></body></html>",
+        );
+        let scope = std::pin::pin!(v8::TryCatch::new(scope));
+        let scope = &mut scope.init();
+        let source = v8::String::new(scope, source).unwrap();
+        let result = v8::Script::compile(scope, source, None).and_then(|script| script.run(scope));
+        if result.is_none() {
+            let error = scope
+                .exception()
+                .map(|error| error.to_rust_string_lossy(scope));
+            panic!("document fixture failed: {error:?}");
+        }
+        assert!(result.unwrap().is_true());
+        reset();
+    }
+
+    #[test]
+    fn moves_preserve_native_identity_control_state_focus_listeners_and_order() {
+        check_script(
+            r#"(()=>{
+          const a=document.createElement('section'),b=document.createElement('section'),input=document.createElement('input'),sentinel=document.createElement('span');
+          document.body.append(a,b);a.append(input);b.append(sentinel);input.value='live';input.payload={kept:true};input.focus();let events=0;input.addEventListener('probe',()=>events++);
+          const children=b.children,result=b.moveBefore(input,sentinel);input.dispatchEvent(new Event('probe'));
+          if(result!==undefined||b.firstChild!==input||children[0]!==input||children.length!==2||a.children.length||input.value!=='live'||!input.payload.kept||events!==1||document.activeElement!==input)throw new Error('move lost state');
+          b.moveBefore(input,input);if(b.firstChild!==input||input.nextSibling!==sentinel)throw new Error('self reference');
+          b.moveBefore(input,null);if(b.lastChild!==input||b.firstChild!==sentinel)throw new Error('append order');
+          const host=document.createElement('div');document.body.append(host);const shadow=host.attachShadow({mode:'open'});shadow.moveBefore(input,null);
+          if(input.parentNode!==shadow||input.value!=='live'||!input.isConnected)throw new Error('shadow move');
+          const f=document.createDocumentFragment(),one=document.createElement('i'),two=document.createElement('b');f.append(one,two);f.moveBefore(two,one);if(f.firstChild!==two)throw new Error('detached root order');
+          const comment=document.createComment('kept');document.body.append(comment);document.moveBefore(comment,document.documentElement);if(document.firstChild!==document.doctype||document.doctype.nextSibling!==comment)throw new Error('document comment order');
+          return true;
+        })()"#,
+        );
+    }
+
+    #[test]
+    fn moves_reject_invalid_roots_references_nodes_and_cycles_before_mutation() {
+        check_script(
+            r#"(()=>{
+          const a=document.createElement('div'),b=document.createElement('div'),c=document.createElement('span'),detached=document.createElement('i');document.body.append(a,b);a.append(c);
+          const errors=[];for(const action of [()=>b.moveBefore(detached,null),()=>c.moveBefore(a,null),()=>b.moveBefore(c,document.body),()=>b.moveBefore(document.createDocumentFragment(),null),()=>document.moveBefore(c,null),()=>document.moveBefore(c,document.doctype),()=>b.moveBefore(null,null),()=>b.moveBefore(c),()=>Element.prototype.moveBefore.call({},c,null)])try{action();errors.push('missing')}catch(error){errors.push(error.name)}
+          if(JSON.stringify(errors)!==JSON.stringify(['HierarchyRequestError','HierarchyRequestError','NotFoundError','HierarchyRequestError','HierarchyRequestError','HierarchyRequestError','TypeError','TypeError','TypeError']))throw new Error(JSON.stringify(errors));
+          if(c.parentNode!==a||a.parentNode!==document.body||b.childNodes.length!==0)throw new Error('invalid move mutated tree');
+          const host=document.createElement('div');document.body.append(host);const shadow=host.attachShadow({mode:'open'});try{shadow.moveBefore(host,null);throw new Error('missing')}catch(error){if(error.name!=='HierarchyRequestError')throw error;}
+          return true;
+        })()"#,
+        );
+    }
+
+    #[test]
+    fn unscopables_are_webidl_null_prototype_records_and_aliases_track_documents() {
+        check_script(
+            r#"(()=>{
+          for(const owner of [Document,DocumentFragment,Element,CharacterData,DocumentType]){
+            const descriptor=Object.getOwnPropertyDescriptor(owner.prototype,Symbol.unscopables),blocked=descriptor.value;
+            if(descriptor.writable||descriptor.enumerable||!descriptor.configurable||Object.getPrototypeOf(blocked)!==null)throw new Error('descriptor '+owner.name);
+            for(const name of Object.keys(blocked))if(blocked[name]!==true)throw new Error('blocked value');
+          }
+          let append='outer';with(document){if(append!=='outer')throw new Error('with document');}
+          const body=document.body;let remove='outer';with(body){if(remove!=='outer')throw new Error('with element');}
+          if(document.webkitHidden!==document.hidden||document.webkitVisibilityState!==document.visibilityState||document.webkitFullscreenElement!==document.fullscreenElement||document.webkitCurrentFullScreenElement!==document.fullscreenElement||document.webkitIsFullScreen!==false)throw new Error('aliases');
+          let denied=false;try{Object.getOwnPropertyDescriptor(Document.prototype,'webkitHidden').get.call({});}catch(error){denied=error instanceof TypeError;}if(!denied)throw new Error('brand');
+          return true;
+        })()"#,
+        );
+    }
 }
