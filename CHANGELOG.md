@@ -5,6 +5,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Expose host-only native composed children/parent identities for layout. Closed
+  roots and manual assignment use private records; hidden fallback and unslotted
+  children have no composed parent. A native regression poisons public slot APIs
+  and preserves authentic internal projection without exposing closed roots.
+
 - Implement native named/manual shadow-slot distribution, live assignedSlot,
   fallback flattening and trusted slotchange in the shared observer notification
   microtask. Original wrapper edges preserve foreign adoption and manual stealing;

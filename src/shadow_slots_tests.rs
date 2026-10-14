@@ -119,3 +119,49 @@ fn deep_shadow_fallback_distribution_uses_an_iterative_native_walk() {
     scope.perform_microtask_checkpoint();
     reset();
 }
+
+#[test]
+fn host_composed_projection_uses_private_manual_edges_and_closed_shadow_roots() {
+    super::tests::init_v8();
+    let isolate = &mut v8::Isolate::new(Default::default());
+    v8::scope!(let scope,isolate);
+    let context = v8::Context::new(scope, Default::default());
+    let scope = &mut v8::ContextScope::new(scope, context);
+    install_with_html(scope, "<body></body>");
+    fn children<'s>(
+        scope: &mut v8::PinScope<'s, '_>,
+        args: v8::FunctionCallbackArguments<'s>,
+        mut rv: v8::ReturnValue,
+    ) {
+        let Ok(node) = v8::Local::<v8::Object>::try_from(args.get(0)) else {
+            return;
+        };
+        if let Some(children) = host_composed_children(scope, node) {
+            let values = children.into_iter().map(Into::into).collect::<Vec<_>>();
+            rv.set(v8::Array::new_with_elements(scope, &values).into());
+        }
+    }
+    fn parent<'s>(
+        scope: &mut v8::PinScope<'s, '_>,
+        args: v8::FunctionCallbackArguments<'s>,
+        mut rv: v8::ReturnValue,
+    ) {
+        let Ok(node) = v8::Local::<v8::Object>::try_from(args.get(0)) else {
+            return;
+        };
+        rv.set(
+            host_composed_parent(scope, node).map_or_else(|| v8::null(scope).into(), Into::into),
+        );
+    }
+    let global = context.global(scope);
+    bind_method(scope, global, "hostChildren", children);
+    bind_method(scope, global, "hostParent", parent);
+    let code=v8::String::new(scope,r#"(()=>{const host=document.createElement('div'),child=document.createElement('b'),other=document.createElement('i');host.append(child,other);const root=host.attachShadow({mode:'closed',slotAssignment:'manual'}),slot=document.createElement('slot'),fallback=document.createElement('span');root.append(slot);slot.append(fallback);slot.assign(child);slot.assignedNodes=()=>{throw new Error('public assignedNodes');};Object.defineProperty(child,'assignedSlot',{get(){throw new Error('public assignedSlot');}});const before=hostChildren(host)[0]===slot&&hostChildren(slot)[0]===child&&hostParent(child)===slot&&hostParent(slot)===host&&hostParent(root)===host&&hostParent(other)===null&&hostParent(fallback)===null&&host.shadowRoot===null;slot.assign();return before&&hostChildren(slot)[0]===fallback&&hostParent(fallback)===slot&&hostParent(child)===null;})()"#).unwrap();
+    assert!(v8::Script::compile(scope, code, None)
+        .unwrap()
+        .run(scope)
+        .unwrap()
+        .is_true());
+    scope.perform_microtask_checkpoint();
+    reset();
+}

@@ -171,6 +171,86 @@ fn flattened<'s>(
     }
     result
 }
+fn assigned_slot<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    node: v8::Local<'s, v8::Object>,
+) -> Option<v8::Local<'s, v8::Object>> {
+    let handle = handle_of(scope, node)?;
+    let root = with_tree(|tree| tree.shadow_root(tree.parent(handle)?)).flatten()?;
+    let handles = with_tree(|tree| slots(tree, root))?;
+    for slot in handles {
+        if scope.is_execution_terminating() {
+            return None;
+        }
+        if assigned(scope, slot)
+            .iter()
+            .any(|assigned| assigned.strict_equals(node.into()))
+        {
+            return Some(wrap(scope, slot));
+        }
+    }
+    None
+}
+/// Embedder-only flat-tree projection. Closed roots remain visible to native
+/// layout, and manual edges are read from V8 private records, never guest APIs.
+pub(super) fn composed_children<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    node: v8::Local<'s, v8::Object>,
+) -> Option<Vec<v8::Local<'s, v8::Object>>> {
+    if scope.is_execution_terminating() {
+        return None;
+    }
+    let _owner = DomScope::for_object(scope, node);
+    let handle = handle_of(scope, node)?;
+    let context = node.get_creation_context(scope)?;
+    let scope = &mut v8::ContextScope::new(scope, context);
+    let is_slot = with_tree(|tree| slot(tree, handle) && root(tree, handle).is_some())?;
+    if is_slot {
+        let assigned = assigned(scope, handle);
+        if !assigned.is_empty() {
+            return Some(assigned);
+        }
+    }
+    let children = with_tree(|tree| tree.children(tree.shadow_root(handle).unwrap_or(handle)))?;
+    Some(
+        children
+            .into_iter()
+            .map(|child| wrap(scope, child))
+            .collect(),
+    )
+}
+pub(super) fn composed_parent<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    node: v8::Local<'s, v8::Object>,
+) -> Option<v8::Local<'s, v8::Object>> {
+    if scope.is_execution_terminating() {
+        return None;
+    }
+    let _owner = DomScope::for_object(scope, node);
+    let handle = handle_of(scope, node)?;
+    let context = node.get_creation_context(scope)?;
+    let scope = &mut v8::ContextScope::new(scope, context);
+    if let Some(host) = with_tree(|tree| {
+        tree.is_shadow_root(handle)
+            .then(|| tree.shadow_host(handle))
+    })
+    .flatten()
+    .flatten()
+    {
+        return Some(wrap(scope, host));
+    }
+    let parent = with_tree(|tree| tree.parent(handle)).flatten()?;
+    if with_tree(|tree| tree.shadow_root(parent).is_some())? {
+        return assigned_slot(scope, node);
+    }
+    if with_tree(|tree| slot(tree, parent) && root(tree, parent).is_some())?
+        && !assigned(scope, parent).is_empty()
+    {
+        return None;
+    }
+    let parent = with_tree(|tree| tree.shadow_host(parent).unwrap_or(parent))?;
+    Some(wrap(scope, parent))
+}
 pub(super) fn configure(scope: &mut v8::PinScope, root: v8::Local<v8::Object>, manual: bool) {
     let private = key(scope, "manual");
     let value = v8::Boolean::new(scope, manual);

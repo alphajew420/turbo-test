@@ -111,6 +111,21 @@ mod html_text;
 #[path = "shadow_slots.rs"]
 mod shadow_slots;
 
+/// Host-only composed identities for native layout. This seam does not expose
+/// closed roots or private assignment records to guest JavaScript.
+pub fn host_composed_children<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    node: v8::Local<'s, v8::Object>,
+) -> Option<Vec<v8::Local<'s, v8::Object>>> {
+    shadow_slots::composed_children(scope, node)
+}
+pub fn host_composed_parent<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    node: v8::Local<'s, v8::Object>,
+) -> Option<v8::Local<'s, v8::Object>> {
+    shadow_slots::composed_parent(scope, node)
+}
+
 pub fn node_nonce(scope: &mut v8::PinScope, node: v8::Local<v8::Object>) -> Option<String> {
     document_basics::nonce(scope, node)
 }
