@@ -143,7 +143,7 @@
     return collectionApply(collectionMapGet,cache,[key]);
   }
   property(g.Node.prototype, 'childNodes', function () {
-    check(this, [1, 3, 7, 8, 9, 10, 11]);
+    check(this, [1, 2, 3, 4, 7, 8, 9, 10, 11]);
     const receiver = this;
     return cached(receiver, 'childNodes', () => copyRows(rawChildren.call(receiver)), false);
   });

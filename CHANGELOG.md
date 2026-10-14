@@ -6,6 +6,16 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Adopt genuine foreign nodes during all native insertion methods after validating
+  the full destination sequence. Preserve cached node/descendant identity, listener
+  state and source Range adjustment, and reject invalid references or Document
+  hierarchies before changing an owner or parent. DocumentFragment and ShadowRoot
+  insertion moves their children while keeping the original container and owner;
+  repeated arguments retain their observed ordering. An independent Chrome 155
+  collector covers borrowed methods, namespace data and atomic failure state.
+- Expose the real empty, stable NodeList from Attr.childNodes with native receiver
+  branding. Include Attr and CDATA kinds in the Node receiver predicate; the HTML
+  binding still rejects createCDATASection and does not add an XML parser.
 - Make binding cleanup safe during thread-local runtime destruction regardless
   of initialization order. Clear every remaining private handle cache while
   treating already-destroyed TLS cells as released, including diagnostic storage.

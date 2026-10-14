@@ -1052,33 +1052,33 @@ fn get_is_shadow_root(
     rv.set_bool(is_shadow);
 }
 
-fn el_append_child(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_append_child<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
     let Some(parent) = receiver_handle(scope, &args, &[]) else {
         return;
     };
-    let Some(child) = dom_mutations::node_argument(scope, &args, 0) else {
+    let Some(child) = dom_mutations::incoming_node(scope, &args, 0) else {
         return;
     };
-    if dom_mutations::insert(scope, parent, &[child], None, &[]) {
+    if dom_mutations::insert_inputs(scope, parent, &[child], None, &[]) {
         rv.set(args.get(0));
     }
 }
 
-fn el_remove_child(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_remove_child<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
     let Some(parent) = receiver_handle(scope, &args, &[]) else {
         return;
     };
-    let Some(child) = dom_mutations::node_argument(scope, &args, 0) else {
+    let Some(child) = dom_mutations::reference_argument(scope, &args, 0) else {
         return;
     };
     if with_tree(|tree| tree.parent(child) != Some(parent)).unwrap_or(true) {
@@ -1095,23 +1095,23 @@ fn el_remove_child(
     rv.set(args.get(0));
 }
 
-fn el_replace_child(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_replace_child<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
     let Some(parent) = receiver_handle(scope, &args, &[]) else {
         return;
     };
-    let Some(child) = dom_mutations::node_argument(scope, &args, 0) else {
+    let Some(child) = dom_mutations::incoming_node(scope, &args, 0) else {
         return;
     };
-    let Some(old) = dom_mutations::node_argument(scope, &args, 1) else {
+    let Some(old) = dom_mutations::reference_argument(scope, &args, 1) else {
         return;
     };
     let reference = with_tree(|tree| tree.next_sibling(old)).flatten();
-    if dom_mutations::insert(scope, parent, &[child], reference, &[old]) {
+    if dom_mutations::insert_inputs(scope, parent, &[child], reference, &[old]) {
         rv.set(args.get(1));
     }
 }
@@ -1340,30 +1340,18 @@ fn resolve_nodes<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     args: &v8::FunctionCallbackArguments<'s>,
     start: i32,
-) -> Option<Vec<Handle>> {
+) -> Option<Vec<dom_mutations::Incoming<'s>>> {
     let mut out = Vec::new();
-    for i in start..args.length() {
-        let value = args.get(i);
+    for index in start..args.length() {
+        let value = args.get(index);
         if value.is_object() {
             let object = value.to_object(scope)?;
             if handle_of(scope, object).is_some() {
-                // Adoption uses the same owner check as appendChild. Equal raw
-                // handles from two independent trees must never alias here.
-                let node = arg_handle(scope, args, i)?;
-                if with_tree(|tree| tree.is_shadow_root(node)).unwrap_or(false) {
-                    throw_dom_error(
-                        scope,
-                        "HierarchyRequestError",
-                        "A shadow root cannot be inserted",
-                    );
-                    return None;
-                }
-                out.push(node);
+                out.push(dom_mutations::Incoming::Node(object));
                 continue;
             }
         }
-        let text = dom_string(scope, value)?;
-        out.push(with_tree_mut(|tree| tree.create_text_node(&text))?);
+        out.push(dom_mutations::Incoming::Text(dom_string(scope, value)?));
     }
     Some(out)
 }
@@ -1423,7 +1411,7 @@ fn el_replace_children<'s>(
         return;
     };
     let removed = with_tree(|tree| tree.children(h)).unwrap_or_default();
-    dom_mutations::insert(scope, h, &nodes, None, &removed);
+    dom_mutations::insert_inputs(scope, h, &nodes, None, &removed);
 }
 fn el_insert_adjacent_element<'s>(
     scope: &mut v8::PinScope<'s, '_>,
@@ -1440,10 +1428,17 @@ fn el_insert_adjacent_element<'s>(
     let Some(position) = dom_string(scope, args.get(0)) else {
         return;
     };
-    let Some(element) = dom_mutations::node_argument(scope, &args, 1) else {
+    let Some(element) = dom_mutations::incoming_node(scope, &args, 1) else {
         return;
     };
-    if with_tree(|tree| tree.node_type_id(element) != 1).unwrap_or(true) {
+    let dom_mutations::Incoming::Node(object) = &element else {
+        return;
+    };
+    let kind = {
+        let _source = DomScope::for_object(scope, *object);
+        handle_of(scope, *object).and_then(|node| with_tree(|tree| tree.node_type_id(node)))
+    };
+    if kind != Some(1) {
         let text = v8::String::new(scope, "The argument must be an Element").unwrap();
         let error = v8::Exception::type_error(scope, text);
         scope.throw_exception(error);
@@ -1470,7 +1465,7 @@ fn el_insert_adjacent_element<'s>(
         rv.set(v8::null(scope).into());
         return;
     };
-    if dom_mutations::insert(scope, parent, &[element], reference, &[]) {
+    if dom_mutations::insert_inputs(scope, parent, &[element], reference, &[]) {
         rv.set(args.get(1));
     }
 }
@@ -1766,9 +1761,9 @@ fn el_remove_attribute_ns<'s, 'i>(
     }
 }
 
-fn el_insert_before(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn el_insert_before<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -1778,18 +1773,18 @@ fn el_insert_before(
     if !require_arguments(scope, &args, 2) {
         return;
     }
-    let Some(child) = dom_mutations::node_argument(scope, &args, 0) else {
+    let Some(child) = dom_mutations::incoming_node(scope, &args, 0) else {
         return;
     };
     let reference = if args.get(1).is_null_or_undefined() {
         None
     } else {
-        let Some(reference) = dom_mutations::node_argument(scope, &args, 1) else {
+        let Some(reference) = dom_mutations::reference_argument(scope, &args, 1) else {
             return;
         };
         Some(reference)
     };
-    if dom_mutations::insert(scope, parent, &[child], reference, &[]) {
+    if dom_mutations::insert_inputs(scope, parent, &[child], reference, &[]) {
         rv.set(args.get(0));
     }
 }
@@ -2737,7 +2732,7 @@ fn parent_insert<'s>(
     } else {
         None
     };
-    dom_mutations::insert(scope, parent, &nodes, reference, &[]);
+    dom_mutations::insert_inputs(scope, parent, &nodes, reference, &[]);
 }
 fn el_remove_self(
     scope: &mut v8::PinScope,
@@ -6626,15 +6621,16 @@ mod tests {
             nested = child.document.getElementById('only-child').textContent;
           });
           node.dispatchEvent(new Event('probe'));
-          let adoptionRejected = false;
-          try { document.body.replaceChildren(node); } catch(error) { adoptionRejected = /Cross-document node adoption/.test(error.message); }
-          if (!adoptionRejected || document.getElementById('only-parent').textContent !== 'updated'
-              || node.ownerDocument !== child.document) throw new Error('variadic adoption aliased another document');
+          const ownNode=document.getElementById('only-parent');
+          document.body.replaceChildren(node);
+          if (node.ownerDocument !== document || document.body.firstChild !== node
+              || child.document.getElementById('only-child') !== null || ownNode.parentNode !== null)
+            throw new Error('variadic adoption lost native node identity');
           const separateApis = child.document.createElement.constructor === child.Function
             && child.Event !== Event && child.HTMLElement !== HTMLElement;
-          JSON.stringify([independent, node.ownerDocument === child.document,
+          JSON.stringify([independent, node.ownerDocument === document,
             node.getAttribute('data-touched'), nested,
-            document.getElementById('only-parent').textContent, separateApis]);
+            ownNode.textContent, separateApis]);
         "#,
         )
         .unwrap();
@@ -7028,7 +7024,7 @@ mod tests {
           let duplicate=false,invalid=false,insertion=false,clone=false;
           try{hidden.attachShadow({mode:'open'})}catch(e){duplicate=e.name==='NotSupportedError'}
           try{Element.prototype.attachShadow.call({},{mode:'open'})}catch(e){invalid=e instanceof TypeError}
-          try{host.appendChild(root)}catch(e){insertion=e.name==='HierarchyRequestError'}
+          insertion=host.appendChild(root)===root && root.childNodes.length===0 && secret.parentNode===host && root.host===host && root.ownerDocument===document;
           try{root.cloneNode(true)}catch(e){clone=e.name==='NotSupportedError'}
           JSON.stringify({branded,boundary,modes,duplicate,invalid,insertion,clone})
         "#).unwrap();
