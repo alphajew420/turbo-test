@@ -5,6 +5,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Implement HTMLScriptElement.text through native direct child Text/CDATA code
+  units and the existing native text replacement/preparation pipeline. Fresh
+  Chrome controls cover brands, descriptors, coercion, original units and actual
+  execution on connection or filling an empty connected script. Failed conversion
+  preserves nodes, Range boundaries and observer queues. The merged binding passes
+  179 standalone contracts; Trusted Types policy enforcement remains pending.
+
 - Consume published turbo-dom 0.5.5 and preserve original UTF-16 payloads, names,
   namespaces, attributes, mutation records, parser input and inline handler/script
   source through native two-byte V8 strings. Scalar compatibility views remain at

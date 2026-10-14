@@ -6112,6 +6112,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     css_policy::register(scope);
     event_handlers::register(scope);
     run_js(scope, BOOTSTRAP);
+    script_state::install_text(scope);
     capture_node_projector(scope);
     let exception_name = v8::String::new(scope, "DOMException").unwrap();
     if let Some(constructor) = global.get(scope, exception_name.into()) {

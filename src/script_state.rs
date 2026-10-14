@@ -741,6 +741,29 @@ mod tests {
     }
 
     #[test]
+    fn script_text_reflection_matches_independent_chrome_source_control() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("script_text_chrome155.json")).unwrap();
+        check(&format!("(()=>{{const actual={},expected={};const sorted=value=>Array.isArray(value)?value.map(sorted):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,sorted(value[key])])):value;if(JSON.stringify(sorted(actual))!==JSON.stringify(sorted(expected)))throw Error(JSON.stringify(actual));return true}})()", include_str!("script_text_probe.js"), fixture["result"]), false);
+    }
+
+    #[test]
+    fn script_text_setter_prepares_actual_native_source_and_preserves_failure_atomicity() {
+        check(
+            r#"(()=>{
+          globalThis.signals=[];const s=document.createElement('script');s.text='signals.push("text")';document.head.append(s);if(signals.join(',')!=='text')throw Error('text source not executed');
+          const empty=document.createElement('script');document.head.append(empty);empty.text='signals.push("connected")';if(signals.join(',')!=='text,connected')throw Error('connected setter did not prepare');
+          const range=document.createRange();range.selectNodeContents(s.firstChild);let mutations=[];const observer=new MutationObserver(records=>mutations.push(...records));observer.observe(s,{childList:true});
+          const old=s.firstChild;try{s.text=Symbol()}catch(e){if(e.name!=='TypeError')throw e}if(s.firstChild!==old||range.toString()!==old.data||observer.takeRecords().length)throw Error('failed conversion changed native tree');
+          s.text='replacement';const record=observer.takeRecords();if(record.length!==1||record[0].removedNodes[0]!==old||record[0].addedNodes[0]!==s.firstChild||range.startContainer!==s||range.startOffset!==0||range.endOffset!==0)throw Error('native range or observer seam');
+          if(signals.join(',')!=='text,connected')throw Error('already-started script re-executed');
+          return true;
+        })()"#,
+            true,
+        );
+    }
+
+    #[test]
     fn document_private_consumer_runs_inline_script_postconnection_synchronously() {
         check(
             r#"(()=>{
@@ -778,4 +801,40 @@ mod depth_tests {
             assert_eq!(shallow,vec![tree.root()]);
         }).unwrap().join().unwrap();
     }
+}
+
+fn text_type_error(scope: &mut v8::PinScope) {
+    if let Some(message) = v8::String::new(scope, "Illegal invocation") {
+        let error = v8::Exception::type_error(scope, message);
+        scope.throw_exception(error);
+    }
+}
+fn text(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut result: v8::ReturnValue,
+) {
+    let _dom = DomScope::for_object(scope, args.this());
+    let Some(node) = handle_of(scope, args.this()) else {
+        return text_type_error(scope);
+    };
+    if !with_tree(|tree| script(tree, node)).unwrap_or(false) {
+        return text_type_error(scope);
+    }
+    let units = with_tree(|tree| {
+        tree.children(node)
+            .into_iter()
+            .filter(|child| matches!(tree.node_type_id(*child), 3 | 4))
+            .flat_map(|child| tree.node_value_utf16(child).unwrap_or_default())
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
+    if let Some(value) = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal) {
+        result.set(value.into());
+    }
+}
+pub(super) fn install_text(scope: &mut v8::PinScope) {
+    let global = scope.get_current_context().global(scope);
+    bind_method(scope, global, "__scriptTextNative", text);
+    run_js(scope, include_str!("script_text.js"));
 }
