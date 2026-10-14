@@ -460,17 +460,18 @@ pub fn parse_html_document<'s>(
         next.set(id + 1);
         id
     });
-    let control_clone = {
+    let (control_clone, projector) = {
         let current = scope.get_current_context();
         let owner = current
             .get_slot::<DomContextId>()
             .map_or(DOM_ID.with(|id| id.get()), |id| id.0);
         let _owner = DomScope::enter(owner);
-        DOM.with(|dom| {
+        let clone = DOM.with(|dom| {
             dom.borrow()
                 .as_ref()
                 .and_then(|state| state.control_clone.clone())
-        })
+        });
+        (clone, current_node_projector(scope))
     };
     let _dom = DomScope::enter(id);
     let mut tree = Tree::parse(html);
@@ -500,7 +501,13 @@ pub fn parse_html_document<'s>(
         contexts.borrow_mut().insert(id, context);
     });
     let root = with_tree(|tree| tree.root()).unwrap();
-    wrap(scope, root)
+    let document = wrap(scope, root);
+    if let Some(function) = projector {
+        set_node_projector(scope, document, function);
+        let undefined = v8::undefined(scope);
+        function.call(scope, undefined.into(), &[document.into()]);
+    }
+    document
 }
 
 pub fn create_document_element<'s>(
@@ -517,9 +524,15 @@ pub fn create_document_element<'s>(
     let namespace = dom_implementation::default_element_namespace(scope, document);
     let node = with_tree_mut(|tree| {
         if xml {
-            let namespace = if namespace.is_some() { turbo_dom_parser::rtdom::tree::Namespace::Html } else { turbo_dom_parser::rtdom::tree::Namespace::Other };
+            let namespace = if namespace.is_some() {
+                turbo_dom_parser::rtdom::tree::Namespace::Html
+            } else {
+                turbo_dom_parser::rtdom::tree::Namespace::Other
+            };
             tree.create_element_ns(tag, namespace)
-        } else { tree.create_element(tag) }
+        } else {
+            tree.create_element(tag)
+        }
     })?;
     Some(wrap(scope, node))
 }
@@ -746,8 +759,71 @@ fn receiver_handle(
     None
 }
 
+fn node_projector_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Private>> {
+    let name = v8::String::new(scope, "turbo.native.node-projector")?;
+    Some(v8::Private::for_api(scope, Some(name)))
+}
+
+fn current_node_projector<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+) -> Option<v8::Local<'s, v8::Function>> {
+    let root = with_tree(Tree::root)?;
+    let document = DOM.with(|dom| dom.borrow().as_ref()?.cache.get(&root).cloned())?;
+    let document = v8::Local::new(scope, &document);
+    let key = node_projector_key(scope)?;
+    document
+        .get_private(scope, key)
+        .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+}
+
+fn set_node_projector(
+    scope: &mut v8::PinScope,
+    document: v8::Local<v8::Object>,
+    function: v8::Local<v8::Function>,
+) {
+    if let Some(key) = node_projector_key(scope) {
+        document.set_private(scope, key, function.into());
+    }
+}
+
+// Capture only at trusted bootstrap boundaries; a page can replace the public
+// namespace and global constructors without intercepting later native wrapping.
+fn capture_node_projector(scope: &mut v8::PinScope) {
+    let global = scope.get_current_context().global(scope);
+    let Some(name) = v8::String::new(scope, "ts") else {
+        return;
+    };
+    let symbol = v8::Symbol::for_key(scope, name);
+    let Some(namespace) = global
+        .get(scope, symbol.into())
+        .and_then(|value| v8::Local::<v8::Object>::try_from(value).ok())
+    else {
+        return;
+    };
+    let Some(name) = v8::String::new(scope, "projectNativeNode") else {
+        return;
+    };
+    let Some(function) = namespace
+        .get(scope, name.into())
+        .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+    else {
+        return;
+    };
+    let Some(root) = with_tree(Tree::root) else {
+        return;
+    };
+    let Some(document) = DOM.with(|dom| dom.borrow().as_ref()?.cache.get(&root).cloned()) else {
+        return;
+    };
+    let document = v8::Local::new(scope, &document);
+    set_node_projector(scope, document, function);
+}
+
 /// Wrap a handle as a JS node object (cached for identity).
 fn wrap<'s>(scope: &mut v8::PinScope<'s, '_>, handle: Handle) -> v8::Local<'s, v8::Object> {
+    if scope.is_execution_terminating() {
+        return v8::Object::new(scope);
+    }
     if let Some(g) = DOM.with(|d| {
         d.borrow()
             .as_ref()
@@ -763,41 +839,53 @@ fn wrap<'s>(scope: &mut v8::PinScope<'s, '_>, handle: Handle) -> v8::Local<'s, v
     let scope = &mut v8::ContextScope::new(scope, context);
     let tmpl_g = DOM.with(|d| d.borrow().as_ref().unwrap().el_template.clone());
     let tmpl = v8::Local::new(scope, &tmpl_g);
-    let obj = tmpl.new_instance(scope).unwrap();
+    let Some(obj) = tmpl.new_instance(scope) else {
+        // V8 already has an exception or termination pending. The callback's
+        // result is discarded; do not turn a guest interruption into a Rust panic.
+        return v8::Object::new(scope);
+    };
     let h = v8::Integer::new_from_unsigned(scope, handle.raw());
     obj.set_internal_field(0, h.into());
     let owner = v8::BigInt::new_from_u64(scope, DOM_ID.with(|id| id.get()));
     obj.set_internal_field(1, owner.into());
-    // Parser-created controls bypass createElement's JS wrapper. Select their live
-    // interface prototype here too, so IDL getters work for query/innerHTML results.
-    let tag = with_tree(|t| t.tag_name(handle))
-        .flatten()
-        .unwrap_or_default();
-    let interface = match tag.to_ascii_lowercase().as_str() {
-        "input" => Some("HTMLInputElement"),
-        "textarea" => Some("HTMLTextAreaElement"),
-        "select" => Some("HTMLSelectElement"),
-        "option" => Some("HTMLOptionElement"),
-        "button" => Some("HTMLButtonElement"),
-        "label" => Some("HTMLLabelElement"),
-        "canvas" => Some("HTMLCanvasElement"),
-        "a" => Some("HTMLAnchorElement"),
-        _ => None,
-    };
-    if let Some(interface) = interface {
-        let global = scope.get_current_context().global(scope);
-        let key = v8::String::new(scope, interface).unwrap();
-        if let Some(ctor) = global
-            .get(scope, key.into())
-            .and_then(|v| v.to_object(scope))
-        {
-            let key = v8::String::new(scope, "prototype").unwrap();
-            if let Some(proto) = ctor.get(scope, key.into()) {
-                if proto.is_object() {
-                    obj.set_prototype(scope, proto);
+    let projector = current_node_projector(scope);
+    // Raw bootstrap probes run before projection has been installed. Once it
+    // exists, the captured projector supplies every interface without guest reads.
+    if projector.is_none() {
+        // Parser-created controls bypass createElement's JS wrapper. Select their live
+        // interface prototype here too, so IDL getters work for query/innerHTML results.
+        let tag = with_tree(|t| t.tag_name(handle))
+            .flatten()
+            .unwrap_or_default();
+        let interface = match tag.to_ascii_lowercase().as_str() {
+            "input" => Some("HTMLInputElement"),
+            "textarea" => Some("HTMLTextAreaElement"),
+            "select" => Some("HTMLSelectElement"),
+            "option" => Some("HTMLOptionElement"),
+            "button" => Some("HTMLButtonElement"),
+            "label" => Some("HTMLLabelElement"),
+            "canvas" => Some("HTMLCanvasElement"),
+            "a" => Some("HTMLAnchorElement"),
+            _ => None,
+        };
+        if let Some(interface) = interface {
+            let global = scope.get_current_context().global(scope);
+            let key = v8::String::new(scope, interface).unwrap();
+            if let Some(ctor) = global
+                .get(scope, key.into())
+                .and_then(|v| v.to_object(scope))
+            {
+                let key = v8::String::new(scope, "prototype").unwrap();
+                if let Some(proto) = ctor.get(scope, key.into()) {
+                    if proto.is_object() {
+                        obj.set_prototype(scope, proto);
+                    }
                 }
             }
         }
+    }
+    if scope.is_execution_terminating() {
+        return obj;
     }
     let g = v8::Global::new(scope, obj);
     DOM.with(|d| {
@@ -807,19 +895,17 @@ fn wrap<'s>(scope: &mut v8::PinScope<'s, '_>, handle: Handle) -> v8::Local<'s, v
     });
     // Projection runs after caching, since accessors such as ownerDocument and
     // childNodes may synchronously wrap this node again.
-    let global = context.global(scope);
-    let name = v8::String::new(scope, "ts").unwrap();
-    let key = v8::Symbol::for_key(scope, name);
-    if let Some(namespace) = global
-        .get(scope, key.into())
-        .and_then(|v| v.to_object(scope))
-    {
-        let key = v8::String::new(scope, "projectNativeNode").unwrap();
-        if let Some(function) = namespace
-            .get(scope, key.into())
-            .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+    if let Some(function) = projector {
+        let undefined = v8::undefined(scope);
+        if function
+            .call(scope, undefined.into(), &[obj.into()])
+            .is_none()
         {
-            function.call(scope, namespace.into(), &[obj.into()]);
+            DOM.with(|dom| {
+                if let Some(state) = dom.borrow_mut().as_mut() {
+                    state.cache.remove(&handle);
+                }
+            });
         }
     }
     obj
@@ -4431,9 +4517,15 @@ fn doc_create_element<'s>(
     let namespace = dom_implementation::default_element_namespace(scope, args.this());
     let Some(h) = with_tree_mut(|tree| {
         if xml {
-            let namespace = if namespace.is_some() { turbo_dom_parser::rtdom::tree::Namespace::Html } else { turbo_dom_parser::rtdom::tree::Namespace::Other };
+            let namespace = if namespace.is_some() {
+                turbo_dom_parser::rtdom::tree::Namespace::Html
+            } else {
+                turbo_dom_parser::rtdom::tree::Namespace::Other
+            };
             tree.create_element_ns(&tag, namespace)
-        } else { tree.create_element(&tag) }
+        } else {
+            tree.create_element(&tag)
+        }
     }) else {
         return;
     };
@@ -5479,6 +5571,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     css_policy::register(scope);
     event_handlers::register(scope);
     run_js(scope, BOOTSTRAP);
+    capture_node_projector(scope);
     let exception_name = v8::String::new(scope, "DOMException").unwrap();
     if let Some(constructor) = global.get(scope, exception_name.into()) {
         let key = dom_exception_key(scope);
@@ -5508,6 +5601,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     run_js(scope, include_str!("element_tokens.js"));
     run_js(scope, include_str!("element_relations.js"));
     run_js(scope, include_str!("document_basics.js"));
+    capture_node_projector(scope);
     dom_implementation::install(scope);
     range_contents::install(scope);
     bind_method(scope, global, "__htmlTextNative", html_text::dispatch);

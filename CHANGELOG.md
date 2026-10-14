@@ -6,6 +6,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Retain the native node projector privately on its owner Document, avoiding
+  page-replaced constructor and public projector getters during first wrapping,
+  including parser-created controls and independent documents. Reject inherited
+  tag-map entries and keep interrupted wrapping out of the identity cache. The
+  canonical browser binding cohort passes 119 contracts.
 - Preserve XML element case and document-specific default namespaces for native
   createElement, including borrowed receivers and colon-containing XML names.
   Keep createElement local names distinct from createElementNS qualified names;
