@@ -462,14 +462,16 @@ pub fn dispatch<'s>(
                     .as_ref()
                     .and_then(|dom| dom.basics_state.clone())
             });
-            let state = existing
-                .map(|state| dom_ownership::local(scope, state))
-                .unwrap_or_else(|| {
-                    let state = v8::Object::new(scope);
-                    let stored = dom_ownership::helper_object(scope, state);
-                    DOM.with(|dom| dom.borrow_mut().as_mut().unwrap().basics_state = Some(stored));
-                    state
-                });
+            let state = if let Some(existing) = existing {
+                dom_ownership::local(scope, existing)
+            } else {
+                let state = v8::Object::new(scope);
+                let Some(stored) = dom_ownership::helper_object(scope, state) else {
+                    return;
+                };
+                DOM.with(|dom| dom.borrow_mut().as_mut().unwrap().basics_state = Some(stored));
+                state
+            };
             rv.set(state.into());
         }
         "move" if matches!(kind, 1 | 9 | 11) => {

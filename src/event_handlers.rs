@@ -171,7 +171,15 @@ pub(super) fn install(
     policy: Option<v8::Local<v8::Function>>,
     base: &str,
 ) {
-    let policy = policy.map(|callback| dom_ownership::helper_function(scope, callback));
+    let policy = match policy {
+        Some(callback) => {
+            let Some(callback) = dom_ownership::helper_function(scope, callback) else {
+                return;
+            };
+            Some(callback)
+        }
+        None => None,
+    };
     DOM.with(|dom| {
         dom.borrow_mut().as_mut().unwrap().event_handlers = State {
             policy,

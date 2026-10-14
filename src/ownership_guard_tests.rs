@@ -1,6 +1,57 @@
 //! Budget interruption must survive private postmutation guards.
 use super::*;
 
+struct HelperPublication(std::cell::Cell<Option<bool>>);
+fn interrupted_helper(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _: v8::ReturnValue,
+) {
+    let function = v8::Local::<v8::Function>::try_from(args.get(0)).unwrap();
+    let source = v8::String::new(scope, "1").unwrap();
+    let script = v8::Script::compile(scope, source, None).unwrap();
+    scope.terminate_execution();
+    let published = dom_ownership::helper_function(scope, function).is_some();
+    scope
+        .get_slot::<HelperPublication>()
+        .unwrap()
+        .0
+        .set(Some(published));
+    let _ = script.run(scope);
+}
+
+#[test]
+fn interrupted_private_helper_is_not_published_and_can_be_retried() {
+    tests::init_v8();
+    let isolate = &mut v8::Isolate::new(Default::default());
+    v8::scope!(let scope, isolate);
+    let context = v8::Context::new(scope, Default::default());
+    let scope = &mut v8::ContextScope::new(scope, context);
+    install_with_html(scope, "<body>sentinel");
+    scope.set_slot(HelperPublication(std::cell::Cell::new(None)));
+    let global = context.global(scope);
+    bind_method(scope, global, "interruptHelper", interrupted_helper);
+    v8::tc_scope!(let catch, scope);
+    let source = v8::String::new(catch, "interruptHelper(()=>true); 'resumed'").unwrap();
+    let result = v8::Script::compile(catch, source, None).and_then(|script| script.run(catch));
+    assert!(result.is_none());
+    assert!(catch.has_terminated() || catch.is_execution_terminating());
+    assert_eq!(
+        catch.get_slot::<HelperPublication>().unwrap().0.get(),
+        Some(false)
+    );
+    catch.cancel_terminate_execution();
+    catch.reset();
+    let source = v8::String::new(catch, "(()=>true)").unwrap();
+    let function = v8::Script::compile(catch, source, None)
+        .unwrap()
+        .run(catch)
+        .unwrap();
+    let function = v8::Local::<v8::Function>::try_from(function).unwrap();
+    assert!(dom_ownership::helper_function(catch, function).is_some());
+    reset();
+}
+
 fn materialize_termination(scope: &mut v8::PinScope) {
     let source = v8::String::new(scope, "1").unwrap();
     let script = v8::Script::compile(scope, source, None).unwrap();

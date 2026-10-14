@@ -459,7 +459,9 @@ pub(super) fn install(scope: &mut v8::PinScope) {
         .get(scope, key.into())
         .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
     {
-        let constructor = dom_ownership::helper_function(scope, constructor);
+        let Some(constructor) = dom_ownership::helper_function(scope, constructor) else {
+            return;
+        };
         DOM.with(|dom| {
             let mut dom = dom.borrow_mut();
             let state = &mut dom.as_mut().unwrap().popover;
@@ -483,7 +485,9 @@ pub(super) fn capture_scheduler(scope: &mut v8::PinScope) {
         .get(scope, key.into())
         .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
     {
-        let scheduler = dom_ownership::helper_function(scope, scheduler);
+        let Some(scheduler) = dom_ownership::helper_function(scope, scheduler) else {
+            return;
+        };
         DOM.with(|dom| dom.borrow_mut().as_mut().unwrap().popover.scheduler = Some(scheduler));
     }
 }

@@ -7,40 +7,31 @@ pub(super) type Graph = std::rc::Rc<std::cell::RefCell<graph::DocumentGraph>>;
 pub(super) fn helper_function<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     function: v8::Local<'_, v8::Function>,
-) -> v8::Weak<v8::Function> {
+) -> Option<v8::Weak<v8::Function>> {
     let function = v8::Local::new(scope, function);
-    let graph = DOM
-        .with(|state| {
-            state
-                .borrow()
-                .as_ref()
-                .and_then(|state| state.ownership.clone())
-        })
-        .expect("native document owner initialized");
-    graph
-        .borrow_mut()
-        .retain_helper(scope, function.into())
-        .expect("native document remains reachable");
-    v8::Weak::new(scope, function)
+    retain_helper(scope, function.into())?;
+    Some(v8::Weak::new(scope, function))
 }
 pub(super) fn helper_object<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     object: v8::Local<'_, v8::Object>,
-) -> v8::Weak<v8::Object> {
+) -> Option<v8::Weak<v8::Object>> {
     let object = v8::Local::new(scope, object);
-    let graph = DOM
-        .with(|state| {
-            state
-                .borrow()
-                .as_ref()
-                .and_then(|state| state.ownership.clone())
-        })
-        .expect("native document owner initialized");
-    graph
-        .borrow_mut()
-        .retain_helper(scope, object.into())
-        .expect("native document remains reachable");
-    v8::Weak::new(scope, object)
+    retain_helper(scope, object.into())?;
+    Some(v8::Weak::new(scope, object))
+}
+fn retain_helper<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: v8::Local<'s, v8::Value>,
+) -> Option<()> {
+    if scope.is_execution_terminating() {
+        return None;
+    }
+    let graph = DOM.with(|state| state.borrow().as_ref()?.ownership.clone())?;
+    // V8 may materialize termination while allocating the private edge. Keep
+    // that exception pending and let the installer abort without publishing it.
+    let retained = graph.borrow_mut().retain_helper(scope, value);
+    retained
 }
 pub(super) trait NativeHandle<T> {
     fn local<'s>(self, scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, T>>;

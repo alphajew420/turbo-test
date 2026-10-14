@@ -100,7 +100,9 @@ pub(super) fn install(scope: &mut v8::PinScope) {
             .get(scope, key.into())
             .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
         {
-            let function = dom_ownership::helper_function(scope, function);
+            let Some(function) = dom_ownership::helper_function(scope, function) else {
+                return;
+            };
             let context = scope.get_current_context();
             match family {
                 0 => {
@@ -259,7 +261,10 @@ pub fn capture_window_event_interfaces(scope: &mut v8::PinScope) {
                 functions.push(value);
                 if interface == "ErrorEvent" {
                     let function = v8::Local::<v8::Function>::try_from(value).unwrap();
-                    getters.push(dom_ownership::helper_function(scope, function));
+                    let Some(function) = dom_ownership::helper_function(scope, function) else {
+                        return;
+                    };
+                    getters.push(function);
                 }
             } else {
                 functions.push(v8::undefined(scope).into());

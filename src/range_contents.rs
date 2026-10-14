@@ -14,7 +14,9 @@ pub(super) fn capture(scope: &mut v8::PinScope) {
     else {
         return;
     };
-    let accessor = super::dom_ownership::helper_function(scope, function);
+    let Some(accessor) = super::dom_ownership::helper_function(scope, function) else {
+        return;
+    };
     scope
         .get_current_context()
         .set_slot(std::rc::Rc::new(RangeAccessor(accessor)));
@@ -54,7 +56,9 @@ pub(super) fn install(scope: &mut v8::PinScope) {
             .call(scope, receiver.into(), &[accessor.into(), factory])
             .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
         {
-            let updater = super::dom_ownership::helper_function(scope, updater);
+            let Some(updater) = super::dom_ownership::helper_function(scope, updater) else {
+                return;
+            };
             scope
                 .get_current_context()
                 .set_slot(std::rc::Rc::new(RangeExceptionUpdater(updater)));

@@ -5794,7 +5794,9 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
             .get(scope, key.into())
             .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
         {
-            let function = dom_ownership::helper_function(scope, function);
+            let Some(function) = dom_ownership::helper_function(scope, function) else {
+                return;
+            };
             DOM.with(|dom| dom.borrow_mut().as_mut().unwrap().control_clone = Some(function));
         }
     }
@@ -5821,7 +5823,9 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
         .get(scope, key.into())
         .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
     {
-        let accessor = dom_ownership::helper_function(scope, accessor);
+        let Some(accessor) = dom_ownership::helper_function(scope, accessor) else {
+            return;
+        };
         scope
             .get_current_context()
             .set_slot(std::rc::Rc::new(EventRecordAccessor(accessor)));
@@ -5832,7 +5836,9 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
         .get(scope, key.into())
         .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
     {
-        let dispatcher = dom_ownership::helper_function(scope, dispatcher);
+        let Some(dispatcher) = dom_ownership::helper_function(scope, dispatcher) else {
+            return;
+        };
         scope
             .get_current_context()
             .set_slot(std::rc::Rc::new(HostEventDispatcher(dispatcher)));

@@ -157,7 +157,9 @@ pub(super) fn invalidate_sheet(node: Handle) {
     });
 }
 pub fn install(scope: &mut v8::PinScope, callback: v8::Local<v8::Function>) {
-    let callback = dom_ownership::helper_function(scope, callback);
+    let Some(callback) = dom_ownership::helper_function(scope, callback) else {
+        return;
+    };
     DOM.with(|dom| {
         dom.borrow_mut().as_mut().unwrap().css_policy = PolicyState {
             callback: Some(callback),

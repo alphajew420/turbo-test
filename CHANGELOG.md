@@ -6,6 +6,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Keep Rusty V8 weak handles live through native slot/finalizer disposal using a
+  source-pinned, reproducible 149.3.0 dependency patch. Preserve its real SDK/native
+  engine identity and upstream license; the original teardown regression fails,
+  while 16 patched isolates and all 126 canonical binding contracts pass.
+- Make private helper publication fallible during iframe budget interruption,
+  preserving pending V8 termination and leaving interrupted helpers unpublished.
+  Normal construction and a canceled-interrupt retry remain covered.
 - Register inert document initializers on their callback creation realm. Shared
   embedder ops no longer overwrite the main Window initializer with the last iframe
   closure; a heap-traced retained-Document regression identified that native root.
