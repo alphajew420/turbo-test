@@ -259,7 +259,7 @@ pub fn adopt<'s>(
             .ok_or("Document tree unavailable")?;
         mapping
     };
-    let (cache, styles, listeners, nonces, modes, handlers) = {
+    let (cache, styles, listeners, nonces, modes, handlers, scripts) = {
         let _source = DomScope::for_object(scope, node);
         html_popover::attribute_node_change(scope, source_handle, None);
         html_popover::disconnect(scope, source_handle, true);
@@ -275,6 +275,7 @@ pub fn adopt<'s>(
         mutation_observers::flush(scope);
         let mut cache = Vec::new();
         let mut nonces = Vec::new();
+        let mut scripts = Vec::new();
         let mut modes = Vec::new();
         DOM.with(|dom| {
             let mut dom = dom.borrow_mut();
@@ -282,6 +283,9 @@ pub fn adopt<'s>(
             for (old, new) in &mapping {
                 if let Some(value) = state.cache.remove(old) {
                     cache.push((*new, value));
+                }
+                if let Some(value) = state.scripts.remove(old) {
+                    scripts.push((*new, value));
                 }
                 if let Some(value) = state.nonces.remove(old) {
                     nonces.push((*new, value));
@@ -331,7 +335,7 @@ pub fn adopt<'s>(
             }
         });
         let handlers = event_handlers::take_adopted_sources(&mapping);
-        (cache, styles, listeners, nonces, modes, handlers)
+        (cache, styles, listeners, nonces, modes, handlers, scripts)
     };
     let _target = DomScope::for_object(scope, document);
     event_handlers::restore_adopted_sources(handlers);
@@ -357,6 +361,7 @@ pub fn adopt<'s>(
     DOM.with(|dom| {
         let mut dom = dom.borrow_mut();
         let state = dom.as_mut().unwrap();
+        state.scripts.extend(scripts);
         state.nonces.extend(nonces);
         state.shadow_modes.extend(modes);
     });

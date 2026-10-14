@@ -15,7 +15,7 @@ thread_local! {
 }
 
 pub(super) fn recording() -> bool {
-    ENABLED.with(std::cell::Cell::get)
+    ENABLED.with(std::cell::Cell::get) || script_state::recording()
 }
 
 pub(super) fn suppressed() -> bool {
@@ -84,16 +84,20 @@ pub(super) fn child_list(
         next_sibling,
         attribute_namespace: None,
     };
-    let Some(registry) = scope.get_slot::<Rc<Registry>>().cloned() else {
-        return;
-    };
-    let observers = registry
-        .observers
-        .borrow()
-        .iter()
-        .filter_map(|weak| weak.to_local(scope))
-        .collect::<Vec<_>>();
-    let event = payload(scope, &event);
+    let observers = scope
+        .get_slot::<Rc<Registry>>()
+        .cloned()
+        .map(|registry| {
+            registry
+                .observers
+                .borrow()
+                .iter()
+                .filter_map(|weak| weak.to_local(scope))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let native_event = event;
+    let event = payload(scope, &native_event);
     for observer in observers {
         if let Some(queue) = function(scope, observer, "queue") {
             let receiver = v8::undefined(scope);
@@ -101,6 +105,7 @@ pub(super) fn child_list(
         }
     }
     consume(scope, event);
+    script_state::inactive_mutation(&native_event);
 }
 
 fn key<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str) -> v8::Local<'s, v8::Private> {
@@ -382,6 +387,9 @@ fn payload<'s>(
             set_prop(scope, object, "removedNodes", values.into());
         }
     }
+    let candidates = script_state::candidates(event);
+    let candidates = nodes(scope, &candidates);
+    set_prop(scope, object, "scriptCandidates", candidates.into());
     for (name, handle) in [
         ("previousSibling", event.previous_sibling),
         ("nextSibling", event.next_sibling),
@@ -407,17 +415,18 @@ pub(super) fn flush(scope: &mut v8::PinScope) {
     if !recording() || scope.is_execution_terminating() {
         return;
     }
-    let Some(registry) = scope.get_slot::<Rc<Registry>>().cloned() else {
-        return;
-    };
-    let observers = {
-        let mut observers = registry.observers.borrow_mut();
-        observers.retain(|observer| !observer.is_empty());
-        observers
-            .iter()
-            .filter_map(|weak| weak.to_local(scope))
-            .collect::<Vec<_>>()
-    };
+    let observers = scope
+        .get_slot::<Rc<Registry>>()
+        .cloned()
+        .map(|registry| {
+            let mut observers = registry.observers.borrow_mut();
+            observers.retain(|observer| !observer.is_empty());
+            observers
+                .iter()
+                .filter_map(|weak| weak.to_local(scope))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let current = DOM_ID.with(std::cell::Cell::get);
     let mut ids = OTHER_DOMS.with(|doms| doms.borrow().keys().copied().collect::<Vec<_>>());
     ids.push(current);
@@ -425,8 +434,8 @@ pub(super) fn flush(scope: &mut v8::PinScope) {
     for id in ids {
         let _owner = DomScope::enter(id);
         let events = with_tree_mut(Tree::take_mutation_events).unwrap_or_default();
-        for event in events {
-            let event = payload(scope, &event);
+        for native_event in events {
+            let event = payload(scope, &native_event);
             for observer in &observers {
                 if let Some(queue) = function(scope, *observer, "queue") {
                     let receiver = v8::undefined(scope);
@@ -434,6 +443,7 @@ pub(super) fn flush(scope: &mut v8::PinScope) {
                 }
             }
             consume(scope, event);
+            script_state::inactive_mutation(&native_event);
         }
     }
 }

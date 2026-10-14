@@ -6,6 +6,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Store script parser/force-async/already-started flags as native scalar node state.
+  Preserve clone/import/adoption and inert/retired-document behavior; prepare native
+  candidates after observer fanout, including nested and shadow-root scripts. Six
+  new contracts and a fresh Chrome155 control cover this subset. The integrated
+  canonical cohort passes 132 tests; runtime fetch/execution wiring, parser reentry,
+  SVG scripts, import maps and speculation rules remain open.
 - Keep Rusty V8 weak handles live through native slot/finalizer disposal using a
   source-pinned, reproducible 149.3.0 dependency patch. Preserve its real SDK/native
   engine identity and upstream license; the original teardown regression fails,

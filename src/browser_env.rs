@@ -26,6 +26,12 @@ mod event_brands;
 mod event_handlers;
 #[path = "event_listeners.rs"]
 mod event_listeners;
+#[path = "script_state.rs"]
+mod script_state;
+pub use script_state::{
+    prepare_script, script_state, set_document_resource_active, PreparedScript, ScriptState,
+};
+
 #[path = "mutation_observers.rs"]
 mod mutation_observers;
 pub use event_brands::{
@@ -348,6 +354,8 @@ struct DomState {
     el_template: v8::Global<v8::ObjectTemplate>,
     shadow_modes: HashMap<Handle, String>,
     nonces: HashMap<Handle, String>,
+    scripts: HashMap<Handle, ScriptState>,
+    resource_active: bool,
     basics_state: Option<v8::Weak<v8::Object>>,
     control_clone: Option<v8::Weak<v8::Function>>,
     css_policy: css_policy::PolicyState,
@@ -503,6 +511,8 @@ pub fn parse_html_document<'s>(
     let template = v8::Global::new(scope, template);
     DOM.with(|dom| {
         *dom.borrow_mut() = Some(DomState {
+            scripts: script_state::initial(&tree),
+            resource_active: false,
             nonces: initial_nonces(&tree),
             tree,
             cache: HashMap::new(),
@@ -518,6 +528,7 @@ pub fn parse_html_document<'s>(
             ownership_dirty: true,
         })
     });
+    script_state::initialize_inert();
     let context = scope.get_current_context();
     let context = v8::Weak::new(scope, context);
     DOM_CONTEXTS.with(|contexts| {
@@ -656,6 +667,7 @@ pub fn import_document_node<'s>(
     let clone = wrap(scope, node);
     copy_control_state(scope, source_node, clone, deep);
     document_basics::copy_nonces(scope, source_node, clone, deep);
+    script_state::copy(scope, source_node, clone, deep);
     Ok(clone)
 }
 
@@ -866,6 +878,7 @@ fn wrap<'s>(scope: &mut v8::PinScope<'s, '_>, handle: Handle) -> v8::Local<'s, v
     object
 }
 fn wrap_inner<'s>(scope: &mut v8::PinScope<'s, '_>, handle: Handle) -> v8::Local<'s, v8::Object> {
+    script_state::observe(handle);
     if scope.is_execution_terminating() {
         let context = scope.get_current_context();
         return context.global(scope);
@@ -1018,12 +1031,15 @@ fn with_tree<R>(f: impl FnOnce(&Tree) -> R) -> Option<R> {
     DOM.with(|d| d.borrow().as_ref().map(|s| f(&s.tree)))
 }
 fn with_tree_mut<R>(f: impl FnOnce(&mut Tree) -> R) -> Option<R> {
+    let recording = mutation_observers::recording();
     DOM.with(|d| {
         d.borrow_mut().as_mut().map(|s| {
             if mutation_observers::suppressed() {
                 s.tree.stop_recording();
-            } else if mutation_observers::recording() {
+            } else if recording {
                 s.tree.start_recording();
+            } else {
+                s.tree.stop_recording();
             }
             s.ownership_dirty = true;
             f(&mut s.tree)
@@ -1686,7 +1702,19 @@ fn el_insert_adjacent_html<'s>(
     with_tree_mut(|tree| tree.insert_adjacent_html(target, &position, &html));
     if let Some((parent, index, previous_count)) = location {
         let count = with_tree(|tree| tree.children(parent).len()).unwrap_or(previous_count);
-        range_live::inserting(scope, parent, index, count.saturating_sub(previous_count));
+        let added = count.saturating_sub(previous_count);
+        for child in with_tree(|tree| {
+            tree.children(parent)
+                .into_iter()
+                .skip(index)
+                .take(added)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+        {
+            script_state::parsed(child, true);
+        }
+        range_live::inserting(scope, parent, index, added);
     }
 }
 fn el_toggle_attribute<'s>(
@@ -2522,6 +2550,9 @@ fn set_inner_html(
     html_popover::disconnect(scope, h, false);
     range_live::replacing_children(scope, h);
     with_tree_mut(|t| t.set_inner_html(h, &html));
+    for child in with_tree(|tree| tree.children(h)).unwrap_or_default() {
+        script_state::parsed(child, true);
+    }
     css_policy::invalidate_sheet(h);
 }
 fn get_outer_html(
@@ -2584,12 +2615,19 @@ fn set_outer_html(
     });
     if let Some((index, previous_count)) = position {
         let count = with_tree(|tree| tree.children(parent).len()).unwrap_or(previous_count - 1);
-        range_live::inserting(
-            scope,
-            parent,
-            index,
-            count.saturating_add(1).saturating_sub(previous_count),
-        );
+        let added = count.saturating_add(1).saturating_sub(previous_count);
+        for child in with_tree(|tree| {
+            tree.children(parent)
+                .into_iter()
+                .skip(index)
+                .take(added)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+        {
+            script_state::parsed(child, true);
+        }
+        range_live::inserting(scope, parent, index, added);
     }
 }
 
@@ -3072,6 +3110,9 @@ fn el_clone_node<'s>(
     let deep = args.get(0).boolean_value(scope);
     if let Some(new_h) = with_tree_mut(|t| clone_subtree(t, h, deep)) {
         document_basics::clone_nonces(h, new_h, deep);
+        let source = wrap(scope, h);
+        let clone = wrap(scope, new_h);
+        script_state::copy(scope, source, clone, deep);
         let node = wrap(scope, new_h);
         // Carry over the source's JS prototype so a cloned control element keeps its interface
         // accessors (type/value/checked/selected). createElement applies these protos, but cloneNode
@@ -5721,6 +5762,8 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     };
     DOM.with(|d| {
         *d.borrow_mut() = Some(DomState {
+            scripts: script_state::initial(&tree),
+            resource_active: true,
             nonces: initial_nonces(&tree),
             tree,
             cache: HashMap::new(),
@@ -5812,6 +5855,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     capture_node_projector(scope);
     dom_implementation::install(scope);
     mutation_observers::install(scope);
+    script_state::install(scope);
     range_contents::install(scope);
     bind_method(scope, global, "__htmlTextNative", html_text::dispatch);
     run_js(scope, include_str!("html_text.js"));

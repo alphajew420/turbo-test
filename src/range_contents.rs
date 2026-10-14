@@ -51,9 +51,14 @@ pub(super) fn install(scope: &mut v8::PinScope) {
         .and_then(|script| script.run(scope))
         .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
     {
+        let marker = v8::Function::new(scope, super::script_state::contextual_fragment).unwrap();
         let receiver = v8::undefined(scope);
         if let Some(updater) = initializer
-            .call(scope, receiver.into(), &[accessor.into(), factory])
+            .call(
+                scope,
+                receiver.into(),
+                &[accessor.into(), factory, marker.into()],
+            )
             .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
         {
             let Some(updater) = super::dom_ownership::helper_function(scope, updater) else {
