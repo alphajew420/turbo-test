@@ -6,6 +6,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Pin the captured RegExp exec intrinsic on private XML-name validation, so replacing
+  RegExp.prototype.exec cannot intercept native document factories. Validate doctype
+  delimiters directly; the expanded Chrome155 control covers seven poisoned intrinsics.
 - Replace native wrapper/helper/context roots with weak lookups and private
   Document/component ownership. Keep genuine receiver and Node-argument owners
   pinned during native callbacks, preserve ordinary exceptions and materialized
