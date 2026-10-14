@@ -7568,6 +7568,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "html_meta_tests.rs"]
+mod html_meta_tests;
+
+#[cfg(test)]
 #[path = "css_live_tests.rs"]
 mod css_live_tests;
 

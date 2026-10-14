@@ -5,6 +5,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Reflect HTMLMetaElement name/httpEquiv/content/media/scheme through native attributes, with genuine HTML namespace/receiver brands, DOMString conversion and private native method capture. Saved normal Chrome155 descriptor/property/attribute/illegal-receiver controls cover the complete narrow surface.
+
 ### Fixed
 - Partition native document, listener, observer, CSS and focus state by its actual
   V8 isolate. Scoped activation restores the previous isolate/document after
