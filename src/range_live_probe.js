@@ -156,6 +156,84 @@
 		node.remove();
 	}
 	{
+		const states = [];
+		for (const position of [
+			"beforebegin",
+			"afterend",
+			"afterbegin",
+			"beforeend",
+		]) {
+			const node = host();
+			node.innerHTML = "<i>a</i><b>b</b><u>c</u>";
+			const range = document.createRange(),
+				inside = document.createRange();
+			range.setStart(node, 1);
+			range.setEnd(node, 3);
+			inside.selectNodeContents(node.children[1].firstChild);
+			node.children[1].insertAdjacentHTML(position, "<em>x</em>y");
+			states.push([position, point(range), point(inside), node.innerHTML]);
+			node.remove();
+		}
+		rows.adjacentMarkup = states;
+	}
+	{
+		const node = host();
+		node.innerHTML = "<i>a</i><b>bc</b><u>d</u>";
+		const around = document.createRange(),
+			inside = document.createRange(),
+			after = document.createRange();
+		around.selectNode(node.children[1]);
+		inside.selectNodeContents(node.children[1].firstChild);
+		after.setStart(node, 3);
+		after.collapse(true);
+		node.children[1].outerHTML = "<em>x</em>y";
+		rows.outerMarkup = [
+			point(around),
+			point(inside),
+			point(after),
+			node.innerHTML,
+		];
+		node.remove();
+	}
+	{
+		const node = host();
+		node.innerHTML = "<i>a</i><b>bc</b><u>d</u>";
+		const around = document.createRange(),
+			inside = document.createRange();
+		around.selectNodeContents(node);
+		inside.selectNodeContents(node.children[1].firstChild);
+		node.innerText = "new\ntext";
+		rows.innerText = [point(around), point(inside), node.innerHTML];
+		node.remove();
+	}
+	{
+		const states = [];
+		for (const value of ["X", "A\nB", ""]) {
+			const node = host();
+			node.innerHTML = "left<b>old</b>right";
+			const previous = document.createRange(),
+				inside = document.createRange(),
+				next = document.createRange(),
+				around = document.createRange();
+			previous.selectNodeContents(node.firstChild);
+			inside.selectNodeContents(node.children[0].firstChild);
+			next.selectNodeContents(node.lastChild);
+			around.setStart(node, 1);
+			around.setEnd(node, 3);
+			node.children[0].outerText = value;
+			states.push([
+				value,
+				point(previous),
+				point(inside),
+				point(next),
+				point(around),
+				node.innerHTML,
+			]);
+			node.remove();
+		}
+		rows.outerText = states;
+	}
+	{
 		const text = document.createTextNode("abc"),
 			range = document.createRange();
 		range.selectNodeContents(text);

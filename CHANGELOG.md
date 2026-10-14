@@ -6,6 +6,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Keep live Range boundaries synchronized with insertAdjacentHTML, outerHTML,
+  innerText and outerText replacement. Match Chrome's parent-offset collapse when
+  outerText appends and removes adjacent text, instead of applying normalize's
+  boundary-transfer behavior. The exact shared mutation collector and saved Chrome
+  155 control cover all four insertion positions and empty/multiline replacements.
 - Read stylesheet text, media and title through captured native DOM accessors,
   preserving actual sheet identity across CSSOM edits despite page-defined getters.
   Add a Rust-only CSSHost live export with private rule/declaration state, disabled

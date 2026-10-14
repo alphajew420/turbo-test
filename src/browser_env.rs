@@ -1512,8 +1512,27 @@ fn el_insert_adjacent_html<'s>(
         );
         return;
     }
+    let location = with_tree(|tree| {
+        let parent = match position.as_str() {
+            "beforebegin" | "afterend" => tree.parent(target)?,
+            _ => target,
+        };
+        let children = tree.children(parent);
+        let index = match position.as_str() {
+            "beforebegin" => children.iter().position(|&node| node == target)?,
+            "afterend" => children.iter().position(|&node| node == target)? + 1,
+            "afterbegin" => 0,
+            _ => children.len(),
+        };
+        Some((parent, index, children.len()))
+    })
+    .flatten();
     // These nodes are freshly parsed, so they cannot contain an existing ancestor.
     with_tree_mut(|tree| tree.insert_adjacent_html(target, &position, &html));
+    if let Some((parent, index, previous_count)) = location {
+        let count = with_tree(|tree| tree.children(parent).len()).unwrap_or(previous_count);
+        range_live::inserting(scope, parent, index, count.saturating_sub(previous_count));
+    }
 }
 fn el_toggle_attribute<'s>(
     scope: &mut v8::PinScope<'s, '_>,
@@ -2395,10 +2414,28 @@ fn set_outer_html(
     }
     let html = value.to_rust_string_lossy(scope);
     html_popover::disconnect(scope, node, true);
+    let position = with_tree(|tree| {
+        let children = tree.children(parent);
+        children
+            .iter()
+            .position(|&child| child == node)
+            .map(|index| (index, children.len()))
+    })
+    .flatten();
+    range_live::removing(scope, node);
     with_tree_mut(|tree| {
         tree.insert_adjacent_html(node, "beforebegin", &html);
         tree.remove_child(parent, node);
     });
+    if let Some((index, previous_count)) = position {
+        let count = with_tree(|tree| tree.children(parent).len()).unwrap_or(previous_count - 1);
+        range_live::inserting(
+            scope,
+            parent,
+            index,
+            count.saturating_add(1).saturating_sub(previous_count),
+        );
+    }
 }
 
 /// `children` = element-only child nodes (HTMLCollection-ish array).
