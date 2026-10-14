@@ -6,6 +6,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Create genuine independent HTML/XML document trees through branded
+  DOMImplementation factories and Document constructors. Preserve native doctype
+  adoption identity, title conversion, receiver checks and foreign stylesheet
+  rejection, without page-replaced RegExp/String/Array/Map/Object hooks. Cover
+  ordinary parsed documents without factory metadata as well as the saved Chrome
+  155 factory control. XML parsing, CDATA and downstream XML helpers remain open.
 - Capture native node projection methods so first-time wrapping of Text, Attr,
   Comment, elements and fragments cannot call page-replaced Function, WeakSet,
   Object, Array or String methods. Cover this alongside repeated document installs

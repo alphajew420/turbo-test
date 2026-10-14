@@ -59,6 +59,9 @@ pub fn set_interface_record<'s>(
 
 #[path = "document_basics.rs"]
 mod document_basics;
+#[path = "dom_implementation.rs"]
+mod dom_implementation;
+pub use dom_implementation::set_initializer as set_inert_document_initializer;
 #[path = "document_xpath.rs"]
 mod document_xpath;
 pub use document_xpath::is_native_xpath_object;
@@ -5491,6 +5494,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     run_js(scope, include_str!("element_tokens.js"));
     run_js(scope, include_str!("element_relations.js"));
     run_js(scope, include_str!("document_basics.js"));
+    dom_implementation::install(scope);
     range_contents::install(scope);
     bind_method(scope, global, "__htmlTextNative", html_text::dispatch);
     run_js(scope, include_str!("html_text.js"));
@@ -7147,3 +7151,7 @@ mod dom_projection_tests;
 #[cfg(test)]
 #[path = "css_adoption_tests.rs"]
 mod css_adoption_tests;
+
+#[cfg(test)]
+#[path = "dom_implementation_tests.rs"]
+mod dom_implementation_tests;
