@@ -6,6 +6,26 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Partition native document, listener, observer, CSS and focus state by its actual
+  V8 isolate. Scoped activation restores the previous isolate/document after
+  nested work, cold installation and disposal; resetting or dropping one isolate
+  preserves its peers. Eight regressions cover identity, independent observers,
+  reset/disposal ordering and activation guards that outlive their isolate.
+- Consume published turbo-dom 0.5.4 bounded storage collection through its public
+  API. Genuine weak wrappers, private ownership edges and host-job node pins keep
+  reachable nodes alive; successful collection also removes stale scalar records.
+  Thirteen contracts cover retained/adopted nodes, pending mutations, job pins,
+  budgets and teardown. Collection is explicit; automatic host-boundary scheduling
+  remains consumer work, and multi-document calls are atomic per Tree.
+- Resolve computed colors through the public cascade serialization and private
+  linked-sheet values. Cover inherited/default CanvasText, CSS-wide keywords,
+  currentColor, disconnected elements and live declarations against a fresh
+  source-pinned Chrome 155 control. Broader system-color/color-scheme, variables
+  and layer cascade behavior remains open.
+- The combined canonical browser binding cohort passes 158 contracts on the
+  default 149.3.0 SDK. Consumer runtime scheduling and genuine native155 checks
+  remain separate; inherited runner warnings prevent claiming a strict full-repo
+  gate from this focused result.
 - Select HTML interfaces by exact namespace/local name rather than uppercasing
   XML-created names. Preserve genuine HTMLUnknownElement versus valid custom-name
   identity, reserved names and legacy generic/preformatted aliases. Control getters
