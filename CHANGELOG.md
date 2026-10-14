@@ -6,6 +6,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Capture native node projection methods so first-time wrapping of Text, Attr,
+  Comment, elements and fragments cannot call page-replaced Function, WeakSet,
+  Object, Array or String methods. Cover this alongside repeated document installs
+  and the XPath private-intrinsic regression.
+- Consume published turbo-dom 0.5.3, including its additive mutation-event metadata
+  for observer delivery; browser observer queues remain a separate integration task.
 - Preserve native Node traversal/equality descriptors when rebuilding a document
   in an existing realm; project compatibility delegates from that bootstrap's
   actual raw node prototype rather than a previous constructor's prototype.

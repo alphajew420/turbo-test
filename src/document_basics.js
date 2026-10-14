@@ -16,7 +16,7 @@
   const html = 'http://www.w3.org/1999/xhtml';
   const StringValue = String;
   const string = value => { if (typeof value === 'symbol') throw new TypeError('Cannot convert a Symbol to a string'); return StringValue(value); };
-  const check = (receiver, allowed) => { if (!allowed.includes(type.call(receiver))) throw new TypeError('Illegal invocation'); };
+  const check = (receiver, allowed) => { if (!allowed.includes(apply(type, receiver, []))) throw new TypeError('Illegal invocation'); };
   const state = document => native('state', document);
   const property = (proto, name, read, write) => {
     const descriptor = { configurable: true, enumerable: true, get: make(read, 'get ' + name, 0) };
@@ -214,7 +214,7 @@
   method(g.Document.prototype,'createElement',function(name){
     check(this,[9]);if(!arguments.length)throw new TypeError('createElement requires 1 argument');
     name=string(name);if(!xmlName.test(name))throw new g.DOMException('Invalid element name','InvalidCharacterError');
-    return createElement.call(this,name,arguments[1]);
+    return apply(createElement,this,[name,arguments[1]]);
   },1);
   method(g.Document.prototype,'createNSResolver',function(node){
     check(this,[9]);if(!arguments.length)throw new TypeError('createNSResolver requires 1 argument');
@@ -293,8 +293,8 @@
     property(g.Document.prototype, alias, function () { check(this, [9]); return this[name]; });
   }
   property(g.Document.prototype, 'webkitIsFullScreen', function () { check(this, [9]); return this.fullscreenElement != null; });
-  const project = ns.projectNativeNode;
-  ns.projectNativeNode = function (node) { project(node); if (type.call(node) === 10) Object.setPrototypeOf(node, documentTypeProto); return node; };
+  const project = ns.projectNativeNode, projectSetPrototype = Object.setPrototypeOf;
+  ns.projectNativeNode = function (node) { project(node); if (apply(type, node, []) === 10) projectSetPrototype(node, documentTypeProto); return node; };
   void g.document.doctype;
   const handlerNames = 'abort animationcancel animationend animationiteration animationstart auxclick beforecopy beforecut beforeinput beforematch beforepaste beforetoggle beforexrselect blur cancel canplay canplaythrough change click close command contentvisibilityautostatechange contextlost contextmenu contextrestored copy cuechange cut dblclick drag dragend dragenter dragleave dragover dragstart drop durationchange emptied ended error focus formdata freeze fullscreenchange fullscreenerror gotpointercapture input invalid keydown keypress keyup load loadeddata loadedmetadata loadstart lostpointercapture mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup mousewheel paste pause play playing pointercancel pointerdown pointerenter pointerleave pointerlockchange pointerlockerror pointermove pointerout pointerover pointerrawupdate pointerup prerenderingchange progress ratechange readystatechange reset resize resume scroll scrollend scrollsnapchange scrollsnapchanging search securitypolicyviolation seeked seeking select selectionchange selectstart slotchange stalled submit suspend timeupdate toggle transitioncancel transitionend transitionrun transitionstart visibilitychange volumechange waiting webkitanimationend webkitanimationiteration webkitanimationstart webkitfullscreenchange webkitfullscreenerror webkittransitionend wheel'.split(' ');
   for (const event of handlerNames) {

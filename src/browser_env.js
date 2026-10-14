@@ -2071,16 +2071,23 @@ if(typeof __ns.makeNativeFunction==='function'){
     Object.assign(tags,{TD:'HTMLTableCellElement',TH:'HTMLTableCellElement',THEAD:'HTMLTableSectionElement',TBODY:'HTMLTableSectionElement',TFOOT:'HTMLTableSectionElement',COLGROUP:'HTMLTableColElement',Q:'HTMLQuoteElement',BLOCKQUOTE:'HTMLQuoteElement'});
     for(var heading=1;heading<=6;heading++)tags['H'+heading]='HTMLHeadingElement';
     var projected=new WeakSet();
+    // First wrapping can happen after page scripts replace the public builtins.
+    var projectionApply=Reflect.apply,projectionSetPrototype=Object.setPrototypeOf;
+    var projectionHasOwn=Object.prototype.hasOwnProperty,projectionHas=WeakSet.prototype.has,projectionAdd=WeakSet.prototype.add;
+    var projectionUpper=String.prototype.toUpperCase,projectionSlice=String.prototype.slice;
     __ns.projectNativeNode=function(obj){
-      if(projected.has(obj))return obj;
-      var type=getType.call(obj),name;
+      if(projectionApply(projectionHas,projected,[obj]))return obj;
+      var type=projectionApply(getType,obj,[]),name;
       if(type===1){
-        var tag=getLocalTag.call(obj),namespace=getNamespace.call(obj);
-        name=namespace==='http://www.w3.org/2000/svg'?(String(tag).split(':').pop()==='svg'?'SVGSVGElement':'SVGElement'):namespace==='http://www.w3.org/1999/xhtml'?(tags[String(tag).toUpperCase()]||'HTMLElement'):'Element';
-      }else name=type===11&&isShadowRoot.call(obj)?'ShadowRoot':({2:'Attr',10:'DocumentType',3:'Text',4:'CDATASection',7:'ProcessingInstruction',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
-      Object.setPrototypeOf(obj,prototypes[name]);
-      projected.add(obj);
-      nativeKeys.forEach(function(key){if(Object.prototype.hasOwnProperty.call(obj,key))delete obj[key];});
+        var tag=projectionApply(getLocalTag,obj,[]),namespace=projectionApply(getNamespace,obj,[]);
+        if(namespace==='http://www.w3.org/2000/svg'){
+          var localStart=0;for(var index=0;index<tag.length;index++)if(tag[index]===':')localStart=index+1;
+          name=projectionApply(projectionSlice,tag,[localStart])==='svg'?'SVGSVGElement':'SVGElement';
+        }else name=namespace==='http://www.w3.org/1999/xhtml'?(tags[projectionApply(projectionUpper,tag,[])]||'HTMLElement'):'Element';
+      }else name=type===11&&projectionApply(isShadowRoot,obj,[])?'ShadowRoot':({2:'Attr',10:'DocumentType',3:'Text',4:'CDATASection',7:'ProcessingInstruction',8:'Comment',9:'HTMLDocument',11:'DocumentFragment'})[type]||'Node';
+      projectionSetPrototype(obj,prototypes[name]);
+      projectionApply(projectionAdd,projected,[obj]);
+      for(var index=0;index<nativeKeys.length;index++){var key=nativeKeys[index];if(projectionApply(projectionHasOwn,obj,[key]))delete obj[key];}
       return obj;
     };
     __ns.projectNativeNode(d);
