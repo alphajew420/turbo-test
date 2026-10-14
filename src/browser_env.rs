@@ -7143,3 +7143,7 @@ mod css_live_tests;
 #[cfg(test)]
 #[path = "dom_projection_tests.rs"]
 mod dom_projection_tests;
+
+#[cfg(test)]
+#[path = "css_adoption_tests.rs"]
+mod css_adoption_tests;

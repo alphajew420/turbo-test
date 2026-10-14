@@ -100,6 +100,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [0.4.6] - 2026-10-13
 
+- Implement stable ObservableArray-backed stylesheet adoption for genuine Documents
+  and ShadowRoots. Private backing preserves ownership, conversion/error effects,
+  indexed/deletion/descriptor behavior and native-sheet constructor-document checks.
+  Renderer exports read captured private backing, bypassing page-owned adoption
+  getters; independent Chrome 155 mutation/ownership controls cover this subset.
+
 ### Fixed
 - Back popover show/hide/toggle with native per-document state, auto/hint/manual ancestry
   and source relationships, cancellable trusted beforetoggle events and coalesced trusted

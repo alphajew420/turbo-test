@@ -683,7 +683,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   Object.defineProperty(mediaConstructor.prototype,Symbol.iterator,{value:Array.prototype.values,writable:true,configurable:true});
   function makeMedia(text,owner){var target=Object.create(mediaConstructor.prototype),record={items:mediaQueries(text||''),source:text||'',owner:owner||null},proxy;proxy=new Proxy(target,{get:function(obj,key,receiver){var index=cssIndex(key);return index>=0?mediaRecord(proxy).items[index]:Reflect.get(obj,key,receiver);},has:function(obj,key){var index=cssIndex(key);return index>=0?index<mediaRecord(proxy).items.length:Reflect.has(obj,key);},ownKeys:function(){return mediaRecord(proxy).items.map(function(_,i){return String(i);}).concat(Reflect.ownKeys(target));},getOwnPropertyDescriptor:function(obj,key){var index=cssIndex(key),items=mediaRecord(proxy).items;return index>=0&&index<items.length?{value:items[index],writable:false,enumerable:true,configurable:true}:Reflect.getOwnPropertyDescriptor(obj,key);},set:function(obj,key,value,receiver){return cssIndex(key)<0&&Reflect.set(obj,key,value,receiver);},deleteProperty:function(obj,key){return cssIndex(key)<0&&Reflect.deleteProperty(obj,key);}});mediaRecords.set(proxy,record);return proxy;}
   var styleSheetConstructor=cssInterface('StyleSheet');
-  function newSheetRecord(options){return {rules:cssList(),constructed:true,ownerNode:null,href:null,parentStyleSheet:null,ownerRule:null,title:null,media:makeMedia(options&&options.media!==undefined?options.media:''),disabled:!!(options&&options.disabled),replacing:false,originClean:true};}
+  function newSheetRecord(options){return {rules:cssList(),constructed:true,constructorDocument:d,ownerNode:null,href:null,parentStyleSheet:null,ownerRule:null,title:null,media:makeMedia(options&&options.media!==undefined?options.media:''),disabled:!!(options&&options.disabled),replacing:false,originClean:true};}
   var sheetConstructor=cssInterface('CSSStyleSheet',styleSheetConstructor,function(options){if(options!==null&&options!==undefined&&typeof options!=='object'&&typeof options!=='function')throw new TypeError('CSSStyleSheetInit must be an object');sheetRecords.set(this,newSheetRecord(options));});
   ['href','ownerNode','parentStyleSheet'].forEach(function(name){cssMember(styleSheetConstructor.prototype,name,function(){return sheetRecord(this)[name];});});
   cssMember(styleSheetConstructor.prototype,'title',function(){var record=sheetRecord(this);return record.ownerNode?sheetNativeAttribute(record.ownerNode,'title')||null:record.title;});
@@ -734,11 +734,32 @@ if(typeof __ns.makeNativeFunction==='function'){
   }
   function exportLiveSheet(sheet){return cssHostSheet(sheet,cssHostArray(),{__proto__:null,rules:20000,sheets:1024,bytes:2000000});}
   var documentCSSRecord=collectionGet(d)||{kind:'Document'};documentCSSRecord.cssHost={exportSheet:exportLiveSheet,looksLikeCSS:function(text){return !String(text).trim()||!!cssNativeParse(String(text)).trim();},sheet:function(element){return cssApply(currentSheetGetter,element,[]);},readRules:function(sheet){var source=cssItems(sheetRecord(sheet).rules),snapshot=[];cssSetPrototype(snapshot,null);for(var index=0;index<source.length;index++)snapshot[index]=source[index];return snapshot;},readRule:function(rule){var record=cssRuleRecord(rule);return {type:record.type,href:record.href||null};},attachLinked:attachLinkedStyleSheet,attachImport:attachImportStyleSheet};collectionSet(d,documentCSSRecord);
-  // adoptedStyleSheets — must be a real, settable ARRAY (a non-iterable getter or
-  // absent prop both break the read-modify-write spread above).
-  if (!Array.isArray(d.adoptedStyleSheets)) {
-    try { d.adoptedStyleSheets = []; } catch (e) {}
+  // ObservableArray adoption has a stable identity and authoritative backing
+  // state. Renderer exports never consult a page-defined document getter.
+  var adoptionStates=cssMap('adoption'),adoptionDocumentCheck=__ns.domAccessor('nodeType',false,'Document'),adoptionNodeCheck=__ns.domAccessor('nodeType',false,'Node'),adoptionShadowCheck=__ns.domAccessor('__isShadowRoot',false,'Node'),adoptionOwner=__ns.domAccessor('ownerDocument',false,'Node'),adoptionDOMException=g.DOMException,adoptionDefine=Reflect.defineProperty,adoptionSet=Reflect.set,adoptionDelete=Reflect.deleteProperty,adoptionOwn=Object.hasOwn,adoptionProxy=Proxy,adoptionFloor=Math.floor;
+  function adoptionRecord(value){var record=sheetRecords.get(value);if(!record)throw new TypeError('The value is not a CSSStyleSheet');return record;}
+  function adoptionDocument(owner){var type=cssApply(adoptionNodeCheck,owner,[]);if(type===9)return owner;if(type===11&&cssApply(adoptionShadowCheck,owner,[]))return cssApply(adoptionOwner,owner,[]);throw new TypeError('Illegal invocation');}
+  function adoptionAllowed(owner,value){var record=adoptionRecord(value);if(!record.constructed||record.constructorDocument!==adoptionDocument(owner))throw new adoptionDOMException('The stylesheet cannot be adopted','NotAllowedError');}
+  function createAdoption(owner){
+    var target=[],state={__proto__:null,target:target,proxy:null};
+    function length(value){var n=+value;if(n<0||n>4294967295||n!==adoptionFloor(n))throw new RangeError('Invalid array length');if(n<target.length)target.length=n;return true;}
+    function index(key,value){adoptionAllowed(owner,value);if(key>target.length)return true;adoptionDefine(target,String(key),{value:value,writable:true,enumerable:true,configurable:true});return true;}
+    state.proxy=new adoptionProxy(target,{
+      preventExtensions:function(){return false;},
+      set:function(target,key,value,receiver){var i=cssIndex(key);if(key==='length')return length(value);return i>=0&&i<4294967295?index(i,value):adoptionSet(target,key,value,receiver);},
+      deleteProperty:function(target,key){var i=cssIndex(key);if(i>=0&&i<target.length){target.length=i;return true;}return adoptionDelete(target,key);},
+      defineProperty:function(target,key,descriptor){var i=cssIndex(key);if(i>=0&&i<4294967295){if(adoptionOwn(descriptor,'get')||adoptionOwn(descriptor,'set')||adoptionOwn(descriptor,'configurable')&&!descriptor.configurable||adoptionOwn(descriptor,'enumerable')&&!descriptor.enumerable||adoptionOwn(descriptor,'writable')&&!descriptor.writable)return false;return adoptionOwn(descriptor,'value')?index(i,descriptor.value):true;}if(key==='length'){if(adoptionOwn(descriptor,'get')||adoptionOwn(descriptor,'set')||adoptionOwn(descriptor,'writable')&&!descriptor.writable)return false;return adoptionOwn(descriptor,'value')?length(descriptor.value):true;}return adoptionDefine(target,key,descriptor);}
+    });
+    return state;
   }
+  function adoptionState(receiver){adoptionDocument(receiver);var state=adoptionStates.get(receiver);if(!state){state=createAdoption(receiver);adoptionStates.set(receiver,state);}return state;}
+  function readAdoption(){cssApply(adoptionDocumentCheck,this,[]);return adoptionState(this).proxy;}
+  function readShadowAdoption(){if(cssApply(adoptionNodeCheck,this,[])!==11||!cssApply(adoptionShadowCheck,this,[]))throw new TypeError('Illegal invocation');return adoptionState(this).proxy;}
+  function replaceAdoption(input){var state=adoptionState(this),converted=cssHostArray();for(var value of input){adoptionRecord(value);converted[converted.length]=value;}state.target.length=0;for(var i=0;i<converted.length;i++){adoptionAllowed(this,converted[i]);adoptionDefine(state.target,String(i),{value:converted[i],writable:true,enumerable:true,configurable:true});}}
+  var adoptionDescriptor={configurable:true,enumerable:true,get:__ns.makeNativeFunction(readAdoption,'get adoptedStyleSheets',0),set:__ns.makeNativeFunction(function(input){cssApply(adoptionDocumentCheck,this,[]);return cssApply(replaceAdoption,this,[input]);},'set adoptedStyleSheets',1)};
+  var shadowAdoptionDescriptor={configurable:true,enumerable:true,get:__ns.makeNativeFunction(readShadowAdoption,'get adoptedStyleSheets',0),set:__ns.makeNativeFunction(function(input){cssApply(readShadowAdoption,this,[]);return cssApply(replaceAdoption,this,[input]);},'set adoptedStyleSheets',1)};
+  Object.defineProperty(d,'adoptedStyleSheets',adoptionDescriptor);adoptionState(d);
+  documentCSSRecord.cssHost.readAdopted=function(owner){var target=adoptionState(owner||d).target,snapshot=cssHostArray();for(var i=0;i<target.length;i++)snapshot[i]=target[i];return snapshot;};
   // document.title reflects the <title> element's text (jsdom semantics). Ensure a <title> exists in
   // <head> so code that does querySelector('title').textContent = … (usePageMetadata) has a target,
   // and reading document.title returns it.
@@ -1966,6 +1987,7 @@ if(typeof __ns.makeNativeFunction==='function'){
       });
     }
     projectCompatibility('Document',['getElementsByTagName','getElementsByClassName','getElementsByName'],htmlProto);
+    Object.defineProperty(documentProto,'adoptedStyleSheets',adoptionDescriptor);Object.defineProperty(g.ShadowRoot.prototype,'adoptedStyleSheets',shadowAdoptionDescriptor);delete d.adoptedStyleSheets;
     projectCompatibility('Node',['isEqualNode','isSameNode','lastChild','previousSibling'],htmlProto);
     projectCompatibility('Element',['classList','getClientRects','getElementsByTagName','getElementsByClassName','nextElementSibling','previousElementSibling','requestFullscreen'],htmlProto);
     ['isEqualNode','isSameNode','lastChild','previousSibling','replaceChild','classList','getClientRects','getElementsByTagName','getElementsByClassName','getElementsByName','nextElementSibling','previousElementSibling','requestFullscreen','lastElementChild','cookie','exitFullscreen'].forEach(function(name){delete htmlProto[name];});
