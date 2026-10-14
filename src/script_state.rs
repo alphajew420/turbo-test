@@ -113,6 +113,17 @@ pub fn script_state(scope: &mut v8::PinScope, node: v8::Local<v8::Object>) -> Op
     })
 }
 
+/// Resolve ownership from native fields even after cross-document adoption.
+pub fn script_document<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    node: v8::Local<v8::Object>,
+) -> Option<v8::Local<'s, v8::Object>> {
+    let _owner = DomScope::for_object(scope, node);
+    let handle = handle_of(scope, node)?;
+    let root = with_tree(|tree| script(tree, handle).then(|| tree.root())).flatten()?;
+    Some(wrap(scope, root))
+}
+
 /// Retirement affects resource execution without changing retained document identity.
 pub fn set_document_resource_active(
     scope: &mut v8::PinScope,
@@ -537,6 +548,11 @@ mod tests {
                     rv.set(v8::null(scope).into());
                 }
             }
+            "owner" => {
+                if let Some(document) = script_document(scope, node) {
+                    rv.set(document.into());
+                }
+            }
             "import" => {
                 let document = wrap(scope, with_tree(Tree::root).unwrap());
                 if let Ok(clone) = import_document_node(scope, document, node, true) {
@@ -664,7 +680,7 @@ mod tests {
           Object.defineProperties(s,{src:{get(){throw Error('guest src')}},type:{get(){throw Error('guest type')}},textContent:{get(){throw Error('guest text')}}});
           if(!hostScript('claim',s)||hostScript('claim',s))throw Error('native claim');
           const c=s.cloneNode(true);document.head.append(c);if(hostScript('claim',c))throw Error('started clone');
-          const f=document.implementation.createHTMLDocument('inert'),u=f.createElement('script');u.textContent='0';document.head.append(u);if(u.ownerDocument!==document||!hostScript('claim',u))throw Error('detached inert adoption');
+          const f=document.implementation.createHTMLDocument('inert'),u=f.createElement('script');u.textContent='0';document.head.append(u);if(u.ownerDocument!==document||!hostScript('claim',u))throw Error('detached inert adoption');Object.defineProperty(u,'ownerDocument',{get(){throw Error('guest owner')}});if(hostScript('owner',u)!==document)throw Error('native adopted owner');
           const v=f.createElement('script');v.textContent='0';f.head.append(v);document.head.append(v);if(hostScript('claim',v))throw Error('connected inert adoption');
           const empty=document.createElement('script');document.head.append(empty);if(hostScript('claim',empty))throw Error('empty');empty.textContent='0';if(!hostScript('claim',empty))throw Error('filled empty');
           hostScript('retire',document);const retired=document.createElement('script');retired.textContent='0';document.head.append(retired);if(hostScript('claim',retired)||hostScript('state',retired)!=='true,false,true')throw Error('retired preparation');

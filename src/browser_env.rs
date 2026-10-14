@@ -29,7 +29,8 @@ mod event_listeners;
 #[path = "script_state.rs"]
 mod script_state;
 pub use script_state::{
-    prepare_script, script_state, set_document_resource_active, PreparedScript, ScriptState,
+    prepare_script, script_document, script_state, set_document_resource_active, PreparedScript,
+    ScriptState,
 };
 
 #[path = "mutation_observers.rs"]
