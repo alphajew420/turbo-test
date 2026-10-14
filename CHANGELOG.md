@@ -6,6 +6,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Select HTML interfaces by exact namespace/local name rather than uppercasing
+  XML-created names. Preserve genuine HTMLUnknownElement versus valid custom-name
+  identity, reserved names and legacy generic/preformatted aliases. Control getters
+  and methods check native namespace/local-name brands even when borrowed or when
+  public prototypes are changed. A fresh 723-row authored Chrome155 matrix covers
+  these HTML/null-namespace mappings and foreign control brands; SVGScriptElement
+  and SVGImageElement projection/resource behavior remain separate open gaps.
 - Allocate native ownership component/helper maps in the actual Document realm.
   A foreign script getter cannot retain its retired Window through another
   Document’s map shape. Observer event draining no longer dirties unchanged graphs.
