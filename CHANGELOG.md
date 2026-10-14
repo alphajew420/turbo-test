@@ -6,6 +6,20 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Replace native wrapper/helper/context roots with weak lookups and private
+  Document/component ownership. Keep genuine receiver and Node-argument owners
+  pinned during native callbacks, preserve ordinary exceptions and materialized
+  V8 termination, and invalidate interrupted wrapper publication before retry.
+  The combined canonical ownership/observer checkpoint passes 124 contracts;
+  dependency disposal regressions are tracked separately from that binding gate.
+- Deliver native MutationObserver records through one V8 notification microtask,
+  with per-observer options, old values, namespace filtering, transient removed
+  subtrees, static branded NodeLists and receiver checks. Compound insert/replace
+  algorithms emit their semantic batches, preserving ordered source removals and
+  failed cross-document conversion. Saved Chrome 155 controls and hostile builtin
+  regressions cover this subset. Add a trusted Document-private mutation consumer
+  for resource postconnection work, with observer fanout first and nested mutations.
+  Broader lifecycle, shadow slots, custom elements and UTF-16 work remain open.
 - Retain the native node projector privately on its owner Document, avoiding
   page-replaced constructor and public projector getters during first wrapping,
   including parser-created controls and independent documents. Reject inherited
