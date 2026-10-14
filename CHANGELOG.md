@@ -8,6 +8,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - Reflect HTMLMetaElement name/httpEquiv/content/media/scheme through native attributes, with genuine HTML namespace/receiver brands, DOMString conversion and private native method capture. Saved normal Chrome155 descriptor/property/attribute/illegal-receiver controls cover the complete narrow surface.
 
 ### Fixed
+- Dispose cached native worlds safely after binding thread-local cells have been
+  destroyed. Availability guards preserve normal isolate restoration while the
+  isolate-owned saved state still clears before V8 handle invalidation. A real
+  thread-exit regression covers the cached-runtime initialization/drop order.
 - Partition native document, listener, observer, CSS and focus state by its actual
   V8 isolate. Scoped activation restores the previous isolate/document after
   nested work, cold installation and disposal; resetting or dropping one isolate
