@@ -5,6 +5,15 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Consume published turbo-dom 0.5.5 and preserve original UTF-16 payloads, names,
+  namespaces, attributes, mutation records, parser input and inline handler/script
+  source through native two-byte V8 strings. Scalar compatibility views remain at
+  existing host boundaries. Independent document installation and iterative script
+  preparation cover real ownership and 8192-level host-stack regressions. Fresh
+  Chrome controls cover surrogate identity, BOMs, lookup/reflection, cloning and
+  source text. The merged standalone binding passes 177 native contracts; Surf
+  runtime module/frame source integration remains a separate pending gate.
+
 - Expose host-only native composed children/parent identities for layout. Closed
   roots and manual assignment use private records; hidden fallback and unslotted
   children have no composed parent. A native regression poisons public slot APIs

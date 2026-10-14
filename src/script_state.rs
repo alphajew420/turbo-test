@@ -23,6 +23,8 @@ impl Default for ScriptState {
 #[derive(Debug)]
 pub struct PreparedScript {
     pub source: String,
+    /// Original inline source units for direct V8 compilation.
+    pub source_units: Vec<u16>,
     pub src: Option<String>,
     pub kind: String,
     pub asynchronous: bool,
@@ -58,9 +60,10 @@ pub(super) fn recording() -> bool {
 
 pub(super) fn initial(tree: &Tree) -> HashMap<Handle, ScriptState> {
     let mut states = HashMap::new();
-    fn walk(tree: &Tree, node: Handle, template: bool, states: &mut HashMap<Handle, ScriptState>) {
-        let template =
-            template || tree.node_type_id(node) == 1 && tree.local_name(node) == Some("template");
+    let mut pending = vec![(tree.root(), false)];
+    while let Some((node, inherited_template)) = pending.pop() {
+        let template = inherited_template
+            || tree.node_type_id(node) == 1 && tree.local_name(node) == Some("template");
         if script(tree, node) {
             states.insert(
                 node,
@@ -76,11 +79,13 @@ pub(super) fn initial(tree: &Tree) -> HashMap<Handle, ScriptState> {
                 },
             );
         }
-        for child in tree.children(node) {
-            walk(tree, child, template, states);
-        }
+        pending.extend(
+            tree.children(node)
+                .into_iter()
+                .rev()
+                .map(|child| (child, template)),
+        );
     }
-    walk(tree, tree.root(), false, &mut states);
     states
 }
 
@@ -181,12 +186,13 @@ fn prepared(handle: Handle, claim_active: bool) -> Option<PreparedScript> {
             state.force_async = true;
         }
         let src = tree.get_attribute(handle, "src").map(str::to_owned);
-        let source = tree
+        let source_units = tree
             .children(handle)
             .into_iter()
             .filter(|node| matches!(tree.node_type_id(*node), 3 | 4))
-            .map(|node| tree.node_value(node).unwrap_or_default())
-            .collect::<String>();
+            .flat_map(|node| tree.node_value_utf16(node).unwrap_or_default())
+            .collect::<Vec<_>>();
+        let source = String::from_utf16_lossy(&source_units);
         if src.is_none() && source.is_empty() || !is_connected(tree, handle) {
             return None;
         }
@@ -251,6 +257,7 @@ fn prepared(handle: Handle, claim_active: bool) -> Option<PreparedScript> {
         let asynchronous = state.force_async || tree.has_attribute(handle, "async");
         Some(PreparedScript {
             source,
+            source_units,
             src,
             kind,
             asynchronous,
@@ -271,24 +278,22 @@ pub fn prepare_script(
     prepared(handle, true)
 }
 
-fn subtree(node: Handle) -> Vec<Handle> {
-    fn walk(tree: &Tree, node: Handle, out: &mut Vec<Handle>) {
+fn script_subtree(tree: &Tree, node: Handle) -> Vec<Handle> {
+    let mut scripts = Vec::new();
+    let mut pending = vec![node];
+    while let Some(node) = pending.pop() {
         if script(tree, node) {
-            out.push(node);
-        }
-        for child in tree.children(node) {
-            walk(tree, child, out);
+            scripts.push(node);
         }
         if let Some(shadow) = tree.shadow_root(node) {
-            walk(tree, shadow, out);
+            pending.push(shadow);
         }
+        pending.extend(tree.children(node).into_iter().rev());
     }
-    with_tree(|tree| {
-        let mut nodes = Vec::new();
-        walk(tree, node, &mut nodes);
-        nodes
-    })
-    .unwrap_or_default()
+    scripts
+}
+fn subtree(node: Handle) -> Vec<Handle> {
+    with_tree(|tree| script_subtree(tree, node)).unwrap_or_default()
 }
 
 pub(super) fn parsed(node: Handle, inert: bool) {
@@ -357,27 +362,29 @@ pub(super) fn inactive_mutation(event: &MutationEvent) {
     }
 }
 
+fn flatten_script_copy(tree: &Tree, node: Handle, deep: bool, out: &mut Vec<Handle>) {
+    let mut pending = vec![node];
+    while let Some(node) = pending.pop() {
+        out.push(node);
+        if deep {
+            pending.extend(tree.children(node).into_iter().rev());
+        }
+    }
+}
+
 pub(super) fn copy(
     scope: &mut v8::PinScope,
     source: v8::Local<v8::Object>,
     target: v8::Local<v8::Object>,
     deep: bool,
 ) {
-    fn flatten(tree: &Tree, node: Handle, deep: bool, out: &mut Vec<Handle>) {
-        out.push(node);
-        if deep {
-            for child in tree.children(node) {
-                flatten(tree, child, true, out);
-            }
-        }
-    }
     let values = {
         let _owner = DomScope::for_object(scope, source);
         let Some(handle) = handle_of(scope, source) else {
             return;
         };
         let mut nodes = Vec::new();
-        with_tree(|tree| flatten(tree, handle, deep, &mut nodes));
+        with_tree(|tree| flatten_script_copy(tree, handle, deep, &mut nodes));
         DOM.with(|dom| {
             let dom = dom.borrow();
             let dom = dom.as_ref().unwrap();
@@ -404,7 +411,7 @@ pub(super) fn copy(
         return;
     };
     let mut nodes = Vec::new();
-    with_tree(|tree| flatten(tree, handle, deep, &mut nodes));
+    with_tree(|tree| flatten_script_copy(tree, handle, deep, &mut nodes));
     DOM.with(|dom| {
         let mut dom = dom.borrow_mut();
         let dom = dom.as_mut().unwrap();
@@ -748,5 +755,27 @@ mod tests {
         })()"#,
             true,
         );
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+    #[test]
+    fn deep_script_preparation_scans_preserve_template_flags_and_order() {
+        std::thread::Builder::new().stack_size(512*1024).spawn(|| {
+            let source=format!("{}<script>A</script><template><script>B</script></template><script>C</script>{}","<div>".repeat(8192),"</div>".repeat(8192));
+            let tree=Tree::parse(&source);
+            let ordered=script_subtree(&tree,tree.root());
+            assert_eq!(ordered.iter().map(|node| tree.text_content(*node)).collect::<Vec<_>>(),["A","B","C"]);
+            let states=initial(&tree);
+            assert!(states[&ordered[0]].parser_inserted);
+            assert!(!states[&ordered[1]].parser_inserted);
+            assert!(states[&ordered[2]].parser_inserted);
+            let mut all=Vec::new();flatten_script_copy(&tree,tree.root(),true,&mut all);
+            assert_eq!(all.into_iter().filter(|node| script(&tree,*node)).collect::<Vec<_>>(),ordered);
+            let mut shallow=Vec::new();flatten_script_copy(&tree,tree.root(),false,&mut shallow);
+            assert_eq!(shallow,vec![tree.root()]);
+        }).unwrap().join().unwrap();
     }
 }
