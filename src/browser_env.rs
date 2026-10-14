@@ -1334,8 +1334,7 @@ fn el_cascade_prop(
     rv.set(v8::String::new(scope, &val).unwrap().into());
 }
 
-// Resolve a run of variadic (Node | string) arguments [start..] into handles, turning bare strings
-// into text nodes (per the ChildNode/ParentNode spec). Used by before/after/replaceWith/etc.
+// Convert all WebIDL Node/string arguments before native sequence conversion has effects.
 fn resolve_nodes<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     args: &v8::FunctionCallbackArguments<'s>,
@@ -1408,6 +1407,9 @@ fn el_replace_children<'s>(
         return;
     };
     let Some(nodes) = resolve_nodes(scope, &args, 0) else {
+        return;
+    };
+    let Some(nodes) = dom_mutations::convert_variadic(scope, &nodes) else {
         return;
     };
     let removed = with_tree(|tree| tree.children(h)).unwrap_or_default();
@@ -2725,6 +2727,9 @@ fn parent_insert<'s>(
         return;
     };
     let Some(nodes) = resolve_nodes(scope, args, 0) else {
+        return;
+    };
+    let Some(nodes) = dom_mutations::convert_variadic(scope, &nodes) else {
         return;
     };
     let reference = if prepend {
@@ -7134,3 +7139,7 @@ mod tests {
 #[cfg(test)]
 #[path = "css_live_tests.rs"]
 mod css_live_tests;
+
+#[cfg(test)]
+#[path = "dom_projection_tests.rs"]
+mod dom_projection_tests;

@@ -1,4 +1,4 @@
-//! Pre-insertion validation for every guest-accessible native mutation seam.
+//! Native insertion validation and Chrome155 variadic conversion effects.
 use super::*;
 
 /// Validate the complete result before detaching any existing node. In particular,
@@ -151,24 +151,61 @@ pub(super) fn sibling_mutation<'s>(
     after: bool,
     replace: bool,
 ) {
-    let Some((parent, reference)) = with_tree(|tree| {
+    let owner = DOM_ID.with(|id| id.get());
+    let roots: std::collections::HashSet<_> = nodes
+        .iter()
+        .filter_map(|node| {
+            let Incoming::Node(object) = node else {
+                return None;
+            };
+            (dom_id_of(scope, *object) == owner)
+                .then(|| handle_of(scope, *object))
+                .flatten()
+        })
+        .collect();
+    let Some((parent, viable)) = with_tree(|tree| {
         let parent = tree.parent(receiver)?;
-        let reference = if after {
+        let mut viable = if after {
             tree.next_sibling(receiver)
         } else {
-            Some(receiver)
+            tree.previous_sibling(receiver)
         };
-        Some((parent, reference))
+        while viable.is_some_and(|node| roots.contains(&node)) {
+            viable = viable.and_then(|node| {
+                if after {
+                    tree.next_sibling(node)
+                } else {
+                    tree.previous_sibling(node)
+                }
+            });
+        }
+        Some((parent, viable))
     })
     .flatten() else {
         return;
     };
-    let removed = if replace { vec![receiver] } else { Vec::new() };
-    insert_inputs(scope, parent, nodes, reference, &removed);
+    let Some(nodes) = convert_variadic(scope, nodes) else {
+        return;
+    };
+    let reference = if after {
+        viable
+    } else {
+        with_tree(|tree| match viable {
+            Some(node) => tree.next_sibling(node),
+            None => tree.first_child(parent),
+        })
+        .flatten()
+    };
+    let removed =
+        if replace && with_tree(|tree| tree.parent(receiver) == Some(parent)).unwrap_or(false) {
+            vec![receiver]
+        } else {
+            Vec::new()
+        };
+    insert_inputs(scope, parent, &nodes, reference, &removed);
 }
 
-/// Keep argument conversion separate from native insertion/adoption. No foreign
-/// owner or parent changes until the complete destination has been validated.
+/// Converted WebIDL arguments retain their native source identity until adoption.
 #[derive(Clone)]
 pub(super) enum Incoming<'s> {
     Node(v8::Local<'s, v8::Object>),
@@ -249,6 +286,65 @@ fn prepare<'s>(
     }
     Some(nodes)
 }
+fn detach_input<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+) -> Option<()> {
+    let _source = DomScope::for_object(scope, object);
+    let handle = handle_of(scope, object)?;
+    if let Some(parent) = with_tree(|tree| tree.parent(handle)).flatten() {
+        html_popover::disconnect(scope, handle, true);
+        range_live::removing(scope, handle);
+        with_tree_mut(|tree| tree.remove_child(parent, handle));
+    }
+    Some(())
+}
+
+/// Chrome155 drains fragments during conversion, then detaches multi-node
+/// sequences before destination checks. Failed insertion keeps source owners.
+pub(super) fn convert_variadic<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    incoming: &[Incoming<'s>],
+) -> Option<Vec<Incoming<'s>>> {
+    let mut nodes = Vec::new();
+    for input in incoming {
+        match input {
+            Incoming::Text(text) => nodes.push(Incoming::Text(text.clone())),
+            Incoming::Node(object) => {
+                let node = view(scope, *object)?;
+                if node.kind == 11 {
+                    for child in node.children {
+                        detach_input(scope, child.object)?;
+                        nodes.push(Incoming::Node(child.object));
+                    }
+                } else {
+                    nodes.push(input.clone());
+                }
+            }
+        }
+    }
+    if nodes.len() > 1 {
+        let mut detached = std::collections::HashSet::new();
+        for input in &nodes {
+            if let Incoming::Node(object) = input {
+                let identity = NodeIdentity(dom_id_of(scope, *object), handle_of(scope, *object)?);
+                if detached.insert(identity) {
+                    detach_input(scope, *object)?;
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        nodes.reverse();
+        nodes.retain(|input| match input {
+            Incoming::Node(object) => handle_of(scope, *object)
+                .is_some_and(|handle| seen.insert(NodeIdentity(dom_id_of(scope, *object), handle))),
+            Incoming::Text(..) => true,
+        });
+        nodes.reverse();
+    }
+    Some(nodes)
+}
+
 fn incoming_plan<'s>(
     tree: &Tree,
     owner: u64,
@@ -477,8 +573,7 @@ mod tests {
         assert!(result.unwrap().is_true());
         reset();
     }
-    #[test]
-    fn implicit_adoption_matches_shared_chrome155_insertion_and_failure_control() {
+    fn independent_control(probe: &str, fixture: &str) {
         super::super::tests::init_v8();
         let isolate = &mut v8::Isolate::new(Default::default());
         let actual = {
@@ -504,7 +599,6 @@ mod tests {
             global.create_data_property(scope, key.into(), child_global.into());
             // The canonical binding provides genuine independent contexts; Surf
             // supplies browsing contexts. Adapt only the authored frame setup.
-            let probe = include_str!("dom_adoption_probe.js");
             let start = probe
                 .find("  const source = frame.contentDocument;")
                 .unwrap();
@@ -534,9 +628,44 @@ mod tests {
         reset();
         clear_interface_records(isolate);
         let actual: serde_json::Value = serde_json::from_str(&actual.unwrap()).unwrap();
-        let expected: serde_json::Value =
-            serde_json::from_str(include_str!("dom_adoption_chrome155.json")).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(fixture).unwrap();
         assert_eq!(actual, expected["result"]);
+    }
+
+    #[test]
+    fn implicit_adoption_matches_shared_chrome155_insertion_and_failure_control() {
+        independent_control(
+            include_str!("dom_adoption_probe.js"),
+            include_str!("dom_adoption_chrome155.json"),
+        );
+    }
+    #[test]
+    fn variadic_conversion_matches_shared_chrome155_failure_and_overlap_control() {
+        independent_control(
+            include_str!("dom_variadic_errors_probe.js"),
+            include_str!("dom_variadic_errors_chrome155.json"),
+        );
+    }
+
+    #[test]
+    fn variadic_webidl_conversion_finishes_before_native_detachment() {
+        fixture(
+            r#"(()=>{
+            const parent=document.createElement('section'), child=document.createElement('b');
+            parent.append(child);document.body.append(parent);
+            const range=document.createRange();range.selectNode(child);
+            const marker=new Error('conversion failed');let calls=0,error;
+            try{parent.append(child,{toString(){calls++;throw marker;}})}catch(caught){error=caught;}
+            if(error!==marker||calls!==1||child.parentNode!==parent||parent.childNodes.length!==1||
+                range.startContainer!==parent||range.startOffset!==0||range.endOffset!==1)
+                throw new Error('WebIDL failure mutated native inputs');
+            const detached=document.createElement('i'), fragment=document.createDocumentFragment();fragment.append(child);
+            detached.before(fragment,'text');
+            if(child.parentNode!==fragment||fragment.childNodes.length!==1)
+                throw new Error('parentless ChildNode operation performed native conversion');
+            return true;
+        })()"#,
+        );
     }
 
     #[test]

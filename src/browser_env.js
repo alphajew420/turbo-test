@@ -1,5 +1,6 @@
 (function(){
   var g = globalThis;
+  var compatibilityElementPrototype;
   var prepareInlineHandler=g.__prepareInlineHandler,noteInlineHandler=g.__noteInlineHandler;delete g.__prepareInlineHandler;delete g.__noteInlineHandler;
   var collectionGet=g.__getCollectionRecord,collectionSet=g.__setCollectionRecord;
   var appliedInlineRead=g.__readAppliedInlineStyle,appliedInlineWrite=g.__writeAppliedInlineStyle,inlineSheetAllowed=g.__isInlineSheetAllowed;
@@ -847,7 +848,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     var selStartDesc = { configurable: true, get: function(){ return this.__selStart == null ? String(this.value||'').length : this.__selStart; }, set: function(v){ this.__selStart = v; } };
     var selEndDesc = { configurable: true, get: function(){ return this.__selEnd == null ? String(this.value||'').length : this.__selEnd; }, set: function(v){ this.__selEnd = v; } };
     var selDirDesc = { configurable: true, get: function(){ return this.__selDir || 'none'; }, set: function(v){ this.__selDir = v; } };
-    var baseProto = Object.getPrototypeOf(orig.call(d,'span'));
+    var baseProto = compatibilityElementPrototype = Object.getPrototypeOf(orig.call(d,'span'));
     // Reflected IDL attributes on every element: setting el.src / el.href (script/img/link/a — a DOM
     // property) must show as the content attribute so attribute selectors like script[src*="maps"]
     // and getAttribute('src') see it. (Image() defines its own src with onload; that shadows this.)
@@ -1748,7 +1749,9 @@ if(typeof __ns.makeNativeFunction==='function'){
   // real native getter/setter functions so values stay backed by the same tree.
   (function(){
     if (typeof __ns.domAccessor !== 'function') return;
-    var oldBase=g.HTMLElement.prototype,oldDocument=g.Document.prototype;
+    // Reinstallation keeps read-only constructor prototypes from the previous
+    // document; compatibility descriptors belong to this bootstrap's raw nodes.
+    var oldBase=compatibilityElementPrototype||g.HTMLElement.prototype,oldDocument=g.Document.prototype;
     var nodeConstructors=['Node','Element','HTMLElement','Document','HTMLDocument','CharacterData','Attr','DocumentType','NamedNodeMap','Text','Comment','CDATASection','ProcessingInstruction','DocumentFragment','ShadowRoot','SVGElement','SVGSVGElement'];
     Object.getOwnPropertyNames(g).forEach(function(name){if(/^HTML.*Element$/.test(name)&&typeof g[name]==='function'&&nodeConstructors.indexOf(name)<0)nodeConstructors.push(name);});
     nodeConstructors.forEach(function(name){var previous=g[name];var ctor=__ns.makeNativeFunction(function(){throw new TypeError('Illegal constructor');},name,0,true);ctor.prototype=previous.prototype;Object.defineProperty(g,name,{value:ctor,writable:true,configurable:true,enumerable:false});});

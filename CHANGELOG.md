@@ -6,13 +6,21 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Preserve native Node traversal/equality descriptors when rebuilding a document
+  in an existing realm; project compatibility delegates from that bootstrap's
+  actual raw node prototype rather than a previous constructor's prototype.
 - Adopt genuine foreign nodes during all native insertion methods after validating
   the full destination sequence. Preserve cached node/descendant identity, listener
-  state and source Range adjustment, and reject invalid references or Document
-  hierarchies before changing an owner or parent. DocumentFragment and ShadowRoot
+  state and source Range adjustment. Single-node insertion validates references
+  and Document hierarchies before changing an owner or parent. DocumentFragment and ShadowRoot
   insertion moves their children while keeping the original container and owner;
   repeated arguments retain their observed ordering. An independent Chrome 155
-  collector covers borrowed methods, namespace data and atomic failure state.
+  collector covers borrowed methods, namespace data and single-node failure state.
+- Match Chrome155 variadic conversion before destination checks: drain fragments,
+  detach multi-node sequences, retain the last duplicate and resolve viable sibling
+  references. Failed compound insertion leaves converted nodes detached in their
+  source document and updates source Ranges; failed WebIDL conversion has no such
+  effects. A shared authored Chrome fixture covers failure and fragment overlap.
 - Expose the real empty, stable NodeList from Attr.childNodes with native receiver
   branding. Include Attr and CDATA kinds in the Node receiver predicate; the HTML
   binding still rejects createCDATASection and does not add an XML parser.
