@@ -6,6 +6,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Register inert document initializers on their callback creation realm. Shared
+  embedder ops no longer overwrite the main Window initializer with the last iframe
+  closure; a heap-traced retained-Document regression identified that native root.
 - Pin the captured RegExp exec intrinsic on private XML-name validation, so replacing
   RegExp.prototype.exec cannot intercept native document factories. Validate doctype
   delimiters directly; the expanded Chrome155 control covers seven poisoned intrinsics.

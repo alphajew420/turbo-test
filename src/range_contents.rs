@@ -80,6 +80,11 @@ pub(super) fn capture_interfaces(scope: &mut v8::PinScope) {
     }
 }
 
+pub(super) fn clear_context(context: v8::Local<v8::Context>) {
+    context.remove_slot::<RangeAccessor>();
+    context.remove_slot::<RangeExceptionUpdater>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{
@@ -186,9 +191,4 @@ mod tests {
         assert_eq!(actual, expected["result"]);
         reset();
     }
-}
-
-pub(super) fn clear_context(context: v8::Local<v8::Context>) {
-    context.remove_slot::<RangeAccessor>();
-    context.remove_slot::<RangeExceptionUpdater>();
 }
