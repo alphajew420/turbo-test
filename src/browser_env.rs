@@ -505,7 +505,7 @@ pub fn parse_html_document<'s>(
 
 pub fn create_document_element<'s>(
     scope: &mut v8::PinScope<'s, '_>,
-    document: v8::Local<v8::Object>,
+    document: v8::Local<'s, v8::Object>,
     tag: &str,
 ) -> Option<v8::Local<'s, v8::Object>> {
     let _dom = DomScope::for_object(scope, document);
@@ -513,7 +513,14 @@ pub fn create_document_element<'s>(
     if with_tree(|tree| tree.node_type_id(root)) != Some(9) {
         return None;
     }
-    let node = with_tree_mut(|tree| tree.create_element(tag))?;
+    let xml = dom_implementation::is_xml_document(scope, document);
+    let namespace = dom_implementation::default_element_namespace(scope, document);
+    let node = with_tree_mut(|tree| {
+        if xml {
+            let namespace = if namespace.is_some() { turbo_dom_parser::rtdom::tree::Namespace::Html } else { turbo_dom_parser::rtdom::tree::Namespace::Other };
+            tree.create_element_ns(tag, namespace)
+        } else { tree.create_element(tag) }
+    })?;
     Some(wrap(scope, node))
 }
 
@@ -4410,9 +4417,9 @@ fn get_style(
 
 // ---- document methods ------------------------------------------------------------------------
 
-fn doc_create_element(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn doc_create_element<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -4420,7 +4427,14 @@ fn doc_create_element(
         return;
     }
     let tag = arg_str(scope, &args, 0);
-    let Some(h) = with_tree_mut(|t| t.create_element(&tag)) else {
+    let xml = dom_implementation::is_xml_document(scope, args.this());
+    let namespace = dom_implementation::default_element_namespace(scope, args.this());
+    let Some(h) = with_tree_mut(|tree| {
+        if xml {
+            let namespace = if namespace.is_some() { turbo_dom_parser::rtdom::tree::Namespace::Html } else { turbo_dom_parser::rtdom::tree::Namespace::Other };
+            tree.create_element_ns(&tag, namespace)
+        } else { tree.create_element(&tag) }
+    }) else {
         return;
     };
     let node = wrap(scope, h);

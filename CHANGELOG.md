@@ -6,6 +6,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Preserve XML element case and document-specific default namespaces for native
+  createElement, including borrowed receivers and colon-containing XML names.
+  Keep createElement local names distinct from createElementNS qualified names;
+  saved Chrome controls cover HTML, XML, XHTML and SVG document factories.
 - Create genuine independent HTML/XML document trees through branded
   DOMImplementation factories and Document constructors. Preserve native doctype
   adoption identity, title conversion, receiver checks and foreign stylesheet

@@ -48,6 +48,25 @@ fn document<'s>(
     }
     field(scope, record, "document")?.to_object(scope)
 }
+pub(crate) fn is_xml_document<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    document: v8::Local<'s, v8::Object>,
+) -> bool {
+    record(scope, document)
+        .and_then(|record| field(scope, record, "nativeContentType"))
+        .is_some_and(|value| value.is_string() && value.to_rust_string_lossy(scope) != "text/html")
+}
+pub(crate) fn default_element_namespace<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    document: v8::Local<'s, v8::Object>,
+) -> Option<&'static str> {
+    let xhtml = record(scope, document)
+        .and_then(|record| field(scope, record, "nativeContentType"))
+        .is_some_and(|value| {
+            value.is_string() && value.to_rust_string_lossy(scope) == "application/xhtml+xml"
+        });
+    xhtml.then_some("http://www.w3.org/1999/xhtml")
+}
 fn initializer_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Private>> {
     let name = key(scope, "turbo.native.inert-document.initializer")?;
     Some(v8::Private::for_api(scope, Some(name)))
