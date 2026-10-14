@@ -6,6 +6,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Allocate native ownership component/helper maps in the actual Document realm.
+  A foreign script getter cannot retain its retired Window through another
+  Document’s map shape. Observer event draining no longer dirties unchanged graphs.
+  Two new regressions bring the current canonical cohort to 134 passing contracts.
 - Store script parser/force-async/already-started flags as native scalar node state.
   Preserve clone/import/adoption and inert/retired-document behavior; prepare native
   candidates after observer fanout, including nested and shadow-root scripts. Six

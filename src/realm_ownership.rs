@@ -45,6 +45,8 @@ pub fn release<'s>(
     Some(())
 }
 
+// Native map shapes retain their allocation context. Allocate all private graph
+// edges in the owning Document realm, including calls from foreign getters.
 pub struct DocumentGraph {
     document: v8::Weak<v8::Object>,
     context: v8::Weak<v8::Context>,
@@ -59,6 +61,7 @@ impl DocumentGraph {
         document: v8::Local<'s, v8::Object>,
     ) -> Option<Self> {
         let context = document.get_creation_context(scope)?;
+        let scope = &mut v8::ContextScope::new(scope, context);
         owner_roots(scope, document)?;
         Some(Self {
             document: v8::Weak::new(scope, document),
@@ -74,6 +77,8 @@ impl DocumentGraph {
         scope: &mut v8::PinScope<'s, '_>,
         value: v8::Local<'s, v8::Value>,
     ) -> Option<()> {
+        let owner = self.context.to_local(scope)?;
+        let scope = &mut v8::ContextScope::new(scope, owner);
         let document = self.document.to_local(scope)?;
         let field = key(scope, "turbo-dom.ownership.document-helpers")?;
         let map = document
@@ -96,6 +101,8 @@ impl DocumentGraph {
         wrapper: v8::Local<'s, v8::Object>,
         connected: bool,
     ) -> Option<()> {
+        let owner = self.context.to_local(scope)?;
+        let scope = &mut v8::ContextScope::new(scope, owner);
         let document = self.document.to_local(scope)?;
         let field = key(scope, "turbo-dom.ownership.owner-document")?;
         if wrapper.set_private(scope, field, document.into()) != Some(true) {
@@ -121,6 +128,8 @@ impl DocumentGraph {
         connected: bool,
     ) -> Option<()> {
         self.observe(scope, id, wrapper, connected)?;
+        let owner = self.context.to_local(scope)?;
+        let scope = &mut v8::ContextScope::new(scope, owner);
         let owner_key = key(scope, "turbo-dom.ownership.component-owner")?;
         let refs_key = key(scope, "turbo-dom.ownership.component-nodes")?;
         let component = if let Some(component) = self
@@ -152,6 +161,8 @@ impl DocumentGraph {
         (wrapper.set_private(scope, owner_key, component.into()) == Some(true)).then_some(())
     }
     pub fn reconcile(&mut self, scope: &mut v8::PinScope, connected: &HashSet<u32>) -> Option<()> {
+        let owner = self.context.to_local(scope)?;
+        let scope = &mut v8::ContextScope::new(scope, owner);
         let document = self.document.to_local(scope)?;
         for id in self.connected.difference(connected) {
             release(scope, document, *id)?;
@@ -171,6 +182,8 @@ impl DocumentGraph {
         scope: &mut v8::PinScope,
         root: impl Fn(u32) -> u32,
     ) -> Option<()> {
+        let owner = self.context.to_local(scope)?;
+        let scope = &mut v8::ContextScope::new(scope, owner);
         let document = self.document.to_local(scope)?;
         let mut groups: HashMap<u32, Vec<(u32, v8::Local<v8::Object>)>> = HashMap::new();
         for (id, weak) in &self.wrappers {

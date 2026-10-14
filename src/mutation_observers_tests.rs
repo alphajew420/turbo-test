@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn draining_observer_events_does_not_dirty_native_ownership_graphs() {
+    tests::init_v8();
+    let isolate = &mut v8::Isolate::new(Default::default());
+    {
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_with_html(scope, "<body>sentinel");
+        let source = v8::String::new(
+            scope,
+            "new MutationObserver(()=>{}).observe(document.body,{childList:true});",
+        )
+        .unwrap();
+        v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        DOM.with(|dom| dom.borrow_mut().as_mut().unwrap().ownership_dirty = false);
+        mutation_observers::flush(scope);
+        assert!(!DOM.with(|dom| dom.borrow().as_ref().unwrap().ownership_dirty));
+        reset();
+    }
+    clear_interface_records(isolate);
+}
+
+#[test]
 fn trusted_document_consumer_runs_after_observer_fanout_and_supports_nested_mutations() {
     tests::init_v8();
     let isolate = &mut v8::Isolate::new(Default::default());

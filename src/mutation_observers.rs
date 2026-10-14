@@ -433,7 +433,13 @@ pub(super) fn flush(scope: &mut v8::PinScope) {
     // Tree borrows end before wrapping or invoking the trusted queue function.
     for id in ids {
         let _owner = DomScope::enter(id);
-        let events = with_tree_mut(Tree::take_mutation_events).unwrap_or_default();
+        let events = DOM
+            .with(|dom| {
+                dom.borrow_mut()
+                    .as_mut()
+                    .map(|state| state.tree.take_mutation_events())
+            })
+            .unwrap_or_default();
         for native_event in events {
             let event = payload(scope, &native_event);
             for observer in &observers {
