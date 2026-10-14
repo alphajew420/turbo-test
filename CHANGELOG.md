@@ -5,6 +5,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Implement native named/manual shadow-slot distribution, live assignedSlot,
+  fallback flattening and trusted slotchange in the shared observer notification
+  microtask. Original wrapper edges preserve foreign adoption and manual stealing;
+  clearing an assignment releases its old slot. Source-pinned Chrome controls cover
+  brands, dictionaries, closed roots, light slot elements and reentrant ordering.
+  Actual V8 collection and a 4096-level iterative fallback walk guard retention
+  and native stack behavior. The complete binding cohort passes 165 tests.
+
 - Reflect HTMLIFrameElement.credentialless through genuine HTML iframe brands and captured native attribute operations; boolean conversion, descriptors, poisoned public methods and illegal receivers match a fresh Chrome 155 control.
 
 - Add the native-branded, live iframe sandbox DOMTokenList with Chrome155 token

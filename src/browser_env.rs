@@ -108,6 +108,8 @@ mod element_relations;
 mod html_popover;
 #[path = "html_text.rs"]
 mod html_text;
+#[path = "shadow_slots.rs"]
+mod shadow_slots;
 
 pub fn node_nonce(scope: &mut v8::PinScope, node: v8::Local<v8::Object>) -> Option<String> {
     document_basics::nonce(scope, node)
@@ -1113,6 +1115,24 @@ fn el_attach_shadow(
         scope.throw_exception(error);
         return;
     }
+    let key = v8::String::new(scope, "slotAssignment").unwrap();
+    let Some(value) = options.get(scope, key.into()) else {
+        return;
+    };
+    let assignment = if value.is_undefined() {
+        "named".to_string()
+    } else {
+        let Some(value) = value.to_string(scope) else {
+            return;
+        };
+        value.to_rust_string_lossy(scope)
+    };
+    if assignment != "named" && assignment != "manual" {
+        let text = v8::String::new(scope, "Invalid slotAssignment").unwrap();
+        let error = v8::Exception::type_error(scope, text);
+        scope.throw_exception(error);
+        return;
+    }
     let allowed = with_tree(|tree| {
         let tag = tree.local_name(host).unwrap_or("");
         tree.namespace_id(host) == 0
@@ -1159,6 +1179,7 @@ fn el_attach_shadow(
             .insert(root, mode)
     });
     let node = wrap(scope, root);
+    shadow_slots::configure(scope, node, assignment == "manual");
     rv.set(node.into());
 }
 
@@ -5212,6 +5233,7 @@ fn dom_accessor_dispatch(
                     "DocumentType" => kind == 10,
                     "HTMLElement" => kind == 1 && tree.namespace_id(h) == 0,
                     "CharacterData" => matches!(kind, 3 | 4 | 7 | 8),
+                    "Text" => matches!(kind, 3 | 4),
                     "Document" => kind == 9,
                     "DocumentFragment" => kind == 11,
                     "ShadowRoot" => kind == 11 && tree.is_shadow_root(h),
@@ -5893,6 +5915,7 @@ pub fn install_with_html(scope: &mut v8::PinScope, html: &str) {
     capture_node_projector(scope);
     dom_implementation::install(scope);
     mutation_observers::install(scope);
+    shadow_slots::install(scope);
     script_state::install(scope);
     range_contents::install(scope);
     bind_method(scope, global, "__htmlTextNative", html_text::dispatch);
@@ -7566,6 +7589,10 @@ mod tests {
         reset();
     }
 }
+
+#[cfg(test)]
+#[path = "shadow_slots_tests.rs"]
+mod shadow_slots_tests;
 
 #[cfg(test)]
 #[path = "frame_tokens_tests.rs"]
