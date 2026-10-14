@@ -7093,3 +7093,7 @@ mod tests {
         reset();
     }
 }
+
+#[cfg(test)]
+#[path = "css_live_tests.rs"]
+mod css_live_tests;

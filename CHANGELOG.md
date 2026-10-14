@@ -6,6 +6,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Read stylesheet text, media and title through captured native DOM accessors,
+  preserving actual sheet identity across CSSOM edits despite page-defined getters.
+  Add a Rust-only CSSHost live export with private rule/declaration state, disabled
+  and media values, grouping and attached import provenance; bypass public getters,
+  iterators and poisoned prototypes with explicit graph/text budgets. Correct
+  font-face descriptor validation, mutable declaration edits and URL serialization.
+  Seven offline contracts include an independent installed Chrome155.0.8059.79 control;
+  this does not implement layout, font loading or complete CSS interface shapes.
 - Expose native-only generic EventTarget listener observation for embedding lifetime
   management, using genuine private listener state and the creation realm. Cover
   add/remove/once/abort cleanup, foreign targets and forged receivers without guest
