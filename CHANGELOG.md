@@ -5,6 +5,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Reflect HTMLIFrameElement.credentialless through genuine HTML iframe brands and captured native attribute operations; boolean conversion, descriptors, poisoned public methods and illegal receivers match a fresh Chrome 155 control.
+
 - Add the native-branded, live iframe sandbox DOMTokenList with Chrome155 token
   support. Token-list PutForwards setters honor own value setters and failed
   ordinary assignment; source-pinned Chrome controls cover identity, descriptors

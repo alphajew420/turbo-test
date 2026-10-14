@@ -7597,3 +7597,7 @@ mod mutation_observers_tests;
 #[cfg(test)]
 #[path = "ownership_guard_tests.rs"]
 mod ownership_guard_tests;
+
+#[cfg(test)]
+#[path = "iframe_credentialless_tests.rs"]
+mod iframe_credentialless_tests;
