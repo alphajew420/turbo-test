@@ -7568,6 +7568,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "frame_tokens_tests.rs"]
+mod frame_tokens_tests;
+
+#[cfg(test)]
 #[path = "html_meta_tests.rs"]
 mod html_meta_tests;
 
