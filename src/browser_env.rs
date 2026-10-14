@@ -302,7 +302,9 @@ fn passthrough_setter<T>(
 
 /// Print + clear the accumulated missing-access log (call between files when debugging).
 pub fn dump_missing() {
-    let mut items: Vec<(String, u64)> = MISSING.with(|m| m.borrow_mut().drain().collect());
+    let mut items: Vec<(String, u64)> = MISSING
+        .try_with(|m| m.borrow_mut().drain().collect())
+        .unwrap_or_default();
     if items.is_empty() {
         return;
     }
@@ -5603,17 +5605,19 @@ mod range_live;
 
 /// Reset the per-thread DOM (call between test files when reusing an isolate).
 pub fn reset() {
-    OTHER_DOMS.with(|d| d.borrow_mut().clear());
-    DOM_CONTEXTS.with(|d| d.borrow_mut().clear());
-    DOM_ID.with(|d| d.set(0));
-    NEXT_DOM_ID.with(|d| d.set(1));
-    STYLE.with(|s| s.borrow_mut().clear());
-    LISTENERS.with(|s| s.borrow_mut().clear());
-    ACTIVE.with(|a| *a.borrow_mut() = None);
+    // An embedding's cached runtime may be destroyed after a binding TLS cell.
+    // That cell has already released its handles; clear every cell still alive.
+    let _ = OTHER_DOMS.try_with(|d| d.borrow_mut().clear());
+    let _ = DOM_CONTEXTS.try_with(|d| d.borrow_mut().clear());
+    let _ = DOM_ID.try_with(|d| d.set(0));
+    let _ = NEXT_DOM_ID.try_with(|d| d.set(1));
+    let _ = STYLE.try_with(|s| s.borrow_mut().clear());
+    let _ = LISTENERS.try_with(|s| s.borrow_mut().clear());
+    let _ = ACTIVE.try_with(|a| *a.borrow_mut() = None);
     if log_enabled() {
         dump_missing();
     }
-    DOM.with(|d| *d.borrow_mut() = None);
+    let _ = DOM.try_with(|d| *d.borrow_mut() = None);
 }
 
 #[cfg(test)]

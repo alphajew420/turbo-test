@@ -6,6 +6,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Fixed
+- Make binding cleanup safe during thread-local runtime destruction regardless
+  of initialization order. Clear every remaining private handle cache while
+  treating already-destroyed TLS cells as released, including diagnostic storage.
 - Keep live Range boundaries synchronized with insertAdjacentHTML, outerHTML,
   innerText and outerText replacement. Match Chrome's parent-offset collapse when
   outerText appends and removes adjacent text, instead of applying normalize's
