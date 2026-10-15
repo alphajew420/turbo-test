@@ -5,6 +5,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Claim pending native mutation batches across all documents before invoking resource
+  consumers. A consumer's nested query can no longer drain another document's old
+  removal events into its inner custom-element reaction scope, so cross-realm adoption
+  callbacks observe the final ownerDocument. Add a regression with querying consumers
+  in both realms against the unchanged independent Chrome155 lifecycle control;
+  genuine nested mutations, interruption and GC contracts remain covered.
+
 - Implement genuine CustomElementRegistry and HTML element constructors over native nodes:
   autonomous/customized construction, late upgrade, live attribute/connect/disconnect/adopt
   callbacks, scoped registry lookup/initialization, clone/import behavior and trusted construction

@@ -631,12 +631,17 @@ mod tests {
     }
 
     fn check_chrome_probe(probe: &str, oracle: &str) {
+        check_chrome_probe_with_consumers(probe, oracle, false);
+    }
+
+    fn check_chrome_probe_with_consumers(probe: &str, oracle: &str, consumers: bool) {
         super::super::tests::init_v8();
         let isolate = &mut v8::Isolate::new(Default::default());
         v8::scope!(let scope, isolate);
         let context = v8::Context::new(scope, Default::default());
         let scope = &mut v8::ContextScope::new(scope, context);
         install_with_html(scope, "<!doctype html><body></body>");
+        let mut contexts = vec![context];
         if probe.contains("child.eval(") {
             let child = v8::Context::new(scope, Default::default());
             child.set_security_token(context.get_security_token(scope));
@@ -644,9 +649,39 @@ mod tests {
                 let scope = &mut v8::ContextScope::new(scope, child);
                 install_independent_html(scope, "<!doctype html><body></body>");
             }
+            contexts.push(child);
             let global = context.global(scope);
             let child = child.global(scope);
             set_prop(scope, global, "child", child.into());
+        }
+        if consumers {
+            for context in contexts {
+                let scope = &mut v8::ContextScope::new(scope, context);
+                let key = v8::String::new(scope, "document").unwrap();
+                let document = context
+                    .global(scope)
+                    .get(scope, key.into())
+                    .unwrap()
+                    .to_object(scope)
+                    .unwrap();
+                let _owner = DomScope::for_object(scope, document);
+                // Production installs a resource consumer in every frame. Its
+                // captured prototype query reenters native mutation fanout.
+                let source = v8::String::new(
+                    scope,
+                    r#"(() => {
+                    const query = Document.prototype.querySelectorAll;
+                    return () => Reflect.apply(query, document, ['base[href]']).length;
+                })()"#,
+                )
+                .unwrap();
+                let callback = v8::Script::compile(scope, source, None)
+                    .unwrap()
+                    .run(scope)
+                    .unwrap();
+                let callback = v8::Local::<v8::Function>::try_from(callback).unwrap();
+                assert!(install_mutation_consumer(scope, document, callback));
+            }
         }
         let expected = serde_json::to_string(oracle).unwrap();
         let source = format!("({}).then(value=>{{const expected=JSON.parse({expected}).result;globalThis.customResult=Object.keys(expected).filter(key=>JSON.stringify(value[key])!==JSON.stringify(expected[key])).map(key=>key+': '+JSON.stringify(value[key])+' EXPECTED '+JSON.stringify(expected[key])).join('\\n')||'PASS';}},error=>globalThis.customResult=String(error.stack));",probe.trim_end().trim_end_matches(';'));
@@ -688,6 +723,15 @@ mod tests {
             include_str!("custom_elements_realms_chrome155.json"),
         );
     }
+    #[test]
+    fn adoption_with_reentrant_resource_consumers_matches_independent_chrome() {
+        check_chrome_probe_with_consumers(
+            include_str!("custom_elements_realms_probe.js"),
+            include_str!("custom_elements_realms_chrome155.json"),
+            true,
+        );
+    }
+
     #[test]
     fn custom_element_idl_conversion_and_failure_atomicity_match_independent_chrome() {
         check_chrome_probe(
