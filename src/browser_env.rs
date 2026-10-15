@@ -36,6 +36,8 @@ mod event_handlers;
 mod event_listeners;
 #[path = "script_state.rs"]
 mod script_state;
+#[path = "trusted_types.rs"]
+mod trusted_types;
 pub use script_state::{
     prepare_script, script_document, script_state, set_document_resource_active, PreparedScript,
     ScriptState,
@@ -1661,6 +1663,37 @@ pub fn install_inline_event_handlers(
     event_handlers::install(scope, Some(callback), base);
 }
 
+/// Install host-only Trusted Types authorization for this Window's native factory.
+pub fn install_trusted_types_policy(
+    scope: &mut v8::PinScope,
+    callback: v8::Local<v8::Function>,
+) -> bool {
+    trusted_types::install_policy(scope, callback).is_some()
+}
+
+/// Convert a host sink input using the target document's native Trusted Types policy.
+/// Typed values are unwrapped from private fields, without guest `toString` dispatch.
+pub fn trusted_type_string<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    document: v8::Local<'s, v8::Object>,
+    input: v8::Local<'s, v8::Value>,
+    kind: &str,
+    sink: &str,
+    prefix: &str,
+) -> Option<v8::Local<'s, v8::String>> {
+    let units = trusted_types::units(scope, document, input, kind, sink, prefix, false)?;
+    v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal)
+}
+
+/// Read exact branded script source for the native engine's code-generation callback.
+/// Ordinary objects and proxies remain ordinary eval arguments without coercion.
+pub fn trusted_script_source<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    input: v8::Local<'s, v8::Value>,
+) -> Option<v8::Local<'s, v8::String>> {
+    trusted_types::script_source(scope, input)
+}
+
 /// Install immutable host CSS authorization for the current context's document.
 pub fn install_css_policy(scope: &mut v8::PinScope, callback: v8::Local<v8::Function>) {
     let id = scope
@@ -1851,7 +1884,15 @@ fn el_insert_adjacent_html<'s>(
     let Some(position) = dom_string(scope, args.get(0)) else {
         return;
     };
-    let Some(html) = dom_units(scope, args.get(1)) else {
+    let Some(html) = trusted_types::units(
+        scope,
+        args.this(),
+        args.get(1),
+        "TrustedHTML",
+        "Element insertAdjacentHTML",
+        "Failed to execute 'insertAdjacentHTML' on 'Element': ",
+        false,
+    ) else {
         return;
     };
     let position = position.to_ascii_lowercase();
@@ -2114,7 +2155,17 @@ fn el_set_attribute_ns<'s, 'i>(
     let Some(qualified) = dom_units(scope, args.get(1)) else {
         return;
     };
-    let Some(units) = dom_units(scope, args.get(2)) else {
+    let Some(units) = trusted_types::attribute_units(
+        scope,
+        args.this(),
+        args.get(2),
+        &String::from_utf16_lossy(&qualified),
+        namespace
+            .as_deref()
+            .map(String::from_utf16_lossy)
+            .as_deref(),
+        "setAttributeNS",
+    ) else {
         return;
     };
     let value = String::from_utf16_lossy(&units);
@@ -2222,10 +2273,7 @@ fn el_set_attribute<'s>(
     let Some(mut name) = dom_units(scope, args.get(0)) else {
         return;
     };
-    let Some(units) = dom_units(scope, args.get(1)) else {
-        return;
-    };
-    let value = String::from_utf16_lossy(&units);
+    let units_input = args.get(1);
     // HTML setAttribute lowercases the qualified name (React calls setAttribute('colSpan', …); jsdom
     // stores 'colspan'). Lowercase for HTML-namespace elements only (ns 0); SVG (ns 1) keeps camelCase
     // attrs like viewBox.
@@ -2234,6 +2282,12 @@ fn el_set_attribute<'s>(
         lower_ascii_units(&mut name);
     }
     let key = String::from_utf16_lossy(&name);
+    let Some(units) =
+        trusted_types::attribute_units(scope, args.this(), units_input, &key, None, "setAttribute")
+    else {
+        return;
+    };
+    let value = String::from_utf16_lossy(&units);
     if key == "popover" {
         html_popover::attribute_change(scope, h, Some(&value));
     }
@@ -2814,18 +2868,26 @@ fn get_inner_html(
     let html = template_contents::serialize(scope, node, false);
     rv.set(unit_string(scope, &html).into());
 }
-fn set_inner_html(
-    scope: &mut v8::PinScope,
-    _name: v8::Local<v8::Name>,
-    value: v8::Local<v8::Value>,
-    args: v8::PropertyCallbackArguments,
+fn set_inner_html<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _name: v8::Local<'s, v8::Name>,
+    value: v8::Local<'s, v8::Value>,
+    args: v8::PropertyCallbackArguments<'s>,
     _rv: v8::ReturnValue<()>,
 ) {
     let _dom = DomScope::for_object(scope, args.holder());
     let Some(h) = handle_of(scope, args.holder()) else {
         return;
     };
-    let Some(html) = dom_units(scope, value) else {
+    let Some(html) = trusted_types::units(
+        scope,
+        args.holder(),
+        value,
+        "TrustedHTML",
+        "Element innerHTML",
+        "Failed to set the 'innerHTML' property on 'Element': ",
+        true,
+    ) else {
         return;
     };
     let node = wrap(scope, h);
@@ -2857,11 +2919,11 @@ fn get_outer_html(
     rv.set(unit_string(scope, &html).into());
 }
 
-fn set_outer_html(
-    scope: &mut v8::PinScope,
-    _name: v8::Local<v8::Name>,
-    value: v8::Local<v8::Value>,
-    args: v8::PropertyCallbackArguments,
+fn set_outer_html<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _name: v8::Local<'s, v8::Name>,
+    value: v8::Local<'s, v8::Value>,
+    args: v8::PropertyCallbackArguments<'s>,
     _rv: v8::ReturnValue<()>,
 ) {
     let _dom = DomScope::for_object(scope, args.holder());
@@ -2885,7 +2947,15 @@ fn set_outer_html(
         );
         return;
     }
-    let Some(html) = dom_units(scope, value) else {
+    let Some(html) = trusted_types::units(
+        scope,
+        args.holder(),
+        value,
+        "TrustedHTML",
+        "Element outerHTML",
+        "Failed to set the 'outerHTML' property on 'Element': ",
+        true,
+    ) else {
         return;
     };
     html_popover::disconnect(scope, node, true);
@@ -3739,18 +3809,19 @@ fn get_text_content(
     rv.set(unit_string(scope, &txt).into());
 }
 
-fn set_text_content(
-    scope: &mut v8::PinScope,
-    _name: v8::Local<v8::Name>,
-    value: v8::Local<v8::Value>,
-    args: v8::PropertyCallbackArguments,
+fn set_text_content<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _name: v8::Local<'s, v8::Name>,
+    value: v8::Local<'s, v8::Value>,
+    args: v8::PropertyCallbackArguments<'s>,
     _rv: v8::ReturnValue<()>,
 ) {
     let _dom = DomScope::for_object(scope, args.holder());
     let Some(h) = handle_of(scope, args.holder()) else {
         return;
     };
-    let Some(units) = dom_units(scope, value) else {
+    let Some(units) = trusted_types::script_units(scope, args.holder(), value, "textContent", true)
+    else {
         return;
     };
     let txt = String::from_utf16_lossy(&units);
@@ -6203,6 +6274,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     css_policy::register(scope);
     event_handlers::register(scope);
     run_js(scope, BOOTSTRAP);
+    trusted_types::install(scope);
     script_state::install_text(scope);
     capture_node_projector(scope);
     let exception_name = v8::String::new(scope, "DOMException").unwrap();

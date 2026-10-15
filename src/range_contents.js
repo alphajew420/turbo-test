@@ -1,4 +1,4 @@
-(function (record, make, markContextualFragment) {
+(function (record, make, markContextualFragment, convertTrustedType) {
   "use strict";
   let Exception = DOMException;
   const LocalRange = Range,
@@ -302,8 +302,8 @@
   method("createContextualFragment", 1, function (html) {
     required(arguments, 1);
     const container = apply(createElement, this.document, ["div"]);
-    if (typeof html === "symbol") throw new TypeErrorClass("Cannot convert a Symbol to a string");
-    apply(innerHTML, container, [StringClass(html)]);
+    html = convertTrustedType(container, html, "TrustedHTML", "Range createContextualFragment", "Failed to execute 'createContextualFragment' on 'Range': ", false);
+    apply(innerHTML, container, [html]);
     const result = apply(fragment, this.document, []);
     let child;
     while ((child = first(container))) apply(append, result, [child]);

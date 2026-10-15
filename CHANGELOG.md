@@ -5,6 +5,15 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Add native private-state Trusted Types factory, policy and value brands, exact
+  UTF-16/USVString conversion, callback conversion and Chrome155 interface descriptors.
+  Cross-realm values retain their native brands without host roots. Authored Chrome
+  controls cover sink-type mappings and conversion errors. Native HTML, script,
+  attribute and Range sinks invoke immutable document-owned host authorization;
+  additive exports let consumers enforce parser/timer sinks and supply exact private
+  TrustedScript source to the engine without guest coercion. Production CSP and
+  eval/timer execution remain responsibilities of the consumer runtime.
+
 - Implement DocumentFragment.getElementById, inherited by ShadowRoot, through
   iterative native tree-scope lookup. Preserve exact UTF-16 IDs, first-match order,
   empty/missing behavior and native conversion/receiver errors without invoking

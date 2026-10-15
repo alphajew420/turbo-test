@@ -52,12 +52,13 @@ pub(super) fn install(scope: &mut v8::PinScope) {
         .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
     {
         let marker = v8::Function::new(scope, super::script_state::contextual_fragment).unwrap();
+        let convert = v8::Function::new(scope, super::trusted_types::convert_call).unwrap();
         let receiver = v8::undefined(scope);
         if let Some(updater) = initializer
             .call(
                 scope,
                 receiver.into(),
-                &[accessor.into(), factory, marker.into()],
+                &[accessor.into(), factory, marker.into(), convert.into()],
             )
             .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
         {

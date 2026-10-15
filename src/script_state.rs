@@ -826,9 +826,9 @@ fn text_type_error(scope: &mut v8::PinScope) {
         scope.throw_exception(error);
     }
 }
-fn text(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+fn text<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     mut result: v8::ReturnValue,
 ) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -837,6 +837,17 @@ fn text(
     };
     if !with_tree(|tree| script(tree, node)).unwrap_or(false) {
         return text_type_error(scope);
+    }
+    if args.length() > 0 {
+        let Some(units) =
+            trusted_types::script_units(scope, args.this(), args.get(0), "text", false)
+        else {
+            return;
+        };
+        html_popover::disconnect(scope, node, false);
+        range_live::replacing_children(scope, node);
+        with_tree_mut(|tree| tree.set_text_content_utf16(node, &units));
+        return;
     }
     let units = with_tree(|tree| {
         tree.children(node)
