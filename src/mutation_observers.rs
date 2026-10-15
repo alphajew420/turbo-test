@@ -33,7 +33,8 @@ pub(super) fn put_isolation_state(state: IsolationState) {
     SUPPRESSED.with(|rows| *rows.borrow_mut() = state.suppressed);
 }
 pub(super) fn recording() -> bool {
-    ENABLED.with(std::cell::Cell::get)
+    custom_elements::recording()
+        || ENABLED.with(std::cell::Cell::get)
         || script_state::recording()
         || DOM.with(|state| {
             state
@@ -124,6 +125,7 @@ pub(super) fn child_list(
     let native_event = event;
     shadow_slots::mutation(scope, &native_event);
     let event = payload(scope, &native_event);
+    custom_elements::mutation(scope, event);
     for observer in observers {
         if let Some(queue) = function(scope, observer, "queue") {
             let receiver = v8::undefined(scope);
@@ -521,6 +523,7 @@ pub(super) fn flush(scope: &mut v8::PinScope) {
                 };
                 set_prop(scope, event, name, value);
             }
+            custom_elements::mutation(scope, event);
             for observer in &observers {
                 if let Some(queue) = function(scope, *observer, "queue") {
                     let receiver = v8::undefined(scope);

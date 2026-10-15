@@ -519,6 +519,16 @@ pub(super) fn serialize<'s>(
                 };
                 scalar(&mut out, "<");
                 out.extend_from_slice(&name);
+                if !attributes
+                    .iter()
+                    .any(|attribute| attribute.qualified_name == [105, 115])
+                {
+                    if let Some(value) = custom_elements::is_value(scope, node) {
+                        scalar(&mut out, " is=\"");
+                        escaped(&mut out, &value, true);
+                        scalar(&mut out, "\"");
+                    }
+                }
                 for attribute in attributes {
                     scalar(&mut out, " ");
                     out.extend(attribute.qualified_name);

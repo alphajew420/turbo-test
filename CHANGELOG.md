@@ -5,6 +5,21 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Implement genuine CustomElementRegistry and HTML element constructors over native nodes:
+  autonomous/customized construction, late upgrade, live attribute/connect/disconnect/adopt
+  callbacks, scoped registry lookup/initialization, clone/import behavior and trusted construction
+  error reporting.
+- Add native per-element custom-element reaction queues, including moveBefore connectedMoveCallback
+  and fallback lifecycle ordering; native RAII scopes recover from interrupted constructors,
+  definitions and callbacks without retaining page realms.
+- Replace isolate-rooted JavaScript collection-record maps/functions with context-free V8 Private
+  keys and per-object records; unused installed document contexts, custom-element nodes and scoped
+  shadow cycles now collect. Preserve cross-realm brands, frozen/proxy record support and
+  interruption behavior.
+- Add six fresh, source-hashed normal Chrome155/V8 .23 control pairs plus native
+  GC/termination/private-payload regressions. Form-associated ElementInternals lifecycle remains
+  follow-up work; these tests establish the measured contracts rather than full browser conformance.
+
 - Consume verified published `turbo-dom` 0.5.6 for parser provenance and native
   template extraction; the dependency resolves from crates.io with its published
   checksum, without a private DOM path override.
@@ -25,7 +40,7 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   actual separate document, so active queries and stylesheet authorization do
   not cross into them. Imported inert storage conservatively has no new lexical
   source token. The combined standalone cohort passes214 contracts; the additive
-  backend dependency remains an isolated unpublished candidate.
+  backend dependency is published in turbo-dom0.5.6.
 
 - Preserve authoritative original UTF-16 code units in native stylesheet and
   style-attribute authorization callbacks. Scalar policy compatibility views

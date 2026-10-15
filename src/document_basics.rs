@@ -382,6 +382,7 @@ pub fn adopt<'s>(
         state.shadow_modes.extend(modes);
     });
     template_contents::relocate(scope, node);
+    custom_elements::adopted(scope, node);
     Ok(node)
 }
 
@@ -540,6 +541,7 @@ pub fn dispatch<'s>(
                         .unwrap_or(0);
                         range_live::inserting(scope, handle, index, 1);
                         with_tree_mut(|tree| tree.insert_before(handle, moved_handle, reference));
+                        custom_elements::moved(scope, moved);
                     }
                     Some(Err(name)) => error = Some(name),
                     None => return,

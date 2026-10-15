@@ -26,6 +26,8 @@ pub use storage_ownership::{collect_native_storage, NativeNodePin, NativeStorage
 mod collection_records;
 #[path = "css_policy.rs"]
 mod css_policy;
+#[path = "custom_elements.rs"]
+mod custom_elements;
 #[path = "event_brands.rs"]
 mod event_brands;
 #[path = "event_handlers.rs"]
@@ -409,6 +411,7 @@ struct DomState {
     ownership: Option<dom_ownership::Graph>,
     ownership_dirty: bool,
     template_contents: template_contents::State,
+    custom_elements_active: bool,
 }
 
 thread_local! {
@@ -596,6 +599,7 @@ fn parse_html_tree<'s>(
             ownership: None,
             ownership_dirty: true,
             template_contents: Default::default(),
+            custom_elements_active: false,
         })
     });
     script_state::initialize_inert();
@@ -753,6 +757,7 @@ pub fn import_document_node<'s>(
     document_basics::copy_nonces(scope, source_node, clone, deep);
     script_state::copy(scope, source_node, clone, deep);
     template_contents::copy_contents(scope, source_node, clone, deep);
+    custom_elements::cloned(scope, source_node, clone, deep);
     Ok(clone)
 }
 
@@ -3010,38 +3015,6 @@ fn get_prefix(
     }
 }
 
-/// `value`/`checked`/`disabled` etc — stored on the element as expandos by default (React's
-/// controlled inputs set them directly); fall back to the attribute for `value`.
-fn get_value(
-    scope: &mut v8::PinScope,
-    _name: v8::Local<v8::Name>,
-    args: v8::PropertyCallbackArguments,
-    mut rv: v8::ReturnValue<v8::Value>,
-) {
-    let _dom = DomScope::for_object(scope, args.holder());
-    let Some(h) = handle_of(scope, args.holder()) else {
-        return;
-    };
-    let v = with_tree(|t| t.get_attribute(h, "value").map(|s| s.to_string()))
-        .flatten()
-        .unwrap_or_default();
-    rv.set(v8::String::new(scope, &v).unwrap().into());
-}
-fn set_value(
-    scope: &mut v8::PinScope,
-    _name: v8::Local<v8::Name>,
-    value: v8::Local<v8::Value>,
-    args: v8::PropertyCallbackArguments,
-    _rv: v8::ReturnValue<()>,
-) {
-    let _dom = DomScope::for_object(scope, args.holder());
-    let Some(h) = handle_of(scope, args.holder()) else {
-        return;
-    };
-    let v = value.to_rust_string_lossy(scope);
-    with_tree_mut(|t| t.set_attribute(h, "value", &v));
-}
-
 // no-op / stub element methods commonly called during render + queries.
 thread_local! {
     /// the focused element handle (document.activeElement). userEvent.type targets it.
@@ -3435,6 +3408,7 @@ fn el_clone_node<'s>(
             node.set_prototype(scope, p);
         }
         copy_control_state(scope, args.this(), node, deep);
+        custom_elements::cloned(scope, source, node, deep);
         rv.set(node.into());
     }
 }
@@ -5174,6 +5148,7 @@ fn ownership_callback<'s, 'i, F>(
     if scope.is_execution_terminating() {
         return;
     }
+    let reactions = custom_elements::reactions(scope);
     F::get()(scope, args, rv);
     if scope.has_terminated() {
         scope.rethrow();
@@ -5187,6 +5162,7 @@ fn ownership_callback<'s, 'i, F>(
         scope.reset();
     }
     mutation_observers::flush(scope);
+    reactions.flush(scope);
     if scope.has_terminated() || scope.is_execution_terminating() {
         scope.rethrow();
         return;
@@ -6183,6 +6159,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
             ownership: None,
             ownership_dirty: true,
             template_contents: Default::default(),
+            custom_elements_active: false,
         });
     });
 
@@ -6298,6 +6275,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
         global.delete(scope, key.into());
     }
     event_handlers::install(scope, None, "about:blank");
+    custom_elements::install(scope);
 }
 
 fn bind_document(scope: &mut v8::PinScope) {
