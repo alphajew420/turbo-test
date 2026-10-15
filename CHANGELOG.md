@@ -5,6 +5,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Implement DocumentFragment.getElementById, inherited by ShadowRoot, through
+  iterative native tree-scope lookup. Preserve exact UTF-16 IDs, first-match order,
+  empty/missing behavior and native conversion/receiver errors without invoking
+  replaceable query/getAttribute methods. Extend the independent installed Chrome155
+  factory control with fragment/closed-shadow lookup, intrinsic-poisoning and ID changes;
+  add deep lookup and scalar-repair collision regressions.
+
 - Claim pending native mutation batches across all documents before invoking resource
   consumers. A consumer's nested query can no longer drain another document's old
   removal events into its inner custom-element reaction scope, so cross-realm adoption

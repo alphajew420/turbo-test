@@ -193,6 +193,11 @@
       return live(() => rows, false);
     }, 1);
   }
+  const fragmentIdError = TypeError;
+  method(g.DocumentFragment.prototype, 'getElementById', function (elementId) {
+    if (!arguments.length) throw new fragmentIdError('getElementById requires 1 argument');
+    return native('fragmentById', this, elementId);
+  }, 1);
   const selectors = {
     forms: node => tag.call(node) === 'FORM' && namespace.call(node) === html,
     images: node => tag.call(node) === 'IMG' && namespace.call(node) === html,

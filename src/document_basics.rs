@@ -446,6 +446,27 @@ fn move_node(
     Ok(child)
 }
 
+fn fragment_by_id(tree: &Tree, root: Handle, id: &[u16]) -> Option<Handle> {
+    if id.is_empty() {
+        return None;
+    }
+    let scalar = String::from_utf16_lossy(id);
+    let mut pending = tree.children(root);
+    pending.reverse();
+    while let Some(node) = pending.pop() {
+        if tree.get_attribute_ns_borrowed(node, None, "id") == Some(scalar.as_str())
+            && tree
+                .get_attribute_utf16(node, "id")
+                .is_some_and(|value| value == id)
+        {
+            return Some(node);
+        }
+        // DOM ancestry excludes a nested shadow root and inert template contents.
+        pending.extend(tree.children(node).into_iter().rev());
+    }
+    None
+}
+
 pub fn dispatch<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
@@ -461,6 +482,17 @@ pub fn dispatch<'s>(
     };
     let kind = with_tree(|tree| tree.node_type_id(handle)).unwrap_or(0);
     match operation.as_str() {
+        "fragmentById" if kind == 11 => {
+            let Some(id) = dom_units(scope, args.get(2)) else {
+                return;
+            };
+            let found = with_tree(|tree| fragment_by_id(tree, handle, &id)).flatten();
+            if let Some(found) = found {
+                rv.set(wrap(scope, found).into());
+            } else {
+                rv.set(v8::null(scope).into());
+            }
+        }
         "normalize" => range_live::normalize(scope, handle),
         "replaceCharacterData" if matches!(kind, 3 | 4 | 7 | 8) => {
             let Some(offset) = args.get(2).uint32_value(scope) else {
@@ -650,6 +682,25 @@ fn type_error(scope: &mut v8::PinScope) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fragment_id_lookup_is_iterative_and_distinguishes_repaired_scalar_ids() {
+        let mut tree = Tree::parse("<body></body>");
+        let root = tree.create_document_fragment();
+        let mut parent = root;
+        for _ in 0..8192 {
+            let child = tree.create_element("div");
+            tree.append_child(parent, child);
+            parent = child;
+        }
+        tree.set_attribute_utf16(parent, "id", &[0xd800]);
+        let replacement = tree.create_element("span");
+        tree.set_attribute_utf16(replacement, "id", &[0xfffd]);
+        tree.append_child(root, replacement);
+        assert_eq!(fragment_by_id(&tree, root, &[0xd800]), Some(parent));
+        assert_eq!(fragment_by_id(&tree, root, &[0xfffd]), Some(replacement));
+        assert_eq!(fragment_by_id(&tree, root, &[]), None);
+    }
 
     #[test]
     fn native_deep_adoption_snapshot_keeps_shadow_namespace_and_original_units_without_recursion() {
