@@ -470,16 +470,13 @@ fn async_access(
     }
 }
 
-pub(super) fn contextual_fragment(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+pub(super) fn contextual_fragment<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
     if let Ok(object) = v8::Local::<v8::Object>::try_from(args.get(0)) {
-        let _owner = DomScope::for_object(scope, object);
-        if let Some(handle) = handle_of(scope, object) {
-            parsed(handle, false);
-        }
+        template_contents::mark_parsed(scope, object, false);
     }
 }
 
@@ -737,6 +734,26 @@ mod tests {
                 r#"(()=>{{const rows={rows};for(const [language,expected] of rows){{const node=document.createElement('script');node.setAttribute('language',language);node.textContent='0';document.head.append(node);if(hostScript('claim',node)!==expected)throw Error(language);node.remove()}}return true}})()"#
             ),
             false,
+        );
+    }
+
+    #[test]
+    fn template_script_preparation_matches_independent_chrome_control() {
+        let oracle: serde_json::Value =
+            serde_json::from_str(include_str!("template_lifecycle_chrome155.json")).unwrap();
+        check(
+            &format!(
+                r#"(()=>{{
+          globalThis.__templateScriptRuns=[];
+          const scripted=document.createElement('template');scripted.innerHTML='<script>__templateScriptRuns.push("inner")</script>';document.body.append(scripted.content);
+          const cloned=document.createElement('template');cloned.innerHTML='<script>__templateScriptRuns.push("clone")</script>';document.body.append(cloned.content.cloneNode(true));
+          const contextual=document.createRange().createContextualFragment('<template><script>__templateScriptRuns.push("contextual")</script></template>');document.body.append(contextual.firstChild.content);
+          const parser=parseInert('<template><script>__templateScriptRuns.push("parser")</script></template>');document.body.append(parser.querySelector('template').content);
+          if(JSON.stringify(__templateScriptRuns)!==JSON.stringify({}))throw Error(JSON.stringify(__templateScriptRuns));return true;
+        }})()"#,
+                oracle["result"]["scriptRuns"]
+            ),
+            true,
         );
     }
 

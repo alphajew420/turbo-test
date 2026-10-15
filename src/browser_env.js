@@ -1081,13 +1081,18 @@ if(typeof __ns.makeNativeFunction==='function'){
         } });
     })();
     var cloneChildren=__ns.domAccessor('childNodes',false,'Node');
+    var cloneApply=Reflect.apply,cloneDefine=Object.defineProperty;
     __ns.cloneControlState = function cloneControlState(source, clone, deep){
-      if (controlValues.has(source)) clone.value = controlValues.get(source);
-      if (selection.optionStates.has(source)) selection.optionStates.set(clone, selection.optionStates.get(source));
-      if (selection.emptySelects.has(source)) selection.emptySelects.add(clone);
-      if (deep) {
-        var originals = cloneChildren.call(source), copies = cloneChildren.call(clone);
-        for (var i=0;i<originals.length && i<copies.length;i++) cloneControlState(originals[i], copies[i], true);
+      var pending=[[source,clone]];
+      for(var index=0;index<pending.length;index++){
+        var pair=pending[index];source=pair[0];clone=pair[1];
+        if (controlValues.has(source)) clone.value = controlValues.get(source);
+        if (selection.optionStates.has(source)) selection.optionStates.set(clone, selection.optionStates.get(source));
+        if (selection.emptySelects.has(source)) selection.emptySelects.add(clone);
+        if(deep){
+          var originals=cloneApply(cloneChildren,source,[]),copies=cloneApply(cloneChildren,clone,[]);
+          for(var i=0;i<originals.length&&i<copies.length;i++)cloneDefine(pending,pending.length,{__proto__:null,value:[originals[i],copies[i]],writable:true,configurable:true,enumerable:true});
+        }
       }
     };
     // <label>: htmlFor + control resolution. testing-library's getByLabelText filters

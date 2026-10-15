@@ -5,6 +5,41 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Consume verified published `turbo-dom` 0.5.6 for parser provenance and native
+  template extraction; the dependency resolves from crates.io with its published
+  checksum, without a private DOM path override.
+
+- Preserve the native Window `onstorage` listener slot when combining parser
+  provenance and inert-template prerequisites. The handler keeps branded
+  descriptors, listener ordering, replacement and non-callable clearing; its
+  standalone regression is retained from the frozen storage-events checkpoint.
+
+- Preserve parser-time style-attribute CSP checks inside genuine template contents.
+  Native preorder follows the private template graph and passes the parsing
+  document's policy without activating inert stylesheets or inventing source
+  positions. The combined standalone cohort passes 214 contracts; the downstream
+  Chrome control retains its document-targeted report for a template attribute.
+
+- Combine the reviewed real associated inert template implementation with native
+  parser provenance and original-unit CSS callbacks. Template contents use their
+  actual separate document, so active queries and stylesheet authorization do
+  not cross into them. Imported inert storage conservatively has no new lexical
+  source token. The combined standalone cohort passes214 contracts; the additive
+  backend dependency remains an isolated unpublished candidate.
+
+- Preserve authoritative original UTF-16 code units in native stylesheet and
+  style-attribute authorization callbacks. Scalar policy compatibility views
+  remain separate. A native regression covers independent lone high/low units
+  in both sources, supporting exact CSP report-sample delivery downstream.
+
+- Add opt-in original UTF-16 parser source positions for host installation and
+  private native node/attribute provenance. CSS authorization receives trusted
+  parser metadata and actual Window ownership. Inert template styles remain
+  unprepared until active adoption; initial and dynamic authorization stay
+  distinct. Native controls cover CRLF/non-BMP positions, illegal objects,
+  poisoned guest document access and template activation. Requires the additive
+  turbo-dom source-position API; full runtime report ingress is tested separately.
+
 - Implement HTMLScriptElement.text through native direct child Text/CDATA code
   units and the existing native text replacement/preparation pipeline. Fresh
   Chrome controls cover brands, descriptors, coercion, original units and actual

@@ -53,7 +53,7 @@ cssparser = "0.37"
 # 0.3.4 adds native CharacterData mutation + ChildNode/ParentNode manip + insertAdjacent + toggleAttribute + getAttributeNS over rtdom.
 # 0.3.5 fixes rtdom::serialize escaping regular spaces to &nbsp; (U+00A0), which broke
 # whitespace-normalized getByRole/getByText/toHaveText matching against a serialized DOM.
-turbo-dom-parser = { package = "turbo-dom", version = "0.5.5" }
+turbo-dom-parser = { package = "turbo-dom", version = "0.5.6" }
 
 # Published document/fragment and mutation-event APIs are supplied by turbo-dom 0.5.5, including bounded native storage collection.
 
