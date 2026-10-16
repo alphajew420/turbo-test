@@ -1738,13 +1738,21 @@ pub fn form_submission_base_href(
     .flatten()
 }
 
-/// Construct the owner-document native form entry list, without dispatching submission.
-pub fn form_submission_entries<'s>(
+/// Construct a native form entry list after FormData's nullable argument conversion.
+pub fn form_data_constructor_entries<'s>(
     scope: &mut v8::PinScope<'s, '_>,
-    form: v8::Local<'s, v8::Object>,
+    form: v8::Local<'s, v8::Value>,
     submitter: v8::Local<'s, v8::Value>,
 ) -> Option<v8::Local<'s, v8::Array>> {
-    let _dom = DomScope::for_object(scope, form);
+    let _dom = match v8::Local::<v8::Object>::try_from(form) {
+        Ok(form) => DomScope::for_object(scope, form),
+        Err(_) => DomScope::enter(
+            scope
+                .get_current_context()
+                .get_slot::<DomContextId>()
+                .map_or(0, |id| id.0),
+        ),
+    };
     let id = DOM_ID.with(std::cell::Cell::get);
     let context = DOM_CONTEXTS.with(|contexts| {
         contexts
@@ -1758,12 +1766,33 @@ pub fn form_submission_entries<'s>(
         .to_local(scope)?;
     let scope = &mut v8::ContextScope::new(scope, context);
     let receiver = v8::undefined(scope);
-    v8::Local::<v8::Array>::try_from(callback.call(
-        scope,
-        receiver.into(),
-        &[form.into(), submitter],
-    )?)
-    .ok()
+    v8::Local::<v8::Array>::try_from(callback.call(scope, receiver.into(), &[form, submitter])?)
+        .ok()
+}
+/// Construct the owner-document native form entry list, without submission events.
+pub fn form_submission_entries<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    form: v8::Local<'s, v8::Object>,
+    submitter: v8::Local<'s, v8::Value>,
+) -> Option<v8::Local<'s, v8::Array>> {
+    form_data_constructor_entries(scope, form.into(), submitter)
+}
+/// Read first connected base target directly from the native owner document.
+pub fn form_submission_base_target(
+    scope: &mut v8::PinScope,
+    form: v8::Local<v8::Object>,
+) -> Option<String> {
+    let _dom = DomScope::for_object(scope, form);
+    with_tree(|tree| {
+        tree.query_selector_all("base[target]")
+            .iter()
+            .find_map(|&node| {
+                is_connected(tree, node)
+                    .then(|| tree.get_attribute(node, "target").map(str::to_owned))
+                    .flatten()
+            })
+    })
+    .flatten()
 }
 
 /// Capture genuine runtime File/FormData snapshot authority for this native document.
@@ -4719,6 +4748,18 @@ fn form_controls_native(
         return;
     };
     match operation.as_str() {
+        "html-element" => {
+            rv.set(
+                v8::Boolean::new(
+                    scope,
+                    with_tree(|tree| {
+                        tree.node_type_id(handle) == 1 && tree.namespace_id(handle) == 0
+                    })
+                    .unwrap_or(false),
+                )
+                .into(),
+            );
+        }
         "owner" => {
             if let Some(form) = closest_form(handle) {
                 rv.set(wrap(scope, form).into());
@@ -7135,6 +7176,65 @@ mod tests {
         assert_eq!(
             result,
             r#"[[["NotSupportedError",9,true],["InvalidCharacterError",5,true],["InvalidCharacterError",5,true],["IndexSizeError",1,true]],null,true,"1.0",null]"#
+        );
+        reset();
+    }
+
+    #[test]
+    fn native_form_data_constructor_entry_arguments_match_chrome() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_independent_html(scope, "<!doctype html><body>");
+        let global = scope.get_current_context().global(scope);
+        bind_method(
+            scope,
+            global,
+            "__entryConstructor",
+            |scope, args, mut rv| {
+                if let Some(entries) =
+                    form_data_constructor_entries(scope, args.get(0), args.get(1))
+                {
+                    rv.set(entries.into());
+                }
+            },
+        );
+        let source=v8::String::new(scope,"globalThis.FormData=class {constructor(form,submitter){return __entryConstructor(form,submitter);}}").unwrap();
+        v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let source = v8::String::new(scope, include_str!("formdata_constructor_probe.js")).unwrap();
+        let actual = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let actual = v8::json::stringify(scope, actual)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        let control: serde_json::Value =
+            serde_json::from_str(include_str!("formdata_constructor_chrome155.json")).unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(control["browser"], "Chrome/155.0.8059.80");
+        assert_eq!(control["v8"], "15.5.35.23");
+        assert_eq!(control["errors"], serde_json::json!([]));
+        for (key, source) in [
+            (
+                "casesSha256",
+                include_bytes!("formdata_constructor_cases.json").as_slice(),
+            ),
+            (
+                "probeSha256",
+                include_bytes!("formdata_constructor_probe.js").as_slice(),
+            ),
+        ] {
+            assert_eq!(control[key], format!("{:x}", Sha256::digest(source)));
+        }
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&actual).unwrap(),
+            control["result"][0]["result"]
         );
         reset();
     }

@@ -5,6 +5,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Preserve FormData optional argument conversion and current-document authority
+  when no form is supplied; reject invalid HTMLElement submitters before the
+  empty result. Add a native base-target authority accessor for navigation adapters.
+
 - Expose a host-only native form entry-list constructor for private FormData
   adapters, preserving submitter validation, duplicate ordering and UTF-8 hidden
   charset values without dispatching validation or submit events.

@@ -253,6 +253,7 @@
     define(proto,property,{get:native(function(){return present(this,attributeName);},'get '+property,0),set:native(function(value){if(value)apply(setAttribute,this,[attributeName,'']);else apply(removeAttribute,this,[attributeName]);},'set '+property,1),enumerable:true,configurable:true});
   }
   g.__captureFormEntries=(form,submitter)=>{
+    if(form===undefined){if(submitter!==undefined&&submitter!==null&&!bridge('html-element',submitter))throw new ErrorType('The submitter is not an HTMLElement.');return freeze([]);}
     checkForm(form);submitter=normalizeSubmitter(form,submitter);
     const payload=submission(form,submitter),entries=[];
     for(let i=0;i<payload.entries.length;i++)entries[i]=payload.entries[i];
