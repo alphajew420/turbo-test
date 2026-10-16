@@ -5,6 +5,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Make the genuine ValidityState constructor prototype read-only, matching Chrome;
+  extend the independent form control oracle with descriptor and native brand checks.
+
 - Match Input/Button own prototype placement, enumerable control descriptors and
   text-selection conversion/errors; setRangeText performs real replacement and
   selection updates rather than an inert compatibility method.

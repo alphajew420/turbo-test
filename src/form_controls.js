@@ -160,6 +160,7 @@
   }
   const ValidityState=native(function(){throw new ErrorType('Illegal constructor');},'ValidityState',0,true);
   define(ValidityState.prototype,Symbol.toStringTag,{value:'ValidityState',configurable:true});
+  define(ValidityState,'prototype',{writable:false});
   for (const key of ['valueMissing','typeMismatch','patternMismatch','tooLong','tooShort','rangeUnderflow','rangeOverflow','stepMismatch','badInput','customError','valid']) {
     define(ValidityState.prototype,key,{get:native(function(){const element=validityGet(this);if(!element)throw new ErrorType('Illegal invocation');return flags(element)[key];},'get '+key,0),enumerable:true,configurable:true});
   }
