@@ -5,6 +5,15 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Add genuine live, readonly `labels` NodeLists on Input, Button, TextArea,
+  Select, Output, Meter and Progress. Native light-tree associations preserve
+  first-ID targeting, exact UTF-16 IDs, hidden-input transitions, shadow scopes,
+  adoption and receiver-realm collection identity; share that authority with
+  ElementInternals and label.control, including custom controls before builtins.
+  Independent Chrome controls cover descriptors, wrong receivers, live mutations
+  and hostile public methods. Production iframe/retirement GC validation remains
+  a separate renderer gate with an explicit real-task collection policy.
+
 - Make the adopted-radio GC control resolve readiness without retaining the
   load Event, clear its listener and record an explicit real-task GC policy.
   Preserve the original non-repeatable WeakRef receipt, three fresh original
