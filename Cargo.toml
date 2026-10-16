@@ -30,6 +30,7 @@ name = "m5-affected"
 path = "src/bin/m5_affected.rs"
 
 [dependencies]
+url = "2.5"
 v8 = "149.3.0"
 oxc_allocator = "0.134"
 oxc_parser = "0.134"
@@ -55,12 +56,15 @@ cssparser = "0.37"
 # whitespace-normalized getByRole/getByText/toHaveText matching against a serialized DOM.
 turbo-dom-parser = { package = "turbo-dom", version = "0.5.6" }
 
-# Published document/fragment and mutation-event APIs are supplied by turbo-dom 0.5.5, including bounded native storage collection.
+# Published document/fragment and mutation-event APIs are supplied by turbo-dom 0.5.6, including bounded native storage collection.
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+[dev-dependencies]
+sha2 = "0.10"
 
 [patch.crates-io]
 v8 = { path = "vendor/rusty_v8" }

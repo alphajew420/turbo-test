@@ -426,6 +426,7 @@ thread_local! {
 // the caller's DOM on return (including reentrant event dispatch).
 #[derive(Clone, Copy)]
 struct DomContextId(u64);
+struct FormSubmissionDispatcher(v8::Weak<v8::Function>);
 
 #[derive(Default)]
 struct SavedDom {
@@ -4522,7 +4523,26 @@ fn el_dispatch_event(
     });
     if not_prevented && ty == "click" && is_submit_control(target) && !submission_blocked {
         if let Some(form) = closest_form(target) {
-            dispatch_synthetic(scope, form, "submit", true, true);
+            let form = wrap(scope, form);
+            let submitter = wrap(scope, target);
+            if let Some(context) = form.get_creation_context(scope) {
+                if let Some(dispatcher) = context.get_slot::<FormSubmissionDispatcher>() {
+                    let dispatcher = dom_ownership::local(scope, &dispatcher.0);
+                    let receiver = v8::undefined(scope);
+                    v8::tc_scope!(let call_scope, scope);
+                    dispatcher.call(
+                        call_scope,
+                        receiver.into(),
+                        &[form.into(), submitter.into()],
+                    );
+                    if !call_scope.has_terminated() {
+                        if let Some(error) = call_scope.exception() {
+                            call_scope.reset();
+                            custom_elements::report_value(call_scope, error);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -4581,17 +4601,77 @@ fn is_submit_control(h: Handle) -> bool {
         let tag = t.tag_name(h).unwrap_or_default().to_ascii_uppercase();
         let ty = t.get_attribute(h, "type").map(|s| s.to_ascii_lowercase());
         match tag.as_str() {
-            "BUTTON" => ty.as_deref().map(|t| t == "submit").unwrap_or(true),
-            "INPUT" => ty.as_deref() == Some("submit"),
+            "BUTTON" => !matches!(ty.as_deref(), Some("button" | "reset")),
+            "INPUT" => matches!(ty.as_deref(), Some("submit" | "image")),
             _ => false,
         }
     })
     .unwrap_or(false)
 }
 
+fn form_controls_native(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let operation = args.get(0).to_rust_string_lossy(scope);
+    let Ok(node) = v8::Local::<v8::Object>::try_from(args.get(1)) else {
+        return;
+    };
+    let _dom = DomScope::for_object(scope, node);
+    let Some(handle) = handle_of(scope, node) else {
+        return;
+    };
+    match operation.as_str() {
+        "owner" => {
+            if let Some(form) = closest_form(handle) {
+                rv.set(wrap(scope, form).into());
+            } else {
+                rv.set(v8::null(scope).into());
+            }
+        }
+        "absolute-url" => {
+            let value = args.get(2).to_rust_string_lossy(scope);
+            rv.set(v8::Boolean::new(scope, url::Url::parse(&value).is_ok()).into());
+        }
+        "allowed" => {
+            let blocked = DOM.with(|dom| {
+                dom.borrow()
+                    .as_ref()
+                    .is_some_and(|dom| dom.form_submission_blocked)
+            });
+            rv.set(v8::Boolean::new(scope, !blocked).into());
+        }
+        "emit" => {
+            let Ok(event) = v8::Local::<v8::Object>::try_from(args.get(2)) else {
+                return;
+            };
+            dispatch_host_event(scope, event, node);
+            let canceled = event_record(scope, event)
+                .is_some_and(|record| get_bool_prop(scope, record, "defaultPrevented"));
+            rv.set(v8::Boolean::new(scope, !canceled).into());
+        }
+        _ => {}
+    }
+}
+
 /// nearest ancestor `<form>` (incl. self).
 fn closest_form(h: Handle) -> Option<Handle> {
     with_tree(|t| {
+        if let Some(id) = t.get_attribute_utf16(h, "form") {
+            if !is_connected(t, h) || id.is_empty() {
+                return None;
+            }
+            for &candidate in t.query_selector_all("[id]").iter() {
+                if t.get_attribute_utf16(candidate, "id").as_deref() == Some(id.as_slice()) {
+                    return t
+                        .tag_name(candidate)
+                        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+                        .then_some(candidate);
+                }
+            }
+            return None;
+        }
         let mut cur = Some(h);
         while let Some(c) = cur {
             if t.tag_name(c)
@@ -6344,6 +6424,21 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     html_popover::install(scope);
     document_xpath::install(scope);
     event_listeners::install(scope);
+    bind_method(scope, global, "__formNative", form_controls_native);
+    run_js(scope, include_str!("form_controls.js"));
+    let name = v8::String::new(scope, "__captureFormSubmission").unwrap();
+    if let Some(function) = global
+        .get(scope, name.into())
+        .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+    {
+        if let Some(function) = dom_ownership::helper_function(scope, function) {
+            scope
+                .get_current_context()
+                .set_slot(std::rc::Rc::new(FormSubmissionDispatcher(function)));
+        }
+    }
+    global.delete(scope, name.into());
+
     let key = v8::String::new(scope, "__captureEventRecord").unwrap();
     if let Some(accessor) = global
         .get(scope, key.into())
@@ -6884,6 +6979,55 @@ mod tests {
             result,
             r#"[[["NotSupportedError",9,true],["InvalidCharacterError",5,true],["InvalidCharacterError",5,true],["IndexSizeError",1,true]],null,true,"1.0",null]"#
         );
+        reset();
+    }
+
+    #[test]
+    fn native_form_validation_and_request_submit_match_independent_chrome() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_independent_html(scope, "<!doctype html><body></body>");
+        v8::tc_scope!(let scope, scope);
+        let source = v8::String::new(scope, include_str!("form_methods_probe.js")).unwrap();
+        let result = v8::Script::compile(scope, source, None).unwrap().run(scope);
+        if result.is_none() {
+            let exception = scope.exception().unwrap();
+            let text = exception.to_rust_string_lossy(scope);
+            let stack = scope
+                .stack_trace()
+                .map(|stack| stack.to_rust_string_lossy(scope));
+            panic!("{text}: {stack:?}");
+        }
+        let result = result.unwrap();
+        let json = v8::json::stringify(scope, result)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        let actual: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let control: serde_json::Value =
+            serde_json::from_str(include_str!("form_methods_chrome155.json")).unwrap();
+        assert_eq!(control["browser"], "Chrome/155.0.8059.80");
+        assert_eq!(control["v8"], "15.5.35.23");
+        assert_eq!(control["errors"], serde_json::json!([]));
+        use sha2::{Digest, Sha256};
+        for (name, source) in [
+            (
+                "casesSha256",
+                include_bytes!("form_methods_cases.json").as_slice(),
+            ),
+            (
+                "probeSha256",
+                include_bytes!("form_methods_probe.js").as_slice(),
+            ),
+        ] {
+            assert_eq!(control[name], format!("{:x}", Sha256::digest(source)));
+        }
+        for (key, expected) in control["result"][0]["result"].as_object().unwrap() {
+            assert_eq!(&actual[key], expected, "{key}");
+        }
+        assert_eq!(actual, control["result"][0]["result"]);
         reset();
     }
 

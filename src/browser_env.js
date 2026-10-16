@@ -1094,6 +1094,14 @@ if(typeof __ns.makeNativeFunction==='function'){
           if (hit) selection.emptySelects.delete(this);
         } });
     })();
+    var formValueApply=Reflect.apply,formValueGet=WeakMap.prototype.get,formValueHas=WeakMap.prototype.has;
+    var formValueText=__ns.domAccessor('textContent',false,'Node');
+    __ns.formControlValue=function(element){
+      var tag=formValueApply(sheetTagName,element,[]),type=formValueApply(sheetGetAttribute,element,['type'])||'text';
+      if(tag==='SELECT'){var chosen=selection.selectionOf(element);return chosen.length?chosen[0].value:'';}
+      if(formValueApply(formValueHas,controlValues,[element])&&!/^(hidden|button|submit|reset|image|checkbox|radio)$/.test(type))return formValueApply(formValueGet,controlValues,[element]);
+      return tag==='TEXTAREA'?formValueApply(formValueText,element,[]):formValueApply(sheetGetAttribute,element,['value'])||'';
+    };
     var cloneChildren=__ns.domAccessor('childNodes',false,'Node');
     var cloneApply=Reflect.apply,cloneDefine=Object.defineProperty;
     __ns.cloneControlState = function cloneControlState(source, clone, deep){

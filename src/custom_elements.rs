@@ -223,7 +223,7 @@ pub(super) fn is_value(scope: &mut v8::PinScope, node: v8::Local<v8::Object>) ->
 fn report(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _result: v8::ReturnValue) {
     report_value(scope, args.get(0));
 }
-fn report_value(scope: &mut v8::PinScope, error: v8::Local<v8::Value>) {
+pub(super) fn report_value(scope: &mut v8::PinScope, error: v8::Local<v8::Value>) {
     let context = scope.get_current_context();
     let Some(builder) = context.get_slot::<ErrorHook>() else {
         return;

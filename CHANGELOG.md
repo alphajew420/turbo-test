@@ -5,6 +5,16 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Replace unconditional form-validity answers and no-op custom validity with live
+  native-DOM control state, branded ValidityState objects, required/custom/type/
+  pattern/numeric checks, trusted non-bubbling invalid events, and form validation.
+  Add a branded SubmitEvent and requestSubmit argument/admission/validation/event
+  behavior, preserving native submitter and Chrome155 composed-event differences.
+  Capture live control values and native accessors instead of reading guest overrides;
+  form-owner lookup includes explicit form IDs. Uncanceled navigation still needs a
+  consumer transport and reports a clear NotSupportedError instead of pretending
+  to submit; click default-action failures are reported as engine exceptions.
+
 - Implement Chrome155's AbstractRange → NodeRange → Range/StaticRange interface
   hierarchy with native descriptors, constructor inheritance and genuine private
   static boundaries. Static offsets retain their original values through native
