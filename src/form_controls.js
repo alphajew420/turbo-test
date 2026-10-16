@@ -182,6 +182,41 @@
   define(SubmitEventClass.prototype,'submitter',{get:native(function(){if(!submitterHas(this))throw new ErrorType('Illegal invocation');return submitterGet(this);},'get submitter',0),enumerable:true,configurable:true});
   define(SubmitEventClass.prototype,Symbol.toStringTag,{value:'SubmitEvent',configurable:true});
   define(g,'SubmitEvent',{value:SubmitEventClass,writable:true,configurable:true});
+  const freeze = Object.freeze;
+  function submission(form, submitter) {
+    const entries=[],charsetEntries=[];
+    const controls=formControls(form);
+    const append=(name,value)=>{entries[entries.length]=freeze([name,value]);};
+    for(let i=0;i<controls.length;i++) {
+      const control=controls[i],kind=tag(control),inputType=type(control),name=attr(control,'name');
+      if(disabled(control)||!name||kind==='fieldset'||kind==='object'||kind==='output')continue;
+      if(kind==='button'||kind==='input'&&regexTest(/^(submit|reset|button|image)$/,inputType)) {
+        if(control!==submitter)continue;
+        if(inputType==='image'){append(name+'.x','0');append(name+'.y','0');continue;}
+      }
+      if(kind==='input'&&regexTest(/^(checkbox|radio)$/,inputType)&&!present(control,'checked'))continue;
+      if(kind==='input'&&inputType==='file')throw new Exception('Native FileList submission is not available.','NotSupportedError');
+      if(kind==='select') {
+        const options=queryAll(control,'option');
+        for(let j=0;j<options.length;j++) {
+          const option=options[j],group=parent(option);
+          if(!present(option,'selected')||present(option,'disabled')||group&&tag(group)==='optgroup'&&present(group,'disabled'))continue;
+          append(name,attr(option,'value')??readValue(option));
+        }
+      } else {if(inputType==='hidden'&&name==='_charset_')charsetEntries[charsetEntries.length]=entries.length;append(name,inputType==='checkbox'||inputType==='radio'?attr(control,'value')??'on':readValue(control));}
+    }
+    const override=(field,fallback)=>submitter&&present(submitter,'form'+field)?attr(submitter,'form'+field):attr(form,fallback||field);
+    const method=lower(override('method')||'get'),enctype=lower(override('enctype')||'application/x-www-form-urlencoded');
+    const result=create(null);
+    result.action=override('action');result.method=regexTest(/^(get|post|dialog)$/,method)?method:'get';
+    result.enctype=regexTest(/^(application\/x-www-form-urlencoded|multipart\/form-data|text\/plain)$/,enctype)?enctype:'application/x-www-form-urlencoded';
+    result.target=override('target')||'';result.acceptCharset=attr(form,'accept-charset');result.entries=freeze(entries);result.charsetEntries=freeze(charsetEntries);
+    return freeze(result);
+  }
+  function queue(form,submitter) {
+    if(bridge('submit',form,submitter,submission(form,submitter))===true)return;
+    throw new Exception('Form navigation requires a configured native submission transport.','NotSupportedError');
+  }
   function request(form, submitter) {
     checkForm(form);
     if(submitter!==null&&submitter!==undefined) {
@@ -189,11 +224,11 @@
       if(!((kind==='button'&&inputType==='submit')||(kind==='input'&&(inputType==='submit'||inputType==='image'))))throw new ErrorType('The specified element is not a submit button.');
       if(owner(submitter)!==form)throw new Exception('The specified element is not owned by this form element.','NotFoundError');
     } else submitter=null;
-    if(!bridge('allowed',form))return;
+    if(!bridge('allowed',form)||!bridge('active',form))return;
     if(!present(form,'novalidate')&&!(submitter&&present(submitter,'formnovalidate'))&&!validate(form))return;
     const event=new SubmitEventClass('submit',{bubbles:true,cancelable:true,composed:submitter!==null,submitter});
     if(!bridge('emit',form,event))return;
-    throw new Exception('Form navigation requires a configured native submission transport.','NotSupportedError');
+    queue(form,submitter);
   }
   function method(proto,name,fn,length) {define(proto,name,{value:native(fn,name,length),enumerable:true,writable:true,configurable:true});}
   for(const name of ['HTMLInputElement','HTMLTextAreaElement','HTMLSelectElement','HTMLButtonElement','HTMLFieldSetElement','HTMLObjectElement','HTMLOutputElement']) {
@@ -209,7 +244,7 @@
   const formPrototype=HTMLFormElement.prototype;
   for(const methodName of ['checkValidity','reportValidity'])method(formPrototype,methodName,function(){checkForm(this);return validate(this);},0);
   method(formPrototype,'requestSubmit',function(submitter){return request(this,submitter);},0);
-  method(formPrototype,'submit',function(){checkForm(this);if(!bridge('allowed',this))return;throw new Exception('Form navigation requires a configured native submission transport.','NotSupportedError');},0);
+  method(formPrototype,'submit',function(){checkForm(this);if(!bridge('allowed',this)||!bridge('active',this))return;return queue(this,null);},0);
   for(const [proto,property,attributeName] of [[formPrototype,'noValidate','novalidate'],[HTMLButtonElement.prototype,'formNoValidate','formnovalidate'],[HTMLInputElement.prototype,'formNoValidate','formnovalidate']]) {
     const setAttribute=Element.prototype.setAttribute,removeAttribute=Element.prototype.removeAttribute;
     define(proto,property,{get:native(function(){return present(this,attributeName);},'get '+property,0),set:native(function(value){if(value)apply(setAttribute,this,[attributeName,'']);else apply(removeAttribute,this,[attributeName]);},'set '+property,1),enumerable:true,configurable:true});

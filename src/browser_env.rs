@@ -415,6 +415,7 @@ struct DomState {
     template_contents: template_contents::State,
     custom_elements_active: bool,
     form_submission_blocked: bool,
+    form_submission_handler: Option<v8::Weak<v8::Function>>,
 }
 
 thread_local! {
@@ -605,6 +606,7 @@ fn parse_html_tree<'s>(
             template_contents: Default::default(),
             custom_elements_active: false,
             form_submission_blocked: false,
+            form_submission_handler: None,
         })
     });
     script_state::initialize_inert();
@@ -1711,6 +1713,51 @@ pub fn set_form_submission_blocked(scope: &mut v8::PinScope, blocked: bool) {
             dom.form_submission_blocked = blocked;
         }
     });
+}
+
+/// First connected document base attribute, read without guest getters.
+pub fn form_submission_base_href(
+    scope: &mut v8::PinScope,
+    form: v8::Local<v8::Object>,
+) -> Option<String> {
+    let _dom = DomScope::for_object(scope, form);
+    with_tree(|tree| {
+        tree.query_selector_all("base[href]")
+            .iter()
+            .find_map(|&node| {
+                is_connected(tree, node)
+                    .then(|| {
+                        tree.get_attribute(node, "href")
+                            .map(|value| value.to_string())
+                    })
+                    .flatten()
+            })
+    })
+    .flatten()
+}
+
+/// Register a host-only submission admission/queue callback for this native document.
+/// The document owns the V8 edge; retiring it does not leave a host rooted realm.
+pub fn install_form_submission_handler(
+    scope: &mut v8::PinScope,
+    callback: v8::Local<v8::Function>,
+) -> bool {
+    let id = scope
+        .get_current_context()
+        .get_slot::<DomContextId>()
+        .map_or(0, |id| id.0);
+    let _dom = DomScope::enter(id);
+    let Some(callback) = dom_ownership::helper_function(scope, callback) else {
+        return false;
+    };
+    DOM.with(|dom| {
+        let mut dom = dom.borrow_mut();
+        let Some(dom) = dom.as_mut() else {
+            return false;
+        };
+        dom.form_submission_handler = Some(callback);
+        true
+    })
 }
 
 /// Install immutable host CSS authorization for the current context's document.
@@ -4630,6 +4677,29 @@ fn form_controls_native(
                 rv.set(v8::null(scope).into());
             }
         }
+        "active" | "submit" => {
+            let callback = DOM.with(|dom| {
+                dom.borrow().as_ref().and_then(|dom| {
+                    dom.form_submission_handler
+                        .as_ref()
+                        .and_then(|callback| callback.to_local(scope))
+                })
+            });
+            let Some(callback) = callback else {
+                // Standalone bindings still support validation and canceled submit events.
+                rv.set(v8::Boolean::new(scope, operation == "active").into());
+                return;
+            };
+            let Some(context) = callback.get_creation_context(scope) else {
+                return;
+            };
+            let scope = &mut v8::ContextScope::new(scope, context);
+            let receiver = v8::undefined(scope);
+            let values = [args.get(0), node.into(), args.get(2), args.get(3)];
+            if let Some(value) = callback.call(scope, receiver.into(), &values) {
+                rv.set(value);
+            }
+        }
         "absolute-url" => {
             let value = args.get(2).to_rust_string_lossy(scope);
             rv.set(v8::Boolean::new(scope, url::Url::parse(&value).is_ok()).into());
@@ -6335,6 +6405,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
             template_contents: Default::default(),
             custom_elements_active: false,
             form_submission_blocked: false,
+            form_submission_handler: None,
         });
     });
 
@@ -6978,6 +7049,67 @@ mod tests {
         assert_eq!(
             result,
             r#"[[["NotSupportedError",9,true],["InvalidCharacterError",5,true],["InvalidCharacterError",5,true],["IndexSizeError",1,true]],null,true,"1.0",null]"#
+        );
+        reset();
+    }
+
+    #[test]
+    fn native_form_submission_snapshots_are_ordered_and_host_admitted() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        use sha2::{Digest, Sha256};
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("form_entrylist_cases.json")).unwrap();
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("form_entrylist_chrome155.json")).unwrap();
+        assert_eq!(expected["browser"], "Chrome/155.0.8059.80");
+        assert_eq!(expected["v8"], "15.5.35.23");
+        assert_eq!(expected["errors"], serde_json::json!([]));
+        for (key, source) in [
+            (
+                "casesSha256",
+                include_bytes!("form_entrylist_cases.json").as_slice(),
+            ),
+            (
+                "probeSha256",
+                include_bytes!("form_entrylist_probe.js").as_slice(),
+            ),
+        ] {
+            assert_eq!(expected[key], format!("{:x}", Sha256::digest(source)));
+        }
+        install_independent_html(scope, cases[0]["html"].as_str().unwrap());
+        let callback=v8::String::new(scope,r#"(function(op,form,submitter,payload){if(op==='active')return true;if(!Object.isFrozen(payload)||!Object.isFrozen(payload.entries)||!Object.isFrozen(payload.entries[0])||Object.getPrototypeOf(payload)!==null)throw Error('snapshot');globalThis.saved=payload;return true;})"#).unwrap();
+        let callback = v8::Script::compile(scope, callback, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        assert!(install_form_submission_handler(
+            scope,
+            v8::Local::<v8::Function>::try_from(callback).unwrap()
+        ));
+        let source=v8::String::new(scope,r#"(()=>{const form=document.getElementById('f');form.requestSubmit(document.getElementById('b'));const entries=saved.entries.map(x=>[x[0],x[1]]);for(const i of saved.charsetEntries)entries[i][1]='UTF-8';form.firstChild.value='changed';return JSON.stringify(entries);})()"#).unwrap();
+        let actual = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&actual).unwrap(),
+            expected["result"][0]["result"]
+        );
+        let key = v8::String::new(scope, "document").unwrap();
+        let document = scope
+            .get_current_context()
+            .global(scope)
+            .get(scope, key.into())
+            .unwrap();
+        assert_eq!(
+            form_submission_base_href(scope, v8::Local::<v8::Object>::try_from(document).unwrap())
+                .as_deref(),
+            None
         );
         reset();
     }

@@ -5,6 +5,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Add native-document-owned submission admission and queue callbacks with immutable
+  ordered text entry snapshots, submitter overrides and hidden charset-entry metadata.
+  Preserve validation/cancellation before transport; native FileList and full select
+  state support remain explicit follow-up work. Independent Chrome155 FormData
+  controls cover duplicate names, disabled/checked controls, text, charset and submitter.
+
 - Replace unconditional form-validity answers and no-op custom validity with live
   native-DOM control state, branded ValidityState objects, required/custom/type/
   pattern/numeric checks, trusted non-bubbling invalid events, and form validation.
