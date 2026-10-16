@@ -173,6 +173,9 @@ fn insert_mode(
             }
         });
     });
+    for &node in &plan.nodes {
+        form_checked_state::group(node);
+    }
     mutation_observers::child_list(scope, parent, plan.nodes, removed, previous, plan.reference);
     true
 }

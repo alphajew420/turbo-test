@@ -5,6 +5,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Keep radio grouping in the native checkedness intrinsic, including checked/name/
+  type/form attribute changes, parsed subtrees, directly moved radios, and form reset. Restore
+  the prior selected radio after canceled clicks without guest checked hooks.
+  Preserve native checkedness overrides across actual cross-document adoption;
+  source-pinned Chrome controls cover dirty defaults, cloning, live old/new form
+  collections, cancellation and forced-GC observations.
+
+
 - Add genuine live HTMLFormControlsCollection and RadioNodeList interfaces, form
   elements/length/iteration, owner-aware external/custom controls and cached named
   groups. Private records support borrowed base accessors across real V8 contexts,

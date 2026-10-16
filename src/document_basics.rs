@@ -276,7 +276,7 @@ pub fn adopt<'s>(
             .ok_or("Document tree unavailable")?;
         mapping
     };
-    let (cache, styles, listeners, nonces, modes, handlers, scripts, custom_states) = {
+    let (cache, styles, listeners, nonces, modes, handlers, scripts, custom_states, checked_states) = {
         let _source = DomScope::for_object(scope, node);
         html_popover::attribute_node_change(scope, source_handle, None);
         html_popover::disconnect(scope, source_handle, true);
@@ -363,6 +363,21 @@ pub fn adopt<'s>(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+        let checked_states = with_tree_mut(|tree| {
+            mapping
+                .iter()
+                .filter_map(|(old, new)| {
+                    let value =
+                        tree.form_property(*old, turbo_dom_parser::rtdom::tree::FormProp::Checked)?;
+                    tree.clear_form_property(
+                        *old,
+                        turbo_dom_parser::rtdom::tree::FormProp::Checked,
+                    );
+                    Some((*new, value))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
         (
             cache,
             styles,
@@ -372,11 +387,19 @@ pub fn adopt<'s>(
             handlers,
             scripts,
             custom_states,
+            checked_states,
         )
     };
     let _target = DomScope::for_object(scope, document);
     event_handlers::restore_adopted_sources(handlers);
     with_tree_mut(|tree| {
+        for (node, value) in checked_states {
+            tree.set_form_property(
+                node,
+                turbo_dom_parser::rtdom::tree::FormProp::Checked,
+                value,
+            );
+        }
         for (node, values) in custom_states {
             for value in values {
                 tree.set_custom_state_utf16(node, &value, true);

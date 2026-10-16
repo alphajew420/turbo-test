@@ -32,33 +32,7 @@
   function setChecked(element, state) {
     if (!html(element) || local(element) !== "input") throw new ErrorType("Illegal invocation");
     apply(checked.set, element, [state]);
-    if (!state || !radio(element)) return;
-    const name = forms.attr(element, "name");
-    if (!name) return;
-    const root = apply(forms.getRoot, element, []),
-      rows = forms.queryAll(root, "input"),
-      owner = forms.owner(element);
-    for (let index = 0; index < rows.length; index++) {
-      const peer = rows[index];
-      if (
-        peer !== element &&
-        radio(peer) &&
-        forms.attr(peer, "name") === name &&
-        forms.owner(peer) === owner
-      )
-        apply(checked.set, peer, [false]);
-    }
   }
-  define(HTMLInputElement.prototype, "checked", {
-    ...checked,
-    set: make(
-      function (state) {
-        setChecked(this, !!state);
-      },
-      "set checked",
-      1,
-    ),
-  });
   const row = (array, item) =>
     define(array, array.length, {
       __proto__: null,

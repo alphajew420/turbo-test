@@ -281,6 +281,63 @@ mod tests {
         reset();
     }
     #[test]
+    fn native_dirty_checkedness_survives_gc_and_requery() {
+        super::super::tests::init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        let context = {
+            v8::scope!(let scope,isolate);
+            let context = v8::Context::new(scope, Default::default());
+            let scope = &mut v8::ContextScope::new(scope, context);
+            install_independent_html(
+                scope,
+                "<!doctype html><body><input id='dirty-native' type='radio' checked>",
+            );
+            let source = v8::String::new(
+                scope,
+                "document.querySelector('#dirty-native').checked=false;true",
+            )
+            .unwrap();
+            assert!(v8::Script::compile(scope, source, None)
+                .unwrap()
+                .run(scope)
+                .unwrap()
+                .is_true());
+            v8::Global::new(scope, context)
+        };
+        isolate.clear_kept_objects();
+        for _ in 0..3 {
+            isolate.low_memory_notification();
+        }
+        {
+            v8::scope!(let scope,isolate);
+            let context = v8::Local::new(scope, &context);
+            let scope = &mut v8::ContextScope::new(scope, context);
+            let source=v8::String::new(scope,"(()=>{const node=document.querySelector('#dirty-native');const before=node.checked;node.defaultChecked=false;node.defaultChecked=true;return before===false&&node.checked===false&&node.defaultChecked===true;})()").unwrap();
+            assert!(v8::Script::compile(scope, source, None)
+                .unwrap()
+                .run(scope)
+                .unwrap()
+                .is_true());
+        }
+        drop(context);
+        reset();
+    }
+    #[test]
+    fn native_radio_dirty_matches_independent_chrome() {
+        assert_control(
+            include_bytes!("radio_dirty_cases.json"),
+            include_str!("radio_dirty_probe.js"),
+            include_str!("radio_dirty_chrome155.json"),
+            false,
+        );
+        assert_control(
+            include_bytes!("radio_dirty_cases.json"),
+            include_str!("radio_dirty_transition_probe.js"),
+            include_str!("radio_dirty_transition_chrome155.json"),
+            false,
+        );
+    }
+    #[test]
     fn native_form_collections_match_independent_chrome() {
         assert_control(
             include_bytes!("form_collections_cases.json"),

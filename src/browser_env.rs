@@ -36,6 +36,8 @@ mod event_brands;
 mod event_handlers;
 #[path = "event_listeners.rs"]
 mod event_listeners;
+#[path = "form_checked_state.rs"]
+mod form_checked_state;
 #[path = "script_state.rs"]
 mod script_state;
 #[path = "trusted_types.rs"]
@@ -3124,6 +3126,7 @@ fn set_inner_html<'s>(
     html_popover::disconnect(scope, h, false);
     range_live::replacing_children(scope, h);
     with_tree_mut(|t| t.set_inner_html_utf16(h, &html));
+    form_checked_state::inserted(h);
     template_contents::realize(scope, node);
     for child in with_tree(|tree| tree.children(h)).unwrap_or_default() {
         let object = wrap(scope, child);
@@ -4563,11 +4566,11 @@ fn el_dispatch_event(
     } else {
         None
     };
-    let check_was = click_check.map(|_| get_bool_prop(scope, target_node, "checked"));
+    let check_snapshot = click_check.map(|_| form_checked_state::snapshot(target));
+    let check_was = click_check.map(|_| form_checked_state::checked(target));
     if let (Some(kind), Some(was)) = (click_check, check_was) {
         let next = if kind == CheckKind::Radio { true } else { !was };
-        let b = v8::Boolean::new(scope, next);
-        set_prop(scope, target_node, "checked", b.into());
+        form_checked_state::set(target, next);
     }
 
     // propagation path: ancestors (root … parent), then the target. Bubbling reverses it.
@@ -4756,14 +4759,12 @@ fn el_dispatch_event(
 
     // Finish the checkbox/radio activation: a canceled click reverts the pre-toggle; otherwise fire
     // the DOM `input` + `change` events (jsdom does this; some libs listen for them directly).
-    if let (Some(_kind), Some(was)) = (click_check, check_was) {
+    if let (Some(_kind), Some(_was)) = (click_check, check_was) {
         if not_prevented {
             dispatch_synthetic(scope, target, "input", true, false);
             dispatch_synthetic(scope, target, "change", true, false);
-        } else {
-            let el = wrap(scope, target);
-            let b = v8::Boolean::new(scope, was);
-            set_prop(scope, el, "checked", b.into());
+        } else if let Some(snapshot) = check_snapshot {
+            form_checked_state::restore(snapshot);
         }
     }
 
@@ -4843,10 +4844,11 @@ fn form_checked_native(
     let prop = turbo_dom_parser::rtdom::tree::FormProp::Checked;
     if operation == 1 {
         let value = args.get(2).boolean_value(scope);
-        with_tree_mut(|tree| tree.set_form_property(handle, prop, value));
+        form_checked_state::set(handle, value);
     }
     if operation == 2 {
         with_tree_mut(|tree| tree.clear_form_property(handle, prop));
+        form_checked_state::group(handle);
     }
     if operation == 3 {
         rv.set_bool(with_tree(|tree| tree.form_property(handle, prop).is_some()).unwrap_or(false));
@@ -6741,6 +6743,9 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     DOM_CONTEXTS.with(|d| {
         d.borrow_mut().insert(DOM_ID.with(|id| id.get()), global);
     });
+    if let Some(root) = with_tree(|tree| tree.root()) {
+        form_checked_state::inserted(root);
+    }
     bind_document(scope);
 
     // Window-level globals that libs read as BARE identifiers (`navigator`, `HTMLElement`, …) — a
