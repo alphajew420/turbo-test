@@ -428,6 +428,7 @@ thread_local! {
 #[derive(Clone, Copy)]
 struct DomContextId(u64);
 struct FormSubmissionDispatcher(v8::Weak<v8::Function>);
+struct FormValueReader(v8::Weak<v8::Function>);
 
 #[derive(Default)]
 struct SavedDom {
@@ -1734,6 +1735,25 @@ pub fn form_submission_base_href(
             })
     })
     .flatten()
+}
+
+/// Capture genuine runtime File/FormData snapshot authority for this native document.
+pub fn install_form_value_reader(
+    scope: &mut v8::PinScope,
+    callback: v8::Local<v8::Function>,
+) -> bool {
+    let id = scope
+        .get_current_context()
+        .get_slot::<DomContextId>()
+        .map_or(0, |id| id.0);
+    let _dom = DomScope::enter(id);
+    let Some(callback) = dom_ownership::helper_function(scope, callback) else {
+        return false;
+    };
+    scope
+        .get_current_context()
+        .set_slot(std::rc::Rc::new(FormValueReader(callback)));
+    true
 }
 
 /// Register a host-only submission admission/queue callback for this native document.
@@ -4677,6 +4697,31 @@ fn form_controls_native(
                 rv.set(v8::null(scope).into());
             }
         }
+        "value-snapshot" => {
+            let id = DOM_ID.with(std::cell::Cell::get);
+            let context = DOM_CONTEXTS.with(|contexts| {
+                contexts
+                    .borrow()
+                    .get(&id)
+                    .and_then(|context| context.to_local(scope))
+            });
+            let Some(context) = context else {
+                rv.set(v8::null(scope).into());
+                return;
+            };
+            let callback = context
+                .get_slot::<FormValueReader>()
+                .and_then(|reader| reader.0.to_local(scope));
+            let Some(callback) = callback else {
+                rv.set(v8::null(scope).into());
+                return;
+            };
+            let scope = &mut v8::ContextScope::new(scope, context);
+            let receiver = v8::undefined(scope);
+            if let Some(value) = callback.call(scope, receiver.into(), &[args.get(2)]) {
+                rv.set(value);
+            }
+        }
         "active" | "submit" => {
             let callback = DOM.with(|dom| {
                 dom.borrow().as_ref().and_then(|dom| {
@@ -7050,6 +7095,35 @@ mod tests {
             result,
             r#"[[["NotSupportedError",9,true],["InvalidCharacterError",5,true],["InvalidCharacterError",5,true],["IndexSizeError",1,true]],null,true,"1.0",null]"#
         );
+        reset();
+    }
+
+    #[test]
+    fn native_form_value_reader_uses_only_registered_private_authority() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_independent_html(scope, "<!doctype html><form id=f>");
+        let global = scope.get_current_context().global(scope);
+        bind_method(scope, global, "__readerTest", form_controls_native);
+        let source=v8::String::new(scope,"(()=>{const token={};globalThis.readerToken=token;const brands=new WeakSet([token]);return value=>brands.has(value)?Object.freeze({kind:'private-test'}):null;})()").unwrap();
+        let reader = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        assert!(install_form_value_reader(
+            scope,
+            v8::Local::<v8::Function>::try_from(reader).unwrap()
+        ));
+        let source=v8::String::new(scope,"JSON.stringify([__readerTest('value-snapshot',document.getElementById('f'),readerToken).kind,__readerTest('value-snapshot',document.getElementById('f'),{kind:'private-test'})])").unwrap();
+        let actual = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        assert_eq!(actual, r#"["private-test",null]"#);
         reset();
     }
 

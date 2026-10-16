@@ -5,6 +5,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Capture an optional host-only File/FormData value reader through document-owned
+  private V8 edges, so runtime adapters can provide genuine immutable snapshots
+  without trusting guest object shape or public metadata properties.
+
 - Add native-document-owned submission admission and queue callbacks with immutable
   ordered text entry snapshots, submitter overrides and hidden charset-entry metadata.
   Preserve validation/cancellation before transport; native FileList and full select
