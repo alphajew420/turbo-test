@@ -5,6 +5,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Suppress native form submission for disconnected forms before validation/events
+  and recheck connection after submit listeners, using the captured native Node
+  accessor. Independent Chrome controls cover removal and reconnection timing.
+
 - Add branded ElementInternals and CustomStateSet with native custom-element
   admission, form ownership/validation, live labels, default ARIA and closed-shadow
   access. Association, disabled and reset callbacks use native reaction queues.

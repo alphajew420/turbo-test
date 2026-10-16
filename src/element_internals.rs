@@ -170,6 +170,15 @@ mod tests {
         reset();
     }
     #[test]
+    fn native_form_connectivity_matches_independent_chrome() {
+        assert_control(
+            include_bytes!("form_connectivity_cases.json"),
+            include_str!("form_connectivity_probe.js"),
+            include_str!("form_connectivity_chrome155.json"),
+            false,
+        );
+    }
+    #[test]
     fn native_internals_core_matches_independent_chrome() {
         assert_control(
             include_bytes!("element_internals_core_cases.json"),

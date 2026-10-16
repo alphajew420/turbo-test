@@ -13,6 +13,7 @@
   const isNaNValue=Number.isNaN,absolute=Math.abs,round=Math.round,floor=Math.floor;
   const tagGetter = ns.domAccessor('tagName', false, 'Element');
   const parentGetter = ns.domAccessor('parentElement', false, 'Node');
+  const connectedGetter = ns.domAccessor('isConnected', false, 'Node');
   const getRoot = Node.prototype.getRootNode, query = Element.prototype.querySelectorAll, documentQuery = Document.prototype.querySelectorAll;
   const nodeTypeGetter = ns.domAccessor('nodeType', false, 'Node');
   const queryAll = (root, selector) => apply(apply(nodeTypeGetter,root,[])===9?documentQuery:query,root,[selector]);
@@ -246,7 +247,7 @@
     return freeze(result);
   }
   function queue(form,submitter) {
-    if(privateGet(form,'constructing-entries'))return;
+    if(!apply(connectedGetter,form,[])||privateGet(form,'constructing-entries'))return;
     privateSet(form,'constructing-entries',true);
     try {if(bridge('submit',form,submitter,submission(form,submitter))===true)return;throw new Exception('Form navigation requires a configured native submission transport.','NotSupportedError');}
     finally {privateSet(form,'constructing-entries',false);}
@@ -261,7 +262,7 @@
   }
   function request(form, submitter) {
     checkForm(form);submitter=normalizeSubmitter(form,submitter);
-    if(!bridge('allowed',form)||!bridge('active',form)||privateGet(form,'firing-submit'))return;
+    if(!apply(connectedGetter,form,[])||!bridge('allowed',form)||!bridge('active',form)||privateGet(form,'firing-submit'))return;
     privateSet(form,'firing-submit',true);
     try {
       if(!present(form,'novalidate')&&!(submitter&&present(submitter,'formnovalidate'))&&!validate(form))return;
