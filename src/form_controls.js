@@ -33,6 +33,13 @@
   const attr = (element, name) => apply(attribute, element, [name]);
   const parent = element => apply(parentGetter, element, []);
   const owner = element => bridge('owner', element);
+  for(const [interfaceName,localName] of [['HTMLInputElement','input'],['HTMLButtonElement','button'],['HTMLTextAreaElement','textarea'],['HTMLSelectElement','select'],['HTMLFieldSetElement','fieldset'],['HTMLObjectElement','object'],['HTMLOutputElement','output']]){
+    const constructor=g[interfaceName];if(typeof constructor!=='function')continue;
+    define(constructor.prototype,'form',{configurable:true,enumerable:true,get:native(function(){
+      if(!bridge('html-element',this)||apply(localNameGetter,this,[])!==localName)throw new ErrorType('Illegal invocation');
+      return owner(this);
+    },'get form',0)});
+  }
   const present = (element, name) => attr(element, name) !== null;
   const type = element => {
     const value=lower(attr(element,'type')||(tag(element)==='button'?'submit':'text'));

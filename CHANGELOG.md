@@ -5,6 +5,17 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Index selected radios by native node and prior native form owner, without
+  JavaScript roots. Normalize checked descendants and batch fragment order on
+  container moves, keep shadow-tree form lookup within its actual root, and
+  reassociate external radios after form ID/removal changes. Route the seven
+  existing control `.form` getters through genuine native ownership with readonly
+  per-interface brands and descriptors. Preserve detached
+  unowned radio behavior, genuine checked-accessor brands, cloning/adoption and
+  native storage reclamation with independent Chrome controls. Empty indexes
+  skip descendant traversal on ordinary non-radio moves.
+
+
 - Keep radio grouping in the native checkedness intrinsic, including checked/name/
   type/form attribute changes, parsed subtrees, directly moved radios, and form reset. Restore
   the prior selected radio after canceled clicks without guest checked hooks.

@@ -298,6 +298,7 @@ pub fn adopt<'s>(
             let mut dom = dom.borrow_mut();
             let state = dom.as_mut().unwrap();
             for (old, new) in &mapping {
+                state.checked_radios.remove(old);
                 if let Some(value) = state.cache.remove(old) {
                     cache.push((*new, value));
                 }
@@ -406,6 +407,9 @@ pub fn adopt<'s>(
             }
         }
     });
+    for (_, node) in &mapping {
+        form_checked_state::refresh(*node);
+    }
     for (handle, object) in cache {
         let Some(local) = object.to_local(scope) else {
             continue;

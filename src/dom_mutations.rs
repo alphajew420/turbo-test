@@ -173,9 +173,8 @@ fn insert_mode(
             }
         });
     });
-    for &node in &plan.nodes {
-        form_checked_state::group(node);
-    }
+    form_checked_state::inserted_many(&plan.nodes);
+    form_checked_state::owner_changes();
     mutation_observers::child_list(scope, parent, plan.nodes, removed, previous, plan.reference);
     true
 }
