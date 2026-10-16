@@ -5,6 +5,15 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Match Input/Button own prototype placement, enumerable control descriptors and
+  text-selection conversion/errors; setRangeText performs real replacement and
+  selection updates rather than an inert compatibility method.
+
+- Add measured native HTMLFormElement reflected attributes and live relList,
+  including action URL resolution from the host-installed document URL, enum
+  normalization, encoding alias, USVString action conversion and branded accessors.
+  Independent Chrome controls include relative/base and malformed URL serialization.
+
 - Suppress native form submission for disconnected forms before validation/events
   and recheck connection after submit listeners, using the captured native Node
   accessor. Independent Chrome controls cover removal and reconnection timing.
