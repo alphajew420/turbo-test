@@ -5,6 +5,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Preserve quoted commas, comment-looking strings and escaped commas when CSSOM
+  serializes selector preludes. A lexical scan normalizes only actual separators;
+  fresh Chrome155 controls cover parsing, selectorText changes and cssText reloads.
+
 - Add a host-only per-document form-submission admission flag for sandboxed
   consumers. Block the submit default action after an uncanceled control click
   while preserving the click event; keep policy isolated across native documents.
