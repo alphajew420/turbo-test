@@ -5,6 +5,16 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Expose genuine Element.customElementRegistry with native receiver checks and
+  private creation/parser associations. Preserve scoped/null registries across
+  moves; global associations follow adoption to the new owner document without
+  retaining the former global registry; inert-null adoption rebinds correctly,
+  including unread descendants, ShadowRoots and multi-hop moves. Parse-completion
+  hooks record ownership before any public getter read, without enabling plain-DOM
+  reaction recording.
+  Independent Chrome controls cover unread parser nodes, adjacent HTML, inert
+  documents, cross-realm borrowing/adoption and property descriptors.
+
 - Reflect Input/Button formAction, formEnctype, formMethod and formTarget on their
   own prototypes with native owner-document/base URL resolution, per-interface
   string conversion, missing/invalid enum defaults and genuine receiver checks.

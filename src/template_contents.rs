@@ -230,6 +230,7 @@ pub(super) fn mark_parsed<'s>(
             pending.push(content)
         }
         pending.extend(children(scope, node));
+        custom_elements::parsed(scope, node);
         let _owner = DomScope::for_object(scope, node);
         if let Some(handle) = handle_of(scope, node) {
             if with_tree(|tree| {

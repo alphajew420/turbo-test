@@ -268,6 +268,7 @@ pub fn adopt<'s>(
         mutation_observers::flush(scope);
         return Ok(node);
     }
+    custom_elements::adopting(scope, node);
     let mapping = {
         let _target = DomScope::for_object(scope, document);
         let mut mapping = Vec::new();
