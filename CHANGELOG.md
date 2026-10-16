@@ -5,6 +5,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Match computed styles through captured genuine native selector and owner-document
+  intrinsics. Page overrides of matches/ownerDocument are not invoked internally;
+  live stylesheet mutations remain visible without new cascade caching.
+
 - Keep descriptor rules out of nested cssRules lists so the private native CSSHost
   snapshot retains @property/@view-transition descriptor bodies. Independent Chrome
   shape controls and poisoned-public-getter export regressions cover the boundary.
