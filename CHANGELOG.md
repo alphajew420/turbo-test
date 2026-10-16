@@ -5,6 +5,21 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Add branded ElementInternals and CustomStateSet with native custom-element
+  admission, form ownership/validation, live labels, default ARIA and closed-shadow
+  access. Association, disabled and reset callbacks use native reaction queues.
+  Private V8 records preserve cross-realm brands and object-owned lifetimes.
+- Match native `:state()` selectors with exact UTF-16 membership, fresh clone/import
+  state and adoption migration. Branded setlike iterators resume after exhaustion
+  when new entries appear and retain their actual owner without host roots.
+- Add genuine FormDataEvent identity/descriptor behavior and host-only trusted
+  dispatch plus guarded form-entry construction transactions. Runtime adapters
+  provide real private File/FormData snapshots; a standalone binding supplies no
+  networking backend. Native FileList and radio grouping remain follow-up work. Dirty checkbox state, reset, clone and typed :checked now use native records.
+- Pin the public turbo-dom development revision
+  `fb60e6f90a5d373165cfd1045b090407ca945d47` for native custom-state selectors;
+  this does not imply registry publication of its 0.5.7 candidate.
+
 - Preserve FormData optional argument conversion and current-document authority
   when no form is supplied; reject invalid HTMLElement submitters before the
   empty result. Add a native base-target authority accessor for navigation adapters.

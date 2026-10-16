@@ -48,15 +48,11 @@ base64 = "0.22"
 # CSS Syntax, selector and declaration validation for the DOM's CSSOM facade.
 lightningcss = { version = "1.0.0-alpha.71", default-features = false }
 cssparser = "0.37"
-# P3: all-Rust DOM, from the published crate (crates.io `turbo-dom`). It's a standalone crate that
-# exports `rtdom` (Dom/Tree/NodeRef) unconditionally — no features needed. Kept under the
-# `turbo_dom_parser` import name via `package` so the existing `use turbo_dom_parser::rtdom::…` stands.
-# 0.3.4 adds native CharacterData mutation + ChildNode/ParentNode manip + insertAdjacent + toggleAttribute + getAttributeNS over rtdom.
-# 0.3.5 fixes rtdom::serialize escaping regular spaces to &nbsp; (U+00A0), which broke
-# whitespace-normalized getByRole/getByText/toHaveText matching against a serialized DOM.
-turbo-dom-parser = { package = "turbo-dom", version = "0.5.6" }
+# Public native rtdom API only. The immutable development revision supplies custom
+# state selectors and bounded storage accounting; no registry release is implied.
+# Keep the existing turbo_dom_parser import name through the package alias.
+turbo-dom-parser = { package = "turbo-dom", version = "0.5.7", git = "https://github.com/miaskiewicz/turbo-dom", rev = "fb60e6f90a5d373165cfd1045b090407ca945d47" }
 
-# Published document/fragment and mutation-event APIs are supplied by turbo-dom 0.5.6, including bounded native storage collection.
 
 [profile.release]
 opt-level = 3
