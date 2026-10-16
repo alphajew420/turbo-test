@@ -414,6 +414,7 @@ struct DomState {
     ownership_dirty: bool,
     template_contents: template_contents::State,
     custom_elements_active: bool,
+    form_submission_blocked: bool,
 }
 
 thread_local! {
@@ -602,6 +603,7 @@ fn parse_html_tree<'s>(
             ownership_dirty: true,
             template_contents: Default::default(),
             custom_elements_active: false,
+            form_submission_blocked: false,
         })
     });
     script_state::initialize_inert();
@@ -1692,6 +1694,22 @@ pub fn trusted_script_source<'s>(
     input: v8::Local<'s, v8::Value>,
 ) -> Option<v8::Local<'s, v8::String>> {
     trusted_types::script_source(scope, input)
+}
+
+/// Set host sandbox admission for the current document's form default action.
+/// The value belongs to the native document, so borrowed methods and adopted
+/// controls use their actual target document rather than guest-visible flags.
+pub fn set_form_submission_blocked(scope: &mut v8::PinScope, blocked: bool) {
+    let id = scope
+        .get_current_context()
+        .get_slot::<DomContextId>()
+        .map_or(0, |id| id.0);
+    let _dom = DomScope::enter(id);
+    DOM.with(|dom| {
+        if let Some(dom) = dom.borrow_mut().as_mut() {
+            dom.form_submission_blocked = blocked;
+        }
+    });
 }
 
 /// Install immutable host CSS authorization for the current context's document.
@@ -4497,7 +4515,12 @@ fn el_dispatch_event(
 
     // DEFAULT ACTION: a non-prevented click on a submit control fires the form's `submit` event
     // (jsdom does this natively; userEvent/fireEvent.click rely on it for form submission).
-    if not_prevented && ty == "click" && is_submit_control(target) {
+    let submission_blocked = DOM.with(|dom| {
+        dom.borrow()
+            .as_ref()
+            .is_some_and(|dom| dom.form_submission_blocked)
+    });
+    if not_prevented && ty == "click" && is_submit_control(target) && !submission_blocked {
         if let Some(form) = closest_form(target) {
             dispatch_synthetic(scope, form, "submit", true, true);
         }
@@ -6231,6 +6254,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
             ownership_dirty: true,
             template_contents: Default::default(),
             custom_elements_active: false,
+            form_submission_blocked: false,
         });
     });
 
@@ -6859,6 +6883,51 @@ mod tests {
         assert_eq!(
             result,
             r#"[[["NotSupportedError",9,true],["InvalidCharacterError",5,true],["InvalidCharacterError",5,true],["IndexSizeError",1,true]],null,true,"1.0",null]"#
+        );
+        reset();
+    }
+
+    #[test]
+    fn native_form_sandbox_admission_preserves_clicks_and_document_ownership() {
+        init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope, isolate);
+        let context = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, context);
+        install_independent_html(scope, "<form><button>submit</button></form>");
+        let source = v8::String::new(scope, r#"globalThis.events=[];document.querySelector('button').addEventListener('click',()=>events.push('click'));document.querySelector('form').addEventListener('submit',event=>{events.push(event.isTrusted?'submit-trusted':'submit');event.preventDefault()});"#).unwrap();
+        v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        for blocked in [true, false, true] {
+            set_form_submission_blocked(scope, blocked);
+            let source =
+                v8::String::new(scope, "document.querySelector('button').click()").unwrap();
+            v8::Script::compile(scope, source, None)
+                .unwrap()
+                .run(scope)
+                .unwrap();
+        }
+        let child = v8::Context::new(scope, Default::default());
+        {
+            let child_scope = &mut v8::ContextScope::new(scope, child);
+            install_independent_html(child_scope, "<form><button>child</button></form>");
+            set_form_submission_blocked(child_scope, false);
+        }
+        let source = v8::String::new(
+            scope,
+            "document.querySelector('button').click();JSON.stringify(events)",
+        )
+        .unwrap();
+        let result = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        assert_eq!(
+            result,
+            r#"["click","click","submit-trusted","click","click"]"#
         );
         reset();
     }

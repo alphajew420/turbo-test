@@ -5,6 +5,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Add a host-only per-document form-submission admission flag for sandboxed
+  consumers. Block the submit default action after an uncanceled control click
+  while preserving the click event; keep policy isolated across native documents.
+  The consumer supplies sandbox/CSP intersection; this does not implement form
+  navigation or destination authorization.
+
 - Add native private-state Trusted Types factory, policy and value brands, exact
   UTF-16/USVString conversion, callback conversion and Chrome155 interface descriptors.
   Cross-realm values retain their native brands without host roots. Authored Chrome
