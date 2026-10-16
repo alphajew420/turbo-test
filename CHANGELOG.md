@@ -5,6 +5,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Implement Chrome155's AbstractRange → NodeRange → Range/StaticRange interface
+  hierarchy with native descriptors, constructor inheritance and genuine private
+  static boundaries. Static offsets retain their original values through native
+  tree mutations; getters accept authentic foreign-realm records and reject forged
+  or proxied receivers. Match sorted Web IDL dictionary conversion, unsigned offsets,
+  invalid node types, subclassing and poisoned public intrinsic controls. Keep live
+  Range mutation tracking unchanged. Real iframe retirement is a separate consumer gate.
+
 - Preserve quoted commas, comment-looking strings and escaped commas when CSSOM
   serializes selector preludes. A lexical scan normalizes only actual separators;
   fresh Chrome155 controls cover parsing, selectorText changes and cssText reloads.
