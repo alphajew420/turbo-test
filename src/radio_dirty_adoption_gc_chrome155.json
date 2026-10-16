@@ -1,9 +1,14 @@
 {
+  "gcPolicy": {
+    "rounds": 3,
+    "settleMs": 50,
+    "taskExpression": "0"
+  },
   "browser": "Chrome/155.0.8059.80",
   "v8": "15.5.35.23",
   "casesSha256": "96345c459d1e1ba6acc95502476654ac4e55bb2cc1f693fdf9564fbebc89e74a",
-  "probeSha256": "ffb45802a93fa6119e1eba43d39201f7d5afdc69cbeb7cb55179cd8dae769fc8",
-  "collectorSha256": "5586fe9d89a94f54616bec022bdb810ac2c02553b3465ef0139afd4c884e3725",
+  "probeSha256": "2b9fb49334e85f8a5dce64aa68a58e240e56af03fd73efb25b7c7a0499c4cf42",
+  "collectorSha256": "482cff90c2f975f1f01bad124fe4e0c086baf8b23ec4c3aa8bf0031a90a0458d",
   "flags": [
     "--remote-debugging-port=0",
     "--user-data-dir=<fresh-profile>",
@@ -20,7 +25,7 @@
       "result": {
         "first": {
           "alive": [
-            true,
+            false,
             true,
             true,
             true
@@ -30,9 +35,9 @@
         "afterRelease": {
           "alive": [
             false,
-            true,
-            true,
-            true
+            false,
+            false,
+            false
           ],
           "selected": "parent"
         }

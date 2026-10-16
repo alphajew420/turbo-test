@@ -5,6 +5,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Make the adopted-radio GC control resolve readiness without retaining the
+  load Event, clear its listener and record an explicit real-task GC policy.
+  Preserve the original non-repeatable WeakRef receipt, three fresh original
+  runs, three settled Chrome controls and actual native PageSession proof;
+  retained radios keep their genuine owner until release without extra roots.
+
+
 - Preserve an independent Chrome adversarial form-owner control for first-ID
   non-form/SVG/HTML-case collisions, open/closed shadow boundaries, disabled
   radio groups, external reset order, split moves and genuine XML documents.

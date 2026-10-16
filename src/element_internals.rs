@@ -323,6 +323,62 @@ mod tests {
         reset();
     }
     #[test]
+    fn retired_radio_gc_control_records_independent_repeated_real_task_policy() {
+        use sha2::{Digest, Sha256};
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("radio_dirty_adoption_gc_chrome155.json")).unwrap();
+        let review: serde_json::Value = serde_json::from_str(include_str!(
+            "radio_dirty_adoption_gc_review_chrome155.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["probeSha256"],
+            format!(
+                "{:x}",
+                Sha256::digest(include_bytes!("radio_dirty_adoption_gc_probe.js"))
+            )
+        );
+        assert_eq!(
+            fixture["casesSha256"],
+            format!(
+                "{:x}",
+                Sha256::digest(include_bytes!("radio_dirty_cases.json"))
+            )
+        );
+        assert_eq!(
+            fixture["gcPolicy"],
+            serde_json::json!({"rounds":3,"settleMs":50,"taskExpression":"0"})
+        );
+        for repeated in review["correctedSettledRepeats"].as_array().unwrap() {
+            for key in [
+                "browser",
+                "v8",
+                "casesSha256",
+                "probeSha256",
+                "collectorSha256",
+                "errors",
+                "gcPolicy",
+                "result",
+            ] {
+                assert_eq!(repeated[key], fixture[key]);
+            }
+        }
+        assert_eq!(
+            review["correctedSettledRepeats"].as_array().unwrap().len(),
+            3
+        );
+        assert_eq!(
+            review["nativeProof"]["first"],
+            fixture["result"][0]["result"]["first"]
+        );
+        assert_eq!(
+            review["nativeProof"]["afterRelease"],
+            fixture["result"][0]["result"]["afterRelease"]
+        );
+        assert_eq!(review["nativeProof"]["probeSha256"], fixture["probeSha256"]);
+        assert_eq!(review["nativeProof"]["retiredFrameElementNull"], true);
+    }
+    #[test]
     fn native_radio_owner_adversarial_review_matches_independent_chrome() {
         assert_control(
             include_bytes!("radio_dirty_cases.json"),

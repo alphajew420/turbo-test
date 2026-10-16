@@ -1,6 +1,7 @@
 (async () => {
   let frame=document.createElement('iframe');document.body.append(frame);
-  await new Promise(done=>{frame.onload=done;frame.srcdoc='<form><input type="radio" name="g" checked value="a"><input type="radio" name="g" value="b"></form>';});
+  await new Promise(done=>{frame.onload=()=>done();frame.srcdoc='<form><input type="radio" name="g" checked value="a"><input type="radio" name="g" value="b"></form>';});
+  frame.onload=null;
   let child=frame.contentWindow,doc=frame.contentDocument,form=doc.querySelector('form'),radio=form.lastChild;
   radio.checked=true;
   const target=document.createElement('form');target.id='adopted-radio-form';target.innerHTML='<input type="radio" name="g" value="parent">';document.body.append(target);
