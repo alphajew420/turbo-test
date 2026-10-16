@@ -323,6 +323,15 @@ mod tests {
         reset();
     }
     #[test]
+    fn native_radio_owner_adversarial_review_matches_independent_chrome() {
+        assert_control(
+            include_bytes!("radio_dirty_cases.json"),
+            include_str!("radio_owner_review_probe.js"),
+            include_str!("radio_owner_review_chrome155.json"),
+            false,
+        );
+    }
+    #[test]
     fn native_radio_group_moves_match_independent_chrome() {
         assert_control(
             include_bytes!("radio_dirty_cases.json"),

@@ -5,6 +5,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Preserve an independent Chrome adversarial form-owner control for first-ID
+  non-form/SVG/HTML-case collisions, open/closed shadow boundaries, disabled
+  radio groups, external reset order, split moves and genuine XML documents.
+
+
 - Index selected radios by native node and prior native form owner, without
   JavaScript roots. Normalize checked descendants and batch fragment order on
   container moves, keep shadow-tree form lookup within its actual root, and
