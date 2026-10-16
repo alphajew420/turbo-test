@@ -17,7 +17,8 @@
   const connectedGetter = ns.domAccessor('isConnected', false, 'Node');
   const getRoot = Node.prototype.getRootNode, query = Element.prototype.querySelectorAll, documentQuery = Document.prototype.querySelectorAll;
   const nodeTypeGetter = ns.domAccessor('nodeType', false, 'Node');
-  const queryAll = (root, selector) => apply(apply(nodeTypeGetter,root,[])===9?documentQuery:query,root,[selector]);
+  const collectionRecord=ns.formCollectionFactory.getRecord;
+  const queryAll = (root, selector) => {const result=apply(apply(nodeTypeGetter,root,[])===9?documentQuery:query,root,[selector]);const record=collectionRecord(result);return record?record.read():result;};
   const attribute = Element.prototype.getAttribute, contains = Node.prototype.contains;
   const lower = Function.prototype.call.bind(String.prototype.toLowerCase);
   const regexTest = Function.prototype.call.bind(RegExp.prototype.test);
@@ -37,6 +38,7 @@
     const value=lower(attr(element,'type')||(tag(element)==='button'?'submit':'text'));
     return tag(element)==='button'&&value!=='button'&&value!=='reset'?'submit':value;
   };
+  const controlIndexOf=Array.prototype.indexOf;
   const controlTags = ['input','textarea','select','button','fieldset','object','output'];
   function checkControl(element) {
     const kind = tag(element);
@@ -76,7 +78,7 @@
   function formControls(form) {
     const root = apply(getRoot, form, []), nodes = queryAll(root, '*');
     const result = [];
-    for (let index = 0; index < nodes.length; index++) if ((associatedGet(nodes[index])||controlTags.indexOf(tag(nodes[index]))>=0)&&owner(nodes[index]) === form) result[result.length] = nodes[index];
+    for (let index = 0; index < nodes.length; index++) if ((associatedGet(nodes[index])||apply(controlIndexOf,controlTags,[tag(nodes[index])])>=0)&&owner(nodes[index]) === form) define(result,result.length,{__proto__:null,value:nodes[index],writable:true,enumerable:true,configurable:true});
     return result;
   }
   function flags(element) {
@@ -333,6 +335,7 @@
       complete=true;return freeze(entries);
     } finally {if(!hold||!complete)privateSet(form,'constructing-entries',false);}
   };
+  g.__captureFormCollections={bridge,privateGet,privateSet,formControls,checkForm,attr,tag,type,readValue,checkedValue,queryAll,getRoot,owner,associatedGet,localNameGetter};
   g.__captureFormInternals = {
     register:(host,record)=>associatedSet(host,record),owner,disabled,candidate,validity,message,validateControl,
     attribute:attr,parent,tag,queryAll,getRoot,apply,emit:(host,event)=>bridge('emit',host,event),

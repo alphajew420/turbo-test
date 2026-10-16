@@ -5,6 +5,15 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Add genuine live HTMLFormControlsCollection and RadioNodeList interfaces, form
+  elements/length/iteration, owner-aware external/custom controls and cached named
+  groups. Private records support borrowed base accessors across real V8 contexts,
+  preserve measured named/index ordering and mutation behavior, and release owner
+  realms after retained collections are dropped. Independent Chrome controls cover
+  descriptor shapes, live membership, radio values, collisions and DOMString errors.
+  Broader radio dirty/default/reset/adoption lifecycle remains active follow-up;
+  genuine production iframe/retirement controls are supplied for integration gates.
+
 - Expose genuine Element.customElementRegistry with native receiver checks and
   private creation/parser associations. Preserve scoped/null registries across
   moves; global associations follow adoption to the new owner document without

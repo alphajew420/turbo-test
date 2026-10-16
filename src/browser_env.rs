@@ -6825,6 +6825,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     event_listeners::install(scope);
     bind_method(scope, global, "__formNative", form_controls_native);
     run_js(scope, include_str!("form_controls.js"));
+    run_js(scope, include_str!("form_collections.js"));
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())

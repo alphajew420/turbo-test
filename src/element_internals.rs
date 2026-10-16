@@ -179,6 +179,117 @@ mod tests {
         reset();
     }
     #[test]
+    fn native_form_collection_records_retain_only_their_genuine_owner_context() {
+        super::super::tests::init_v8();
+        let mut isolate = v8::Isolate::new(Default::default());
+        let (keep, context, document, form, controls, list) = {
+            v8::scope!(let scope,&mut isolate);
+            let context = v8::Context::new(scope, Default::default());
+            let scope = &mut v8::ContextScope::new(scope, context);
+            install_independent_html(scope, "<!doctype html><body>");
+            let source=v8::String::new(scope,"(()=>{const form=document.createElement('form');document.body.append(form);form.innerHTML='<input name=group><input name=group>';const controls=form.elements,list=controls.namedItem('group');return [document,form,controls,list]})()").unwrap();
+            let values = v8::Script::compile(scope, source, None)
+                .unwrap()
+                .run(scope)
+                .unwrap()
+                .to_object(scope)
+                .unwrap();
+            let document = values
+                .get_index(scope, 0)
+                .unwrap()
+                .to_object(scope)
+                .unwrap();
+            let form = values
+                .get_index(scope, 1)
+                .unwrap()
+                .to_object(scope)
+                .unwrap();
+            let controls = values
+                .get_index(scope, 2)
+                .unwrap()
+                .to_object(scope)
+                .unwrap();
+            let list = values
+                .get_index(scope, 3)
+                .unwrap()
+                .to_object(scope)
+                .unwrap();
+            (
+                v8::Global::new(scope, list),
+                v8::Weak::new(scope, context),
+                v8::Weak::new(scope, document),
+                v8::Weak::new(scope, form),
+                v8::Weak::new(scope, controls),
+                v8::Weak::new(scope, list),
+            )
+        };
+        isolate.clear_kept_objects();
+        for _ in 0..3 {
+            isolate.low_memory_notification();
+        }
+        assert!(
+            !context.is_empty()
+                && !document.is_empty()
+                && !form.is_empty()
+                && !controls.is_empty()
+                && !list.is_empty()
+        );
+        drop(keep);
+        isolate.clear_kept_objects();
+        for _ in 0..3 {
+            isolate.low_memory_notification();
+        }
+        assert!(
+            context.is_empty()
+                && document.is_empty()
+                && form.is_empty()
+                && controls.is_empty()
+                && list.is_empty()
+        );
+        clear_interface_records(&mut isolate);
+        reset();
+    }
+    #[test]
+    fn native_form_collection_base_accessors_borrow_across_genuine_contexts() {
+        super::super::tests::init_v8();
+        let isolate = &mut v8::Isolate::new(Default::default());
+        v8::scope!(let scope,isolate);
+        let child = v8::Context::new(scope, Default::default());
+        let collection = {
+            let scope = &mut v8::ContextScope::new(scope, child);
+            install_independent_html(scope, "<!doctype html><body>");
+            let source=v8::String::new(scope,"(()=>{const form=document.createElement('form');document.body.append(form);form.innerHTML='<input name=group><input name=group>';return form.elements;})()").unwrap();
+            let value = v8::Script::compile(scope, source, None)
+                .unwrap()
+                .run(scope)
+                .unwrap();
+            v8::Global::new(scope, value)
+        };
+        let parent = v8::Context::new(scope, Default::default());
+        let scope = &mut v8::ContextScope::new(scope, parent);
+        install_independent_html(scope, "<!doctype html><body>");
+        let key = v8::String::new(scope, "foreignControls").unwrap();
+        let global = parent.global(scope);
+        let value = v8::Local::new(scope, &collection);
+        global.set(scope, key.into(), value);
+        let source=v8::String::new(scope,"(()=>{const list=HTMLFormControlsCollection.prototype.namedItem.call(foreignControls,'group');return Object.getOwnPropertyDescriptor(HTMLCollection.prototype,'length').get.call(foreignControls)===2&&Object.getOwnPropertyDescriptor(NodeList.prototype,'length').get.call(list)===2&&RadioNodeList.prototype.hasOwnProperty('value')&&Object.getOwnPropertyDescriptor(RadioNodeList.prototype,'value').get.call(list)==='';})()").unwrap();
+        assert!(v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap()
+            .is_true());
+        reset();
+    }
+    #[test]
+    fn native_form_collections_match_independent_chrome() {
+        assert_control(
+            include_bytes!("form_collections_cases.json"),
+            include_str!("form_collections_probe.js"),
+            include_str!("form_collections_chrome155.json"),
+            false,
+        );
+    }
+    #[test]
     fn native_submitter_reflection_matches_independent_chrome() {
         assert_control(
             include_bytes!("submitter_reflection_cases.json"),
