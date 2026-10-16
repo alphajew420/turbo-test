@@ -429,6 +429,7 @@ thread_local! {
 struct DomContextId(u64);
 struct FormSubmissionDispatcher(v8::Weak<v8::Function>);
 struct FormValueReader(v8::Weak<v8::Function>);
+struct FormEntryListReader(v8::Weak<v8::Function>);
 
 #[derive(Default)]
 struct SavedDom {
@@ -1735,6 +1736,34 @@ pub fn form_submission_base_href(
             })
     })
     .flatten()
+}
+
+/// Construct the owner-document native form entry list, without dispatching submission.
+pub fn form_submission_entries<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    form: v8::Local<'s, v8::Object>,
+    submitter: v8::Local<'s, v8::Value>,
+) -> Option<v8::Local<'s, v8::Array>> {
+    let _dom = DomScope::for_object(scope, form);
+    let id = DOM_ID.with(std::cell::Cell::get);
+    let context = DOM_CONTEXTS.with(|contexts| {
+        contexts
+            .borrow()
+            .get(&id)
+            .and_then(|context| context.to_local(scope))
+    })?;
+    let callback = context
+        .get_slot::<FormEntryListReader>()?
+        .0
+        .to_local(scope)?;
+    let scope = &mut v8::ContextScope::new(scope, context);
+    let receiver = v8::undefined(scope);
+    v8::Local::<v8::Array>::try_from(callback.call(
+        scope,
+        receiver.into(),
+        &[form.into(), submitter],
+    )?)
+    .ok()
 }
 
 /// Capture genuine runtime File/FormData snapshot authority for this native document.
@@ -6542,6 +6571,18 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     event_listeners::install(scope);
     bind_method(scope, global, "__formNative", form_controls_native);
     run_js(scope, include_str!("form_controls.js"));
+    let entries = v8::String::new(scope, "__captureFormEntries").unwrap();
+    if let Some(callback) = global
+        .get(scope, entries.into())
+        .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+    {
+        if let Some(callback) = dom_ownership::helper_function(scope, callback) {
+            scope
+                .get_current_context()
+                .set_slot(std::rc::Rc::new(FormEntryListReader(callback)));
+        }
+    }
+    global.delete(scope, entries.into());
     let name = v8::String::new(scope, "__captureFormSubmission").unwrap();
     if let Some(function) = global
         .get(scope, name.into())
@@ -7173,6 +7214,31 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&actual).unwrap(),
             expected["result"][0]["result"]
+        );
+        let source = v8::String::new(scope, "document.getElementById('f')").unwrap();
+        let form = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let source = v8::String::new(scope, "document.getElementById('b')").unwrap();
+        let submitter = v8::Script::compile(scope, source, None)
+            .unwrap()
+            .run(scope)
+            .unwrap();
+        let entries = form_submission_entries(
+            scope,
+            v8::Local::<v8::Object>::try_from(form).unwrap(),
+            submitter,
+        )
+        .unwrap();
+        let entries = v8::json::stringify(scope, entries.into())
+            .unwrap()
+            .to_rust_string_lossy(scope);
+        let mut expected = expected["result"][0]["result"].clone();
+        expected[0][1] = serde_json::json!("changed");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&entries).unwrap(),
+            expected
         );
         let key = v8::String::new(scope, "document").unwrap();
         let document = scope

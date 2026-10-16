@@ -217,13 +217,16 @@
     if(bridge('submit',form,submitter,submission(form,submitter))===true)return;
     throw new Exception('Form navigation requires a configured native submission transport.','NotSupportedError');
   }
-  function request(form, submitter) {
-    checkForm(form);
+  function normalizeSubmitter(form,submitter) {
     if(submitter!==null&&submitter!==undefined) {
       const kind=tag(submitter), inputType=type(submitter);
       if(!((kind==='button'&&inputType==='submit')||(kind==='input'&&(inputType==='submit'||inputType==='image'))))throw new ErrorType('The specified element is not a submit button.');
       if(owner(submitter)!==form)throw new Exception('The specified element is not owned by this form element.','NotFoundError');
     } else submitter=null;
+    return submitter;
+  }
+  function request(form, submitter) {
+    checkForm(form);submitter=normalizeSubmitter(form,submitter);
     if(!bridge('allowed',form)||!bridge('active',form))return;
     if(!present(form,'novalidate')&&!(submitter&&present(submitter,'formnovalidate'))&&!validate(form))return;
     const event=new SubmitEventClass('submit',{bubbles:true,cancelable:true,composed:submitter!==null,submitter});
@@ -249,5 +252,12 @@
     const setAttribute=Element.prototype.setAttribute,removeAttribute=Element.prototype.removeAttribute;
     define(proto,property,{get:native(function(){return present(this,attributeName);},'get '+property,0),set:native(function(value){if(value)apply(setAttribute,this,[attributeName,'']);else apply(removeAttribute,this,[attributeName]);},'set '+property,1),enumerable:true,configurable:true});
   }
+  g.__captureFormEntries=(form,submitter)=>{
+    checkForm(form);submitter=normalizeSubmitter(form,submitter);
+    const payload=submission(form,submitter),entries=[];
+    for(let i=0;i<payload.entries.length;i++)entries[i]=payload.entries[i];
+    for(let i=0;i<payload.charsetEntries.length;i++){const at=payload.charsetEntries[i];entries[at]=freeze([entries[at][0],'UTF-8']);}
+    return freeze(entries);
+  };
   g.__captureFormSubmission=request;
 })();

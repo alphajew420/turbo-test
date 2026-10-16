@@ -5,6 +5,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Expose a host-only native form entry-list constructor for private FormData
+  adapters, preserving submitter validation, duplicate ordering and UTF-8 hidden
+  charset values without dispatching validation or submit events.
+
 - Capture an optional host-only File/FormData value reader through document-owned
   private V8 edges, so runtime adapters can provide genuine immutable snapshots
   without trusting guest object shape or public metadata properties.
