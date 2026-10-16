@@ -2,7 +2,7 @@
   "browser": "Chrome/155.0.8059.80",
   "v8": "15.5.35.23",
   "casesSha256": "96345c459d1e1ba6acc95502476654ac4e55bb2cc1f693fdf9564fbebc89e74a",
-  "probeSha256": "3a1c53b8b1e5b655268c697e442df4c52a95ecaec798fb7eed9c537ff236ad1d",
+  "probeSha256": "2f0af09906bc32ed9c64f46062420b72d9bc21438d4fcddf93e568b30faca47c",
   "collectorSha256": "700a755df1701cfa30a95ca9f20800e81724f50ca7aafd6b46f77e87b2b91351",
   "flags": [
     "--remote-debugging-port=0",
@@ -243,7 +243,21 @@
           true,
           0
         ],
-        "privatePrototype": true
+        "privatePrototype": true,
+        "attributeNamespaces": {
+          "id": {
+            "labels": 0,
+            "target": false
+          },
+          "for": {
+            "labels": 0,
+            "target": false
+          },
+          "type": {
+            "labels": 1,
+            "target": true
+          }
+        }
       }
     }
   ]

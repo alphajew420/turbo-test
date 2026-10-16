@@ -7,7 +7,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 - Add genuine live, readonly `labels` NodeLists on Input, Button, TextArea,
   Select, Output, Meter and Progress. Native light-tree associations preserve
-  first-ID targeting, exact UTF-16 IDs, hidden-input transitions, shadow scopes,
+  first-ID targeting, null-namespace attributes, exact UTF-16 IDs,
+  hidden-input transitions, shadow scopes,
   adoption and receiver-realm collection identity; share that authority with
   ElementInternals and label.control, including custom controls before builtins.
   Independent Chrome controls cover descriptors, wrong receivers, live mutations

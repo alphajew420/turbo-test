@@ -55,7 +55,7 @@
       get: make(
         function () {
           if (!html(this) || local(this) !== tag) throw new ErrorType("Illegal invocation");
-          if (tag === "input" && forms.type(this) === "hidden") return null;
+          if (tag === "input" && forms.bridge("labels-hidden", this)) return null;
           return forms.bridge("labels-list", this);
         },
         "get labels",

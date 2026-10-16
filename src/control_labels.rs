@@ -21,6 +21,16 @@ fn root(mut node: Handle) -> Handle {
     })
     .unwrap_or(node)
 }
+pub(super) fn hidden(node: Handle) -> bool {
+    with_tree(|tree| {
+        tree.namespace_id(node) == 0
+            && tree.local_name(node) == Some("input")
+            && tree
+                .get_attribute_ns_borrowed(node, None, "type")
+                .is_some_and(|value| value.eq_ignore_ascii_case("hidden"))
+    })
+    .unwrap_or(false)
+}
 fn labelable(scope: &mut v8::PinScope, node: Handle) -> bool {
     let kind = with_tree(|tree| {
         if tree.namespace_id(node) != 0 {
@@ -29,7 +39,7 @@ fn labelable(scope: &mut v8::PinScope, node: Handle) -> bool {
         let name = tree.local_name(node)?;
         if name == "input"
             && tree
-                .get_attribute(node, "type")
+                .get_attribute_ns_borrowed(node, None, "type")
                 .is_some_and(|value| value.eq_ignore_ascii_case("hidden"))
         {
             return None;
@@ -67,13 +77,13 @@ pub(super) fn control(scope: &mut v8::PinScope, label: Handle) -> Option<Handle>
     {
         return None;
     }
-    if let Some(id) = with_tree(|tree| tree.get_attribute_utf16(label, "for")).flatten() {
+    if let Some(id) = with_tree(|tree| tree.get_attribute_ns_utf16(label, None, "for")).flatten() {
         if id.is_empty() {
             return None;
         }
         let target = rows(root(label)).into_iter().find(|node| {
             with_tree(|tree| {
-                tree.get_attribute_utf16(*node, "id").as_deref() == Some(id.as_slice())
+                tree.get_attribute_ns_utf16(*node, None, "id").as_deref() == Some(id.as_slice())
             })
             .unwrap_or(false)
         })?;

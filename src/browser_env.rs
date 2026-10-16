@@ -4963,6 +4963,9 @@ fn form_controls_native(
         return;
     };
     match operation.as_str() {
+        "labels-hidden" => {
+            rv.set(v8::Boolean::new(scope, control_labels::hidden(handle)).into());
+        }
         "labels-rows" => {
             let rows = control_labels::labels(scope, handle);
             let array = v8::Array::new(scope, rows.len() as i32);
