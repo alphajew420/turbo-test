@@ -5,6 +5,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Validate complete @property and @view-transition descriptor blocks before
+  checking rule shells. Preserve validated registration descriptors and typed
+  navigation/types instead of dropping them as ordinary CSS declarations. This
+  retains CSSOM source; it does not implement property registration semantics.
+
 - Make the genuine ValidityState constructor prototype read-only, matching Chrome;
   extend the independent form control oracle with descriptor and native brand checks.
 

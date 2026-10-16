@@ -1,0 +1,86 @@
+{
+  "browser": "Chrome/155.0.8059.80",
+  "v8": "15.5.35.23",
+  "casesSha256": "a3d6705a933be07dd055dfeb3ebee24656d1161dab5c66ff536e24667128e520",
+  "probeSha256": "6e2400b81928fb61c9c68db35346bdeeb1f0fb79cc906fd7b7038e862eb8b0d8",
+  "collectorSha256": "4e61b029135dacd18fdb68e4194fea875766edc7f203f7560bd3b826ad6aa0cb",
+  "flags": [
+    "--remote-debugging-port=0",
+    "--user-data-dir=<fresh-profile>",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "--disable-component-extensions-with-background-pages",
+    "about:blank"
+  ],
+  "errors": [],
+  "result": [
+    {
+      "id": "typed-rule-descriptors",
+      "result": [
+        {
+          "error": null,
+          "rules": [
+            {
+              "type": 0,
+              "cssText": "@property --paint { syntax: \"<color>\"; inherits: false; initial-value: transparent; }"
+            }
+          ]
+        },
+        {
+          "error": null,
+          "rules": [
+            {
+              "type": 0,
+              "cssText": "@property --count { syntax: \"<number>\"; inherits: true; initial-value: 2; }"
+            }
+          ]
+        },
+        {
+          "error": null,
+          "rules": [
+            {
+              "type": 0,
+              "cssText": "@property --anything { syntax: \"*\"; inherits: false; }"
+            }
+          ]
+        },
+        {
+          "error": "SyntaxError",
+          "rules": []
+        },
+        {
+          "error": "SyntaxError",
+          "rules": []
+        },
+        {
+          "error": null,
+          "rules": [
+            {
+              "type": 0,
+              "cssText": "@view-transition { navigation: auto; }"
+            }
+          ]
+        },
+        {
+          "error": null,
+          "rules": [
+            {
+              "type": 0,
+              "cssText": "@view-transition { navigation: none; types: card modal; }"
+            }
+          ]
+        },
+        {
+          "error": null,
+          "rules": [
+            {
+              "type": 0,
+              "cssText": "@view-transition {}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -228,3 +228,31 @@ fn quoted_selector_delimiters_and_comment_text_survive_cssom_roundtrips() {
         expected["result"]
     );
 }
+
+#[test]
+fn typed_descriptor_blocks_match_independent_chrome_cssom() {
+    use sha2::{Digest, Sha256};
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("css_descriptor_chrome155.json")).unwrap();
+    let probe = include_str!("css_descriptor_probe.js");
+    assert_eq!(expected["errors"], serde_json::json!([]));
+    assert_eq!(expected["browser"], "Chrome/155.0.8059.80");
+    assert_eq!(
+        expected["probeSha256"],
+        format!("{:x}", Sha256::digest(probe.as_bytes()))
+    );
+    assert_eq!(
+        expected["casesSha256"],
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("css_descriptor_cases.json"))
+        )
+    );
+    assert_eq!(
+        run(
+            "<!doctype html><head></head><body></body>",
+            &format!("JSON.stringify({})", probe.trim().trim_end_matches(';'))
+        ),
+        expected["result"][0]["result"]
+    );
+}
