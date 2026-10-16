@@ -14,6 +14,6 @@
     const sheet = new CSSStyleSheet();
     let error = null;
     try { sheet.insertRule(source); } catch (value) { error = value.name; }
-    return { error, rules: Array.from(sheet.cssRules, rule => ({type: rule.type, cssText: normalize(rule.cssText)})) };
+    return { error, rules: Array.from(sheet.cssRules, rule => ({type: rule.type, childRules: "cssRules" in rule, cssText: normalize(rule.cssText)})) };
   });
 })();

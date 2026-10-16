@@ -256,3 +256,31 @@ fn typed_descriptor_blocks_match_independent_chrome_cssom() {
         expected["result"][0]["result"]
     );
 }
+
+#[test]
+fn private_css_export_retains_descriptor_text_without_fabricated_child_rules() {
+    let value = run(
+        "<!doctype html><head></head><body></body>",
+        r#"(()=>{
+      const sheet=new CSSStyleSheet();sheet.replaceSync('@property --paint {syntax:"<color>";initial-value:transparent;inherits:false} @view-transition {navigation:auto}');
+      const rules=sheet.cssRules,publicText=Array.from(rules,rule=>rule.cssText);let reads=0;
+      const children=Array.from(rules,rule=>'cssRules' in rule);
+      for(let i=0;i<rules.length;i++)for(const key of ['cssText','cssRules'])Object.defineProperty(rules[i],key,{configurable:true,get(){reads++;throw Error('public rule hook');}});
+      const exported=__cssTestHost.exportSheet(sheet);const text=[],nested=[];
+      for(let i=0;i<exported.rules.length;i++){text.push(exported.rules[i].cssText);nested.push(Object.hasOwn(exported.rules[i],'rules'));}
+      return JSON.stringify({reads,children,nested,equal:JSON.stringify(text)===JSON.stringify(publicText),text});
+    })()"#,
+    );
+    assert_eq!(value["reads"], 0);
+    assert_eq!(value["children"], serde_json::json!([false, false]));
+    assert_eq!(value["nested"], serde_json::json!([false, false]));
+    assert_eq!(value["equal"], true);
+    assert!(value["text"][0]
+        .as_str()
+        .unwrap()
+        .contains("initial-value: transparent"));
+    assert!(value["text"][1]
+        .as_str()
+        .unwrap()
+        .contains("navigation: auto"));
+}

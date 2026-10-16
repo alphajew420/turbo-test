@@ -683,7 +683,7 @@ if(typeof __ns.makeNativeFunction==='function'){
         if(head){
           var isAt=head[0]==='@',rule={};
           rule.parentStyleSheet=sheet;rule.parentRule=parent||null;
-          if(isAt){rule.prelude=head;rule.type=/^@media\b/i.test(head)?4:/^@supports\b/i.test(head)?12:/^@font-face\b/i.test(head)?5:/^@keyframes\b/i.test(head)?7:0;rule.cssText=head+' { '+body.trim()+' }';if(rule.type===5)rule.style=cssDeclaration(body,null,rule,false,true);else rule.cssRules=parseCssRules(body,sheet,rule,true);}
+          if(isAt){rule.prelude=head;rule.type=/^@media\b/i.test(head)?4:/^@supports\b/i.test(head)?12:/^@font-face\b/i.test(head)?5:/^@keyframes\b/i.test(head)?7:0;rule.cssText=head+' { '+body.trim()+' }';if(rule.type===5)rule.style=cssDeclaration(body,null,rule,false,true);else if(!/^@(property|view-transition)\b/i.test(head))rule.cssRules=parseCssRules(body,sheet,rule,true);}
           else {rule.type=1;rule.selectorText=cssPrelude(head,true);rule.style=cssDeclaration(body,null,rule);rule.cssText=head+' { '+body.trim()+' }';}
           cssItems(out).push(finishCssRule(rule));
         }

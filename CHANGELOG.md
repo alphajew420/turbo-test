@@ -5,6 +5,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Keep descriptor rules out of nested cssRules lists so the private native CSSHost
+  snapshot retains @property/@view-transition descriptor bodies. Independent Chrome
+  shape controls and poisoned-public-getter export regressions cover the boundary.
+
 - Validate complete @property and @view-transition descriptor blocks before
   checking rule shells. Preserve validated registration descriptors and typed
   navigation/types instead of dropping them as ordinary CSS declarations. This
