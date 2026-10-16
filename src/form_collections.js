@@ -26,11 +26,12 @@
   };
   const local = (element) => apply(forms.localNameGetter, element, []);
   const html = (element) => !!forms.bridge("html-element", element);
+  const labelListPrototype = NodeList.prototype;
   function labelsList(element) {
     let list = forms.privateGet(element, "control-labels");
     if (!list) {
       list = factory.live(() => forms.bridge("labels-rows", element), false, {
-        prototype: NodeList.prototype,
+        prototype: labelListPrototype,
         kind: "NodeList",
         readonlyIndices: true,
       });
