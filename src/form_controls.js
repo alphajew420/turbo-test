@@ -12,6 +12,7 @@
   const ErrorType = TypeError, Exception = DOMException, Regex = RegExp;
   const isNaNValue=Number.isNaN,absolute=Math.abs,round=Math.round,floor=Math.floor;
   const tagGetter = ns.domAccessor('tagName', false, 'Element');
+  const localNameGetter = ns.domAccessor('localName', false, 'Element');
   const parentGetter = ns.domAccessor('parentElement', false, 'Node');
   const connectedGetter = ns.domAccessor('isConnected', false, 'Node');
   const getRoot = Node.prototype.getRootNode, query = Element.prototype.querySelectorAll, documentQuery = Document.prototype.querySelectorAll;
@@ -296,6 +297,20 @@
       get:native(function(){checkForm(this);if(property==='action')return bridge('action-url',this);const value=attr(this,attributeName)||'';if(!choices)return value;const normalized=lower(value);return choices.indexOf(normalized)>=0?normalized:fallback;},'get '+property,0),
       set:native(function(value){checkForm(this);if(typeof value==='symbol')throw new ErrorType('Cannot convert a Symbol to a string');value=string(value);if(property==='action')value=apply(wellFormed,value,[]);apply(reflectedSetAttribute,this,[attributeName,value]);},'set '+property,1),enumerable:true,configurable:true
     });
+  }
+
+  for(const [interfaceName,kind] of [['HTMLButtonElement','button'],['HTMLInputElement','input']]) {
+    const prototype=g[interfaceName].prototype;
+    const check=element=>{if(!bridge('html-element',element)||apply(localNameGetter,element,[])!==kind)throw new ErrorType('Illegal invocation');};
+    for(const [property,attributeName,choices,fallback] of [
+      ['formAction','formaction',null,null],
+      ['formEnctype','formenctype',['application/x-www-form-urlencoded','multipart/form-data','text/plain'],'application/x-www-form-urlencoded'],
+      ['formMethod','formmethod',['get','post','dialog'],'get'],['formTarget','formtarget',null,'']]) {
+      define(prototype,property,{
+        get:native(function(){check(this);if(property==='formAction')return bridge('submitter-action-url',this);const value=attr(this,attributeName);if(value===null)return '';if(!choices)return value;const normalized=lower(value);return choices.indexOf(normalized)>=0?normalized:fallback;},'get '+property,0),
+        set:native(function(value){check(this);if(typeof value==='symbol')throw new ErrorType('Cannot convert a Symbol to a string');value=string(value);if(property==='formAction'&&kind==='button')value=apply(wellFormed,value,[]);apply(reflectedSetAttribute,this,[attributeName,value]);},'set '+property,1),enumerable:true,configurable:true
+      });
+    }
   }
 
   for(const methodName of ['checkValidity','reportValidity'])method(formPrototype,methodName,function(){checkForm(this);return validate(this);},0);

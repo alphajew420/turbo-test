@@ -5000,11 +5000,18 @@ fn form_controls_native(
                 rv.set(value);
             }
         }
-        "action-url" => {
+        "action-url" | "submitter-action-url" => {
             let document_url = event_handlers::document_url();
             let raw = with_tree(|tree| {
-                tree.get_attribute(handle, "action")
-                    .map(|value| value.to_string())
+                tree.get_attribute(
+                    handle,
+                    if operation == "submitter-action-url" {
+                        "formaction"
+                    } else {
+                        "action"
+                    },
+                )
+                .map(|value| value.to_string())
             })
             .flatten()
             .unwrap_or_default();

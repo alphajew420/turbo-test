@@ -179,6 +179,15 @@ mod tests {
         reset();
     }
     #[test]
+    fn native_submitter_reflection_matches_independent_chrome() {
+        assert_control(
+            include_bytes!("submitter_reflection_cases.json"),
+            include_str!("submitter_reflection_probe.js"),
+            include_str!("submitter_reflection_chrome155.json"),
+            false,
+        );
+    }
+    #[test]
     fn native_form_reflection_matches_independent_chrome() {
         assert_control(
             include_bytes!("form_reflection_cases.json"),

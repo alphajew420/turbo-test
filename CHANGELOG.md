@@ -5,6 +5,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Reflect Input/Button formAction, formEnctype, formMethod and formTarget on their
+  own prototypes with native owner-document/base URL resolution, per-interface
+  string conversion, missing/invalid enum defaults and genuine receiver checks.
+  Independent Chrome controls include malformed URLs, attribute writes, borrowed
+  accessors, wrong namespace/local-name receivers and hostile public getters.
+
 - Match computed styles through captured genuine native selector and owner-document
   intrinsics. Page overrides of matches/ownerDocument are not invoked internally;
   live stylesheet mutations remain visible without new cascade caching.
