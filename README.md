@@ -56,13 +56,17 @@ Independent Chrome155 controls cover these stylesheet transitions, reentrant
 custom-element callbacks, contextual fragment ownership, scoped registries and
 inert templates. Computed font controls additionally cover actual owner-document
 preferences, live inheritance, arithmetic `calc()`, named/manual slots and
-retirement. The host-only `set_computed_font_defaults(context, family, size)`
+retirement. Supported font units and grammar keywords are ASCII case-insensitive;
+quoted/custom family names and unresolved custom-property names retain their
+original spelling. The host-only `set_computed_font_defaults(context, family, size)`
 accepts a nonempty family and finite positive initial size. macOS `Times` is
 measured against Chrome155; other-platform `Times New Roman` remains a conventional,
 uncertified preference. Metric-dependent `ch`/`ex`, viewport units, `min`/`max`/
 `clamp`, custom-property substitution and per-element heading/form-control UA
-font defaults and full `font-variant` combinations remain unsupported by this bounded resolver. Such unresolved font
-text is retained through descendants instead of manufacturing numeric values.
+font defaults, full `font-variant` combinations and unit-cancelling division
+remain unsupported by this bounded resolver. Scalar `calc()` line-height retains
+its inherited factor. Unresolved font text is retained through descendants instead
+of manufacturing numeric values.
 Recollect a lifecycle control with the sibling turbo-surf CDP
 collector and a current Node version that provides WebSocket:
 

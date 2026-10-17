@@ -5,6 +5,16 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Normalize ASCII casing for the existing supported computed-font units and
+  grammar keywords using a captured private lowercase intrinsic. Preserve quoted
+  and custom font-family spelling and custom-property names. Native deferred-value
+  admission now recognizes the same five CSS-wide keywords case-insensitively
+  without accepting arbitrary identifiers. Additional independent Chrome155
+  cases reproduce and prevent mixed-case units yielding `NaNpx`, uppercase
+  shorthand misclassification and valid `INITIAL` resets being discarded.
+  Preserve scalar `calc()` line-height as an inherited factor rather than
+  misclassifying it as pixels. Unit-cancelling division remains unresolved.
+
 - Resolve computed font longhands and shorthand from actual owner-document
   preferences and inherited values, including unitless versus absolute
   line-height, relative sizes, arithmetic `calc()`, CSS-wide keywords and native
