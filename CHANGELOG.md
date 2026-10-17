@@ -5,6 +5,23 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Share custom-element reaction queues across nested CEReactions frames. Advance
+  the shared cursor before invoking a callback so reentrant adoption preserves
+  already queued callbacks, per-element order, exception reporting and the
+  original execution limits. Fresh Chrome155 controls cover callback realms,
+  error receivers, two-element interleaving and nested attribute reactions.
+- Parse Range contextual fragments through the public turbo-dom development
+  revision `aaeb290`, using the actual post-conversion boundary context,
+  namespace/integration attributes, form ancestry and document quirks mode.
+  Preserve foreign and template-associated owner documents, scoped registries
+  and inert nested templates without invoking a context-element constructor.
+- Parse template innerHTML into a detached native fragment before inert-owner
+  adoption, preventing premature custom-element construction and attribute
+  callbacks. Add a bounded independent Chrome155 parser/observer lifecycle
+  matrix with19 context cases, mutation notification/reentrancy controls and
+  reusable `scripts/dom-lifecycle-chrome-control.mjs` collection. XML parsing
+  and complete browser lifecycle parity remain separate work.
+
 - Preserve LF checkout bytes for native JavaScript sources and JSON controls so
   independent Chrome source-hash assertions also verify on Windows. Licensed
   XPath provider bytes retain their explicit no-conversion exceptions.

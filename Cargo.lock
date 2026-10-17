@@ -2150,7 +2150,7 @@ dependencies = [
 [[package]]
 name = "turbo-dom"
 version = "0.5.7"
-source = "git+https://github.com/miaskiewicz/turbo-dom?rev=fb60e6f90a5d373165cfd1045b090407ca945d47#fb60e6f90a5d373165cfd1045b090407ca945d47"
+source = "git+https://github.com/miaskiewicz/turbo-dom?rev=aaeb290c4fea12a1ed98185f1d0628758da53db1#aaeb290c4fea12a1ed98185f1d0628758da53db1"
 dependencies = [
  "html5ever",
  "log",

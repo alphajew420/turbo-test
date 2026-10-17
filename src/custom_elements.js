@@ -790,7 +790,16 @@
     mutation(event);
     if (updateInternals) updateInternals(event);
   };
-  g.__captureCustomElementParsed = (node, adopting) => {
+  g.__captureCustomElementParsed = (node, adopting, context) => {
+    if (context) {
+      // Detached parser results inherit the context's scoped registry. Template
+      // fragments use their associated inert document, whose registry is null.
+      const selected = documentOf(node) === documentOf(context) ? registryFor(context) : null;
+      walk(node, (element) => {
+        if (element === node || kind(element) === 1) associate(element, selected);
+      });
+      return;
+    }
     if (adopting) {
       // Adoption rebinds the old document's registry, including an inert null.
       walk(node, (element) => {

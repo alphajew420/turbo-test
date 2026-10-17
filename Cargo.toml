@@ -49,9 +49,10 @@ base64 = "0.22"
 lightningcss = { version = "1.0.0-alpha.71", default-features = false }
 cssparser = "0.37"
 # Public native rtdom API only. The immutable development revision supplies custom
-# state selectors and bounded storage accounting; no registry release is implied.
+# state selectors, bounded storage accounting and actual-context fragments;
+# no registry release is implied.
 # Keep the existing turbo_dom_parser import name through the package alias.
-turbo-dom-parser = { package = "turbo-dom", version = "0.5.7", git = "https://github.com/miaskiewicz/turbo-dom", rev = "fb60e6f90a5d373165cfd1045b090407ca945d47" }
+turbo-dom-parser = { package = "turbo-dom", version = "0.5.7", git = "https://github.com/miaskiewicz/turbo-dom", rev = "aaeb290c4fea12a1ed98185f1d0628758da53db1" }
 
 
 [profile.release]
