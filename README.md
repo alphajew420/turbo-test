@@ -54,7 +54,16 @@ Ordinary inert documents remain distinct from retired frame contexts.
 
 Independent Chrome155 controls cover these stylesheet transitions, reentrant
 custom-element callbacks, contextual fragment ownership, scoped registries and
-inert templates. Recollect a lifecycle control with the sibling turbo-surf CDP
+inert templates. Computed font controls additionally cover actual owner-document
+preferences, live inheritance, arithmetic `calc()`, named/manual slots and
+retirement. The host-only `set_computed_font_defaults(context, family, size)`
+accepts a nonempty family and finite positive initial size. macOS `Times` is
+measured against Chrome155; other-platform `Times New Roman` remains a conventional,
+uncertified preference. Metric-dependent `ch`/`ex`, viewport units, `min`/`max`/
+`clamp`, custom-property substitution and per-element heading/form-control UA
+font defaults and full `font-variant` combinations remain unsupported by this bounded resolver. Such unresolved font
+text is retained through descendants instead of manufacturing numeric values.
+Recollect a lifecycle control with the sibling turbo-surf CDP
 collector and a current Node version that provides WebSocket:
 
 ```bash

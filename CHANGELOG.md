@@ -5,6 +5,20 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Resolve computed font longhands and shorthand from actual owner-document
+  preferences and inherited values, including unitless versus absolute
+  line-height, relative sizes, arithmetic `calc()`, CSS-wide keywords and native
+  named/manual slot inheritance. Live declarations refresh after property-name
+  conversion, retain receiver brand checks, and return empty font values after
+  disconnection or browsing-context retirement. Independent Chrome155 controls
+  cover fractional serialization, inert/template ownership, realm borrowing and
+  adoption. Native embedders can set private scalar initial font preferences;
+  macOS `Times` is measured, while the other-platform `Times New Roman` default
+  remains uncertified. Metric-dependent units, viewport units, `min`/`max`/`clamp`,
+  custom-property substitution and per-element UA defaults remain outside this
+  bounded computed-font resolver; unresolved text survives inheritance without
+  fabricated zero or `undefined` values.
+
 - Add a host-only custom-element context retirement boundary. Retained frame
   registries, definitions and existing instances stay usable, while automatic
   construction, upgrades and reactions stop for the retired definition realm,
