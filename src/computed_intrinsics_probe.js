@@ -35,5 +35,26 @@
     delete document.styleSheets;
     Object.defineProperty(StyleSheetList.prototype,"length",lengthDescriptor);
   }
+  const inherited=document.createElement("section");inherited.style.cssText="color:blue;width:256px";
+  document.body.appendChild(inherited);
+  try {
+    const chain=[];let parent=inherited;
+    for(let index=0;index<3;index++){const child=document.createElement("div");child.style.cssText="color:inherit;width:50%";parent.appendChild(child);chain.push(child);parent=child;}
+    const live=read(parent);result.inheritedValues=[];
+    const inheritedMeasure=()=>result.inheritedValues.push([live.getPropertyValue("color"),live.getPropertyValue("width")]);
+    inheritedMeasure();
+    inherited.style.cssText="color:red;width:512px";inheritedMeasure();
+    chain[1].style.color="green";inheritedMeasure();
+    chain[1].style.color="inherit";inheritedMeasure();
+    chain[1].style.width="25%";inheritedMeasure();
+    const colorDescriptor=Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype,"color");
+    result.colorReads=0;result.computedReads=0;
+    Object.defineProperty(CSSStyleDeclaration.prototype,"color",{configurable:true,get(){result.colorReads++;return "magenta";}});
+    globalThis.getComputedStyle=function(){result.computedReads++;throw Error("public computed-style hook");};
+    try {inheritedMeasure();}finally{
+      globalThis.getComputedStyle=read;
+      if(colorDescriptor)Object.defineProperty(CSSStyleDeclaration.prototype,"color",colorDescriptor);else delete CSSStyleDeclaration.prototype.color;
+    }
+  } finally {inherited.remove();}
   return result;
 })();

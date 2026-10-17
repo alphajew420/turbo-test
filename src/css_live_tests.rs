@@ -314,3 +314,39 @@ fn computed_style_uses_private_native_matcher_and_owner_document() {
         expected["result"][0]["result"]
     );
 }
+
+#[test]
+fn inherited_computed_values_use_linear_stylesheet_scans_and_keep_live_results() {
+    let value = run(
+        "<!doctype html><head><style>.unused {color:red}</style></head><body>",
+        r#"(()=>{
+          const read=getComputedStyle,query=document.querySelectorAll,rows=[];
+          let scans=0;
+          document.querySelectorAll=function(selector){if(selector==='style,link')scans++;return Reflect.apply(query,this,arguments);};
+          try {
+            for(const percentage of [false,true])for(const depth of [3,5,7]){
+              const root=document.createElement('section');root.style.cssText='color:red;width:256px;height:512px';document.body.appendChild(root);
+              let leaf=root;
+              for(let index=0;index<depth;index++){const child=document.createElement('div');child.style.cssText='color:inherit'+(percentage?';width:50%;height:50%':'');leaf.appendChild(child);leaf=child;}
+              scans=0;const retained=read(leaf),color=retained.getPropertyValue('color');
+              const width=percentage?retained.getPropertyValue('width'):null,height=percentage?retained.getPropertyValue('height'):null;
+              rows.push({depth,percentage,scans,color,width,height});
+              root.remove();
+            }
+          } finally {document.querySelectorAll=query;}
+          return JSON.stringify(rows);
+        })()"#,
+    );
+    for row in value.as_array().unwrap() {
+        let depth = row["depth"].as_u64().unwrap();
+        assert!(
+            row["scans"].as_u64().unwrap() <= 8 * (depth + 2),
+            "ancestor computation rescanned exponentially: {row}"
+        );
+        assert_eq!(row["color"], "rgb(255, 0, 0)", "{row}");
+        if row["percentage"].as_bool().unwrap() {
+            assert_eq!(row["width"], format!("{}px", 256_u64 >> depth), "{row}");
+            assert_eq!(row["height"], format!("{}px", 512_u64 >> depth), "{row}");
+        }
+    }
+}

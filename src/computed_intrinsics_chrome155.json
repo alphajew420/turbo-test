@@ -2,7 +2,7 @@
   "browser": "Chrome/155.0.8059.80",
   "v8": "15.5.35.23",
   "casesSha256": "6736f4b238dfa43d76cc4b3361538e0b24d5c417729ed3dbead03d210da5a822",
-  "probeSha256": "f42c04984530c97b04226df3085c3ac3725eccc3877b3e12a294e7cdbc92771a",
+  "probeSha256": "c31a81a093cd8c2c07f431d76303865757740d2b30a167c8fc51e48c7e19f1c9",
   "collectorSha256": "700a755df1701cfa30a95ca9f20800e81724f50ca7aafd6b46f77e87b2b91351",
   "flags": [
     "--remote-debugging-port=0",
@@ -83,7 +83,35 @@
         "sheetReads": 0,
         "listReads": 0,
         "replacedSheet": true,
-        "retainedOldRules": 1
+        "retainedOldRules": 1,
+        "inheritedValues": [
+          [
+            "rgb(0, 0, 255)",
+            "32px"
+          ],
+          [
+            "rgb(255, 0, 0)",
+            "64px"
+          ],
+          [
+            "rgb(0, 128, 0)",
+            "64px"
+          ],
+          [
+            "rgb(255, 0, 0)",
+            "64px"
+          ],
+          [
+            "rgb(255, 0, 0)",
+            "32px"
+          ],
+          [
+            "rgb(255, 0, 0)",
+            "32px"
+          ]
+        ],
+        "colorReads": 0,
+        "computedReads": 0
       }
     }
   ]

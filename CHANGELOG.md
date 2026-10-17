@@ -9,6 +9,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   independent Chrome source-hash assertions also verify on Windows. Licensed
   XPath provider bytes retain their explicit no-conversion exceptions.
 
+- Read already resolved parent computed values from their private backing records
+  within one calculation, avoiding exponential live-getter recursion through
+  inherited colors and percentage sizes. Retained external declarations still
+  refresh on subsequent reads. Independent Chrome mutation controls and bounded
+  stylesheet-scan regressions cover inheritance plus width/height chains.
+
 - Refresh the private stylesheet-list backing array once per computed-style
   calculation instead of rescanning every style/link for each live-list index
   and length read. Retained computed declarations still recompute on every
