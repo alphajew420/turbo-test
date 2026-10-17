@@ -115,9 +115,9 @@
       var sheets = host ? host.readSheets() : [];
       for (var si=0; si<sheets.length; si++) {
         if(sheetRecord(sheets[si]).disabled)continue;
-        var rules = appliedSheetRules(sheets[si]);
+        var rules = appliedSheetRuleRecords(sheets[si]);
         for (var ri=0; ri<rules.length; ri++) {
-          var txt = String(cssRuleText(cssRuleRecord(rules[ri])) || ''); var br = txt.indexOf('{'); if (br < 0) continue;
+          var txt = String(cssRuleText(rules[ri]) || ''); var br = txt.indexOf('{'); if (br < 0) continue;
           var sel = txt.slice(0, br).trim(); var body = txt.slice(br+1, txt.lastIndexOf('}'));
           var matched = false;
           var parts = sel.split(',');
@@ -730,7 +730,7 @@ if(typeof __ns.makeNativeFunction==='function'){
   cssMember(styleSheetConstructor.prototype,'media',function(){return sheetRecord(this).media;},function(value){mediaRecord(sheetRecord(this).media).items=mediaQueries(value);});
   cssMember(styleSheetConstructor.prototype,'disabled',function(){return sheetRecord(this).disabled;},function(value){sheetRecord(this).disabled=!!value;});
   cssMember(sheetConstructor.prototype,'ownerRule',function(){return sheetRecord(this).ownerRule;});
-  function appliedSheetRules(sheet,seen){seen=seen||new Set();if(seen.has(sheet))return [];seen.add(sheet);var out=[];for(var rule of cssItems(sheetRecord(sheet).rules)){var record=cssRuleRecord(rule);if(record.type===3){if(record.styleSheet&&(!record.media.mediaText||g.matchMedia(record.media.mediaText).matches))out.push.apply(out,appliedSheetRules(record.styleSheet,seen));}else out.push(rule);}return out;}
+  function appliedSheetRuleRecords(sheet,seen){seen=seen||new Set();if(seen.has(sheet))return [];seen.add(sheet);var out=[];for(var rule of cssItems(sheetRecord(sheet).rules)){var record=cssRuleRecord(rule);if(record.type===3){if(record.styleSheet&&(!record.media.mediaText||g.matchMedia(record.media.mediaText).matches))out.push.apply(out,appliedSheetRuleRecords(record.styleSheet,seen));}else out.push(record);}return out;}
   function readableSheet(sheet){var record=sheetRecord(sheet);if(!record.originClean)throw new g.DOMException('Cannot access rules of a cross-origin stylesheet','SecurityError');return record;}
   var cssStyleSheetRulesGetter=__ns.makeNativeFunction(function(){return readableSheet(this).rules;},'get cssRules',0);
   Object.defineProperty(sheetConstructor.prototype,'cssRules',{get:cssStyleSheetRulesGetter,enumerable:true,configurable:true});

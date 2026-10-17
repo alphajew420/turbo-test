@@ -9,6 +9,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   independent Chrome source-hash assertions also verify on Windows. Licensed
   XPath provider bytes retain their explicit no-conversion exceptions.
 
+- Reuse each private CSS rule record already resolved during import flattening
+  instead of looking it up again immediately in computed-style evaluation.
+  Preserve import/media traversal, source order and live retained declarations;
+  nested-import edits and detached-rule mutations have regression coverage.
+
 - Read already resolved parent computed values from their private backing records
   within one calculation, avoiding exponential live-getter recursion through
   inherited colors and percentage sizes. Retained external declarations still
