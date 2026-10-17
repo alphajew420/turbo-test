@@ -5,6 +5,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Preserve LF checkout bytes for native JavaScript sources and JSON controls so
+  independent Chrome source-hash assertions also verify on Windows. Licensed
+  XPath provider bytes retain their explicit no-conversion exceptions.
+
 - Refresh the private stylesheet-list backing array once per computed-style
   calculation instead of rescanning every style/link for each live-list index
   and length read. Retained computed declarations still recompute on every
