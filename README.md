@@ -46,6 +46,12 @@ cross-document adoption before custom-element adopted callbacks. Retained
 `adoptedStyleSheets` arrays keep their identity. Internal adoption reads private
 records instead of page-overridden DOM getters or array methods.
 
+Embedders call `retire_custom_element_context(context)` when a frame's browsing
+context is retired. This host-only boundary preserves retained registries,
+definitions and existing element identity while stopping automatic construction
+and callbacks from that definition realm, including reactions already queued.
+Ordinary inert documents remain distinct from retired frame contexts.
+
 Independent Chrome155 controls cover these stylesheet transitions, reentrant
 custom-element callbacks, contextual fragment ownership, scoped registries and
 inert templates. Recollect a lifecycle control with the sibling turbo-surf CDP

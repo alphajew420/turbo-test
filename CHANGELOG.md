@@ -5,6 +5,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Add a host-only custom-element context retirement boundary. Retained frame
+  registries, definitions and existing instances stay usable, while automatic
+  construction, upgrades and reactions stop for the retired definition realm,
+  including already queued reactions and callbacks borrowed from an active
+  realm. Fresh Chrome155 controls cover detached-frame creation, innerHTML,
+  contextual fragments, explicit upgrades and existing-element adoption.
+
 - Clear constructed adopted stylesheets on every migrated ShadowRoot during
   cross-document adoption, including nested closed roots, before custom-element
   adopted callbacks. Preserve retained ObservableArray identity, same-document

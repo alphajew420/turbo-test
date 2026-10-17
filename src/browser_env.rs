@@ -846,6 +846,12 @@ pub fn node_parser_position(
     })
     .flatten()
 }
+/// Retire automatic custom-element construction and reactions without clearing
+/// retained registries, definitions, instances or author-callable JS functions.
+pub fn retire_custom_element_context(context: v8::Local<v8::Context>) {
+    custom_elements::retire_context(context);
+}
+
 /// Determine actual Window ownership without reading guest document properties.
 pub fn node_has_window_owner<'s>(
     scope: &mut v8::PinScope<'s, '_>,
