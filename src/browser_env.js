@@ -106,7 +106,10 @@
     };
     try {
       var owner=el?cssApply(computedStyleNativeOwner,el,[]):null;
-      var sheets = owner ? (owner.styleSheets || []) : [];
+      // A live list refreshes on every indexed/length read. Refresh its private
+      // backing array once per computation; retained declarations still recompute.
+      var ownerRecord=owner&&collectionGet(owner),host=ownerRecord&&ownerRecord.cssHost;
+      var sheets = host ? host.readSheets() : [];
       for (var si=0; si<sheets.length; si++) {
         if(sheetRecord(sheets[si]).disabled)continue;
         var rules = appliedSheetRules(sheets[si]);
@@ -1460,6 +1463,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     // (userEvent's isValidDateOrTimeValue clones a date input, assigns, and checks the value stuck).
     void applyControlProto;
     var documentSheets=cssList('StyleSheetList',function(){var list=[],els=d.querySelectorAll('style,link');for(var i=0;i<els.length;i++){var sheet=els[i].sheet;if(sheet)list.push(sheet);}return list;});
+    documentCSSRecord.cssHost.readSheets=function(){return cssRecord(documentSheets).items;};
     try { Object.defineProperty(d, 'styleSheets', { configurable: true, get: function(){return documentSheets;} }); } catch(e){}
 
     // Alias the shim interface-constructor `.prototype`s onto the REAL element/document prototypes,

@@ -5,6 +5,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Refresh the private stylesheet-list backing array once per computed-style
+  calculation instead of rescanning every style/link for each live-list index
+  and length read. Retained computed declarations still recompute on every
+  property access; independently measured Chrome controls cover CSSOM edits,
+  stylesheet insertion/removal/replacement, disabled sheets and zero public
+  document/style-list getter calls. No persistent
+  computed-style cache or browser-conformance claim is introduced.
+
 - Add genuine live, readonly `labels` NodeLists on Input, Button, TextArea,
   Select, Output, Meter and Progress. Native light-tree associations preserve
   first-ID targeting, null-namespace attributes, exact UTF-16 IDs,
