@@ -5,6 +5,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Clear constructed adopted stylesheets on every migrated ShadowRoot during
+  cross-document adoption, including nested closed roots, before custom-element
+  adopted callbacks. Preserve retained ObservableArray identity, same-document
+  adoption and disconnect/reconnect state, while bypassing poisoned public
+  ownerDocument/adoptedStyleSheets getters and array methods. Fresh Chrome155
+  controls cover unread roundtrips, foreign-realm sheets and assignment rejection.
+
 - Share custom-element reaction queues across nested CEReactions frames. Advance
   the shared cursor before invoking a callback so reentrant adoption preserves
   already queued callbacks, per-element order, exception reporting and the

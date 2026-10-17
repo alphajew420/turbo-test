@@ -38,6 +38,30 @@ The DOM is on by default for `jsdom`/`happy-dom`/`turbo-dom` environments (and a
 `// @vitest-environment jsdom` pragma); `environment: 'node'` files get clean globals, just like
 vitest. There is **no environment to install or configure** — the Rust DOM ships inside the binary.
 
+## Native DOM lifecycle controls
+
+The development binding keeps constructed shadow stylesheet lists during
+same-document adoption and disconnect/reconnect, and clears them during
+cross-document adoption before custom-element adopted callbacks. Retained
+`adoptedStyleSheets` arrays keep their identity. Internal adoption reads private
+records instead of page-overridden DOM getters or array methods.
+
+Independent Chrome155 controls cover these stylesheet transitions, reentrant
+custom-element callbacks, contextual fragment ownership, scoped registries and
+inert templates. Recollect a lifecycle control with the sibling turbo-surf CDP
+collector and a current Node version that provides WebSocket:
+
+```bash
+node scripts/dom-lifecycle-chrome-control.mjs \
+  --runner ../turbo-surf/harness/detection/chrome-cdp-trace.mjs \
+  --probe src/css_adoption_lifecycle_probe.js \
+  --out /tmp/css-adoption-control.json
+```
+
+These are bounded behavior controls; broader XML parsing and complete browser
+lifecycle conformance remain separate work. The development public DOM revision
+is pinned in Cargo manifests and does not imply a registry release.
+
 ## Benchmarks
 
 Two real production app suites, **same machine, same session, identical pass counts** (Apple
