@@ -756,3 +756,27 @@ fn computed_priority_uses_parsed_tokens_and_preserves_quoted_values() {
         serde_json::json!(["1px", "3px", "\"left;!important\""])
     );
 }
+
+#[test]
+fn adopted_computed_sheet_copy_does_not_expose_private_collection_to_array_setters() {
+    let actual = run(
+        "<!doctype html><html><head></head><body><button id=target>x</button></body></html>",
+        r#"(()=>{
+          const target=document.getElementById('target'),sheet=new CSSStyleSheet();
+          sheet.replaceSync('#target{border:4px solid!important}');document.adoptedStyleSheets=[sheet];
+          const define=Object.defineProperty,previous=Object.getOwnPropertyDescriptor(Array.prototype,'0');
+          let reads=0,value;
+          define(Array.prototype,'0',{configurable:true,get(){return undefined;},set(item){
+            if(item===sheet){reads++;throw Error('private sheet collection reached guest setter');}
+            define(this,'0',{value:item,writable:true,enumerable:true,configurable:true});
+          }});
+          try{value=getComputedStyle(target).borderLeftWidth;}
+          finally{if(previous)define(Array.prototype,'0',previous);else delete Array.prototype[0];}
+          return JSON.stringify({value,reads,sameAdoption:document.adoptedStyleSheets[0]===sheet});
+        })()"#,
+    );
+    assert_eq!(
+        actual,
+        serde_json::json!({"value":"4px","reads":0,"sameAdoption":true})
+    );
+}

@@ -194,7 +194,7 @@
       var sheets = host ? host.readSheets() : [];
       // Document adoption follows ordinary sheets, but is not a shadow-tree scope.
       var adopted=adoptionStates&&adoptionStates.get(owner);
-      if(adopted&&cssApply(computedStyleNativeRoot,el,[])===owner){var active=[];for(var index=0;index<sheets.length;index++)active[active.length]=sheets[index];for(var index=0;index<adopted.target.length;index++)active[active.length]=adopted.target[index];sheets=active;}
+      if(adopted&&cssApply(computedStyleNativeRoot,el,[])===owner){var active=[];cssSetPrototype(active,null);for(var index=0;index<sheets.length;index++)active[active.length]=sheets[index];for(var index=0;index<adopted.target.length;index++)active[active.length]=adopted.target[index];sheets=active;}
       for (var si=0; si<sheets.length; si++) {
         if(sheetRecord(sheets[si]).disabled)continue;
         var rules = appliedSheetRuleRecords(sheets[si]);

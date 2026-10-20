@@ -10,7 +10,8 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   important stylesheet values. Priority stays private; live stylesheet adoption,
   mutation and computed color/length normalization still apply. Include private
   document-adopted sheets after ordinary sheets without importing them into shadow
-  scopes. Genuine Chrome155
+  scopes. The temporary adopted-sheet copy has no Array prototype, so numeric
+  prototype setters cannot observe or alter this private collection. Genuine Chrome155
   controls cover the nine measured border precedence cases.
 
 - Implement the measured constructible Text and DocumentFragment interfaces using
