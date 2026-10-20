@@ -1,6 +1,6 @@
 (function(){
   var g = globalThis;
-  var compatibilityElementPrototype,computedStyleNativeMatches,computedStyleNativeOwner;
+  var compatibilityElementPrototype,computedStyleNativeMatches,computedStyleNativeOwner,computedStyleNativeTag,computedStyleNativeNamespace,computedStyleNativeConnected;
   var normalizeComputedColor=g.__normalizeComputedColor;delete g.__normalizeComputedColor;
   var computedFontContext=g.__computedFontContext;delete g.__computedFontContext;
   var cssFontNumber=Number,cssFontString=String,cssFontFinite=Number.isFinite,cssFontPrecision=Number.prototype.toPrecision,cssFontLower=String.prototype.toLowerCase;
@@ -17,6 +17,9 @@
   var cssNativeParse=__ns.parseCssNative,cssSetPrototype=Object.setPrototypeOf,cssApply=Reflect.apply,cssMapGet=Function.prototype.call.bind(Map.prototype.get),cssTagUpper=Function.prototype.call.bind(String.prototype.toUpperCase);
   if (typeof g.__domAccessor === 'function') { __ns.domAccessor = g.__domAccessor; delete g.__domAccessor; }
   computedStyleNativeOwner=__ns.domAccessor('ownerDocument',false,'Node');
+  computedStyleNativeTag=__ns.domAccessor('tagName',false,'Element');
+  computedStyleNativeNamespace=__ns.domAccessor('namespaceURI',false,'Element');
+  computedStyleNativeConnected=__ns.domAccessor('isConnected',false,'Node');
   if (typeof g.__nativeDOMFunction === 'function') { __ns.makeNativeFunction = g.__nativeDOMFunction; delete g.__nativeDOMFunction; }
   if (typeof g.__nativeNamedObject === 'function') { __ns.makeNamedObject = g.__nativeNamedObject; delete g.__nativeNamedObject; }
   if (typeof g.navigator === 'undefined') g.navigator = { userAgent: 'turbo-test', platform: 'rust', language: 'en-US', languages: ['en-US'], clipboard: {}, maxTouchPoints: 0 };
@@ -170,9 +173,15 @@
     };
     // Length-valued properties resolve a bare zero to the computed "0px" spelling.
     var LEN_PROP = /(width|height|^top$|^right$|^bottom$|^left$|^inset|margin|padding|gap|^flex-basis$|radius|^font-size$|letter-spacing|word-spacing|text-indent|^outline-offset$|^column-(width|gap)$|size$)/;
-    var setProp = function(name, val){ name = String(name).trim(); if (!name) return; if (typeof val === 'string'){ var t = val.trim(); if (t.charAt(0) === '#') val = normColor(t); else if (t === '0' && LEN_PROP.test(name)) val = '0px'; else if (val.indexOf(',') >= 0) val = cssPrelude(val,true); } decl[name] = val; decl[camel(name)] = val;
+    var uaValues=null;
+    var setProp = function(name, val){ name = String(name).trim(); if (!name) return; if(uaValues&&typeof val==='string'&&/^revert$/i.test(val.trim())&&uaValues[name]!==undefined)val=uaValues[name]; if (typeof val === 'string'){ var t = val.trim(); if (t.charAt(0) === '#') val = normColor(t); else if (t === '0' && LEN_PROP.test(name)) val = '0px'; else if (val.indexOf(',') >= 0) val = cssPrelude(val,true); } decl[name] = val; decl[camel(name)] = val;
       if (typeof val === 'string') expandShorthand(name, val, setProp);
     };
+    // Measured Chrome button defaults are UA declarations: every matching author
+    // rule (including a universal selector) and inline value takes precedence.
+    var ua = null;
+    try { if(cssApply(computedStyleNativeTag,el,[])==='BUTTON'&&cssApply(computedStyleNativeNamespace,el,[])==='http://www.w3.org/1999/xhtml'&&cssApply(computedStyleNativeConnected,el,[])){var fontContext=computedFontContext(el);if(fontContext&&fontContext[4])ua={'display':'inline-block','font':'13.3333px Arial','margin':'0px','padding':'1px 6px','border-width':'2px','vertical-align':'baseline'};} } catch(e){}
+    if(ua){Object.keys(ua).forEach(function(name){setProp(name,ua[name]);});uaValues=Object.create(null);Object.keys(decl).forEach(function(name){if(typeof decl[name]==='string')uaValues[name]=decl[name];});}
     try {
       var owner=el?cssApply(computedStyleNativeOwner,el,[]):null;
       // A live list refreshes on every indexed/length read. Refresh its private

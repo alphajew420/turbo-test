@@ -429,6 +429,33 @@ fn computed_font_values_match_source_bound_chrome155_inheritance_and_lifecycle()
 }
 
 #[test]
+fn button_ua_computed_values_match_chrome_and_remain_below_author_styles() {
+    use sha2::{Digest, Sha256};
+    let source = include_str!("computed_button_ua_probe.js");
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("computed_button_ua_chrome155.json")).unwrap();
+    assert_eq!(
+        fixture["probeSha256"],
+        format!("{:x}", Sha256::digest(source.as_bytes()))
+    );
+    assert_eq!(fixture["errors"], serde_json::json!([]));
+    let actual = run_with_font_defaults(
+        "<!doctype html><html><head></head><body></body></html>",
+        &format!("JSON.stringify({})", source.trim().trim_end_matches(';')),
+        Some(("Times", 16.0)),
+    );
+    for (index, row) in fixture["result"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(actual["rows"][index], *row, "button UA row {}", row["name"]);
+    }
+    assert_eq!(actual, fixture["result"]);
+}
+
+#[test]
 fn computed_font_host_preferences_are_private_and_used_by_css_initial_values() {
     let result = run_with_font_defaults("<!doctype html><body><div id=parent style='font:italic 30px/2 serif'><span id=child style='font:initial'></span></div>", r#"JSON.stringify((()=>{
         const style=getComputedStyle(document.getElementById('child'));

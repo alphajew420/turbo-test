@@ -51,6 +51,9 @@ context is retired. This host-only boundary preserves retained registries,
 definitions and existing element identity while stopping automatic construction
 and callbacks from that definition realm, including reactions already queued.
 Ordinary inert documents remain distinct from retired frame contexts.
+Text and DocumentFragment constructors create actual native nodes with Web IDL
+string conversion, subclass prototypes and constructor-realm document ownership.
+The listener-backed EventTarget constructor preserves Node's constructor link.
 
 Independent Chrome155 controls cover these stylesheet transitions, reentrant
 custom-element callbacks, contextual fragment ownership, scoped registries and
@@ -62,11 +65,18 @@ original spelling. The host-only `set_computed_font_defaults(context, family, si
 accepts a nonempty family and finite positive initial size. macOS `Times` is
 measured against Chrome155; other-platform `Times New Roman` remains a conventional,
 uncertified preference. Metric-dependent `ch`/`ex`, viewport units, `min`/`max`/
-`clamp`, custom-property substitution and per-element heading/form-control UA
-font defaults, full `font-variant` combinations and unit-cancelling division
+`clamp`, custom-property substitution and other per-element heading/form-control
+UA font defaults, full `font-variant` combinations and unit-cancelling division
 remain unsupported by this bounded resolver. Scalar `calc()` line-height retains
 its inherited factor. Unresolved font text is retained through descendants instead
 of manufacturing numeric values.
+Measured Chrome155 button UA declarations reset its normal Arial 13.3333px font,
+spacing and border widths before author CSS is applied. Universal and inline
+styles, `font:inherit`, `initial` and measured `revert` behavior are covered by
+`src/computed_button_ua_probe.js` and its source-bound Chrome control. Recollect
+that control with the same command below and
+`--probe src/computed_button_ua_probe.js`; select the intended Chrome executable with
+`--chrome /absolute/path/to/Chrome`.
 Recollect a lifecycle control with the sibling turbo-surf CDP
 collector and a current Node version that provides WebSocket:
 

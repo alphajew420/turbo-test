@@ -5,6 +5,26 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Implement the measured constructible Text and DocumentFragment interfaces using
+  captured native document factories. Preserve instance prototypes, constructor
+  inheritance (including ShadowRoot), subclass `new.target` prototypes and owner
+  documents, with lossless UTF-16 and Web IDL string conversion. Public factory
+  poisoning does not intercept construction. Update stale compatibility checks
+  against genuine Chrome constructor, shadow insertion and computed-color controls.
+
+- Preserve Node constructor inheritance when installing the listener-backed
+  EventTarget constructor; keep the original EventTarget instance prototype and
+  native Node listener behavior intact. Add relational constructor/dispatch
+  controls for the public interfaces.
+
+- Seed measured Chrome155 button declarations at user-agent origin for computed
+  style reads, including the normal Arial 13.3333px font reset, spacing and border
+  widths. Author universal rules, inline values, explicit inheritance and initial
+  font values take precedence; `revert` restores the button UA declaration.
+  Source-bound independent Chrome controls cover default and inherited parent
+  fonts, authored overrides and CSS-wide font keywords. Other form-control UA
+  defaults and broader computed-value behavior remain outside this bounded fix.
+
 - Normalize ASCII casing for the existing supported computed-font units and
   grammar keywords using a captured private lowercase intrinsic. Preserve quoted
   and custom font-family spelling and custom-property names. Native deferred-value
@@ -25,7 +45,7 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   adoption. Native embedders can set private scalar initial font preferences;
   macOS `Times` is measured, while the other-platform `Times New Roman` default
   remains uncertified. Metric-dependent units, viewport units, `min`/`max`/`clamp`,
-  custom-property substitution and per-element UA defaults remain outside this
+  custom-property substitution and other per-element UA defaults remain outside this
   bounded computed-font resolver; unresolved text survives inheritance without
   fabricated zero or `undefined` values.
 

@@ -18,9 +18,18 @@ describe('native DOM interface ownership', () => {
     expect(document.querySelector('#native-shadow')).toBe(null);
     expect(span.getRootNode()).toBe(root);
     expect(span.getRootNode({composed:true})).toBe(document);
-    expect(()=>root.cloneNode(true)).toThrow();
-    expect(()=>host.attachShadow({mode:'open'})).toThrow();
-    expect(()=>document.body.appendChild(root)).toThrow();
+    const errorName=operation=>{try{operation();return null;}catch(error){return error.name;}};
+    expect(errorName(()=>root.cloneNode(true))).toBe('NotSupportedError');
+    expect(errorName(()=>host.attachShadow({mode:'open'}))).toBe('NotSupportedError');
+    expect(document.body.appendChild(root)).toBe(root);
+    expect(root.childNodes.length).toBe(0);
+    expect(span.parentNode).toBe(document.body);
+    expect(span.getRootNode()).toBe(document);
+    expect(root.parentNode).toBe(null);
+    expect(root.host).toBe(host);
+    expect(root.ownerDocument).toBe(document);
+    expect(host.shadowRoot).toBe(root);
+    span.remove();
     const closedHost=document.createElement('div'),closed=closedHost.attachShadow({mode:'closed'});
     expect(closed.mode).toBe('closed');expect(closed.host).toBe(closedHost);expect(closedHost.shadowRoot).toBe(null);
     host.remove();
@@ -57,12 +66,29 @@ describe('native DOM interface ownership', () => {
   });
 
   it('uses Web IDL constructor inheritance and property flags', () => {
-    for(const [child,parent] of [[Node,EventTarget],[Element,Node],[HTMLElement,Element],[HTMLDivElement,HTMLElement],[Document,Node],[HTMLDocument,Document],[DocumentFragment,Node],[Text,CharacterData],[HTMLAudioElement,HTMLMediaElement]]){
+    // Genuine Chrome permits Document, Text and DocumentFragment construction;
+    // the HTML element interfaces still require their browser creation paths.
+    for(const [child,parent,constructible] of [[Node,EventTarget,false],[Element,Node,false],[HTMLElement,Element,false],[HTMLDivElement,HTMLElement,false],[Document,Node,true],[HTMLDocument,Document,false],[DocumentFragment,Node,true],[Text,CharacterData,true],[HTMLAudioElement,HTMLMediaElement,false]] as const){
       expect(Object.getPrototypeOf(child)).toBe(parent);
+      expect(Object.getPrototypeOf(child.prototype)).toBe(parent.prototype);
       expect(Object.getOwnPropertyDescriptor(child,'prototype').writable).toBe(false);
       expect(Object.getOwnPropertyDescriptor(globalThis,child.name).enumerable).toBe(false);
-      expect(()=>child()).toThrow();
-      expect(()=>new child()).toThrow();
+      expect(()=>child()).toThrow(TypeError);
+      if(!constructible){expect(()=>new child()).toThrow(TypeError);continue;}
+      const node=new child();
+      expect(Object.getPrototypeOf(node)).toBe(child.prototype);
+      expect(node.parentNode).toBe(null);
+      expect(node.childNodes.length).toBe(0);
+      if(child===Document){
+        expect(node.nodeType).toBe(9);expect(node.nodeName).toBe('#document');
+        expect(node.ownerDocument).toBe(null);expect(node.defaultView).toBe(null);
+        expect(node.documentElement).toBe(null);expect(node.contentType).toBe('application/xml');
+      }else{
+        expect(node.ownerDocument).toBe(document);
+        expect(node.nodeType).toBe(child===Text?3:11);
+        expect(node.nodeName).toBe(child===Text?'#text':'#document-fragment');
+        if(child===Text)expect(node.data).toBe('');
+      }
     }
   });
 
