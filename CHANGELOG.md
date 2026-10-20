@@ -5,6 +5,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Preserve parsed `!important` priority per computed longhand, including shorthand
+  expansion and inline styles. Later normal declarations no longer overwrite
+  important stylesheet values. Priority stays private; live stylesheet adoption,
+  mutation and computed color/length normalization still apply. Include private
+  document-adopted sheets after ordinary sheets without importing them into shadow
+  scopes. Genuine Chrome155
+  controls cover the nine measured border precedence cases.
+
 - Implement the measured constructible Text and DocumentFragment interfaces using
   captured native document factories. Preserve instance prototypes, constructor
   inheritance (including ShadowRoot), subclass `new.target` prototypes and owner

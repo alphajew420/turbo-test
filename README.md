@@ -79,6 +79,10 @@ that control with the same command below and
 `--chrome /absolute/path/to/Chrome`.
 Recollect a lifecycle control with the sibling turbo-surf CDP
 collector and a current Node version that provides WebSocket:
+Computed author declarations retain parsed `!important` priority through shorthand
+expansion and inline overrides. The source-bound
+`src/computed_border_priority_probe.js` control covers nine border cascade cases;
+the native-layout/client metrics columns are validated by turbo-surf separately.
 
 ```bash
 node scripts/dom-lifecycle-chrome-control.mjs \
