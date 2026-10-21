@@ -66,3 +66,27 @@ No separate Python tag exists here. Verify the tagged workflow and both actual
 registries after publication; do not infer success from a green build job or
 from an existing older package. Keep each failed attempt with its actual source
 identity. A tag is an irreversible publication request.
+
+## Recovering the immutable v0.4.7 dependency publication
+
+The original tagged run passed all four platform jobs and complete source
+reproduction, then stopped before publishing: an absent static crate object
+returned HTTP 403. Absence is now determined only by the official registry
+version API's 404 response. An API denial or a denied archive for an existing
+version remains a failure; full archive payload comparison is retained.
+
+Do not move or recreate `v0.4.7`. The manual `Recover tagged V8 dependency`
+workflow can publish or verify only `turbo-surf-v8` 149.3.0 from exact source
+`e178d4bc132bb6bc158d3d2bedf62891fe8c1c00`. It requires the reviewed publisher's
+full main commit SHA and the explicit confirmation shown in its dispatch form.
+It independently checks the clean tagged checkout and the remote annotated tag's
+peeled commit, reproduces every fork source, and keeps Cargo verification enabled.
+The publisher and tagged source are separate checkouts; no source overlay or
+local registry credential is used.
+
+After reviewing and merging the recovery PR, dispatch the workflow on `main`
+with that exact publisher commit. Verify the resulting registry archive before
+rerunning the failed jobs of original tagged run 39585126739. The original
+publisher must then verify the existing fork payload before allowing npm and
+runner-crate publication. This is one product release, not a second version or
+replacement tag. Preserve the original failed run and every recovery outcome.
