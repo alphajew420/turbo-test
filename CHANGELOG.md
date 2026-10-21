@@ -5,6 +5,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Reuse all resolved ancestor computed-style snapshots within one public read,
+  including percentage lookups through auto-sized ancestors before font
+  inheritance revisits an earlier node. Capture private WeakMap intrinsics at
+  bootstrap and expire the cache before the next live declaration read. Bounded
+  scan, mutation/reparenting and hostile-prototype controls prevent redundant
+  ancestor work without introducing a persistent computed-style cache.
+
 - Preserve parsed `!important` priority per computed longhand, including shorthand
   expansion and inline styles. Later normal declarations no longer overwrite
   important stylesheet values. Priority stays private; live stylesheet adoption,

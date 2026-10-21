@@ -364,6 +364,82 @@ fn inherited_computed_values_use_linear_stylesheet_scans_and_keep_live_results()
 }
 
 #[test]
+fn computed_ancestor_snapshots_keep_auto_percentage_paths_linear() {
+    let value = run(
+        "<!doctype html><head><style>.unused {color:red}</style></head><body>",
+        r#"(()=>{
+          const query=document.querySelectorAll,rows=[];let scans=0;
+          document.querySelectorAll=function(selector){if(selector==='style,link')scans++;return Reflect.apply(query,this,arguments);};
+          try {
+            for(const mode of ['auto','alternating'])for(const depth of [3,5,7]){
+              const root=document.createElement('section');root.style.cssText='color:red;width:256px;height:512px;font:20px/2 serif';document.body.appendChild(root);
+              let leaf=root,halves=0;
+              for(let index=0;index<depth;index++){const child=document.createElement('div'),percentage=mode==='alternating'&&index%2===0;child.style.cssText='color:inherit;width:'+(percentage?'50%':'auto')+';height:auto';if(percentage)halves++;leaf.appendChild(child);leaf=child;}
+              const target=document.createElement('span');target.style.cssText='width:50%;height:50%;font-size:50%';leaf.appendChild(target);halves++;
+              scans=0;const retained=getComputedStyle(target),width=retained.width,height=retained.height,font=retained.fontSize;
+              rows.push({mode,depth,scans,width,height,font,expectedWidth:256/2**halves});root.remove();
+            }
+          } finally {document.querySelectorAll=query;}
+          return JSON.stringify(rows);
+        })()"#,
+    );
+    for row in value.as_array().unwrap() {
+        let depth = row["depth"].as_u64().unwrap();
+        assert!(
+            row["scans"].as_u64().unwrap() <= 4 * (depth + 4),
+            "a public read revisited resolved ancestors: {row}"
+        );
+        assert_eq!(row["width"], format!("{}px", row["expectedWidth"]), "{row}");
+        assert_eq!(row["font"], "10px", "{row}");
+    }
+}
+
+#[test]
+fn computed_ancestor_snapshots_expire_before_later_public_reads() {
+    let value = run(
+        "<!doctype html><head><style id=s>.host {color:red;width:256px;font:20px/2 serif}</style></head><body><section id=a class=host><div style='color:inherit;width:auto'><span id=t style='color:inherit;width:50%;font-size:50%'></span></div></section><section id=b style='color:blue;width:512px;font:30px/3 serif'></section>",
+        r#"(()=>{
+          const target=document.getElementById('t'),first=document.getElementById('a'),second=document.getElementById('b'),rule=document.getElementById('s').sheet.cssRules[0],retained=getComputedStyle(target),rows=[];
+          const capture=()=>rows.push([retained.color,retained.width,retained.fontSize,retained.lineHeight]);
+          capture();rule.style.width='128px';rule.style.color='green';capture();
+          second.appendChild(target.parentElement);capture();second.style.fontSize='40px';capture();
+          target.parentElement.remove();rows.push([retained.color,retained.fontSize]);first.appendChild(target);capture();
+          return JSON.stringify(rows);
+        })()"#,
+    );
+    assert_eq!(
+        value,
+        serde_json::json!([
+            ["rgb(255, 0, 0)", "128px", "10px", "20px"],
+            ["rgb(0, 128, 0)", "64px", "10px", "20px"],
+            ["rgb(0, 0, 255)", "256px", "15px", "45px"],
+            ["rgb(0, 0, 255)", "256px", "20px", "60px"],
+            ["", ""],
+            ["rgb(0, 128, 0)", "64px", "10px", "20px"]
+        ])
+    );
+}
+
+#[test]
+fn computed_ancestor_snapshot_cache_ignores_public_weakmap_hooks() {
+    let value = run(
+        "<!doctype html><body><section style='color:red;width:256px;font:20px serif'><div style='width:auto'><span id=t style='width:50%;font-size:50%'></span></div></section>",
+        r#"(()=>{
+          const target=document.getElementById('t'),OriginalWeakMap=WeakMap,prototype=WeakMap.prototype,get=prototype.get,set=prototype.set;let hooks=0,result;
+          const poisoned=()=>{hooks++;throw Error('public WeakMap hook');};
+          globalThis.WeakMap=poisoned;prototype.get=prototype.set=poisoned;
+          try {const style=getComputedStyle(target);result=[style.color,style.width,style.fontSize];}
+          finally {globalThis.WeakMap=OriginalWeakMap;prototype.get=get;prototype.set=set;}
+          return JSON.stringify({result,hooks});
+        })()"#,
+    );
+    assert_eq!(
+        value,
+        serde_json::json!({"result":["rgb(255, 0, 0)","128px","10px"],"hooks":0})
+    );
+}
+
+#[test]
 fn computed_import_rules_keep_source_order_and_live_declarations_after_flattening() {
     let value = run(
         "<!doctype html><head><style id=s>@import url('child.css'); .target {height:17px}</style></head><body><div id=t class=target></div></body>",
