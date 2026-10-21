@@ -205,13 +205,18 @@
         if(sheetRecord(sheets[si]).disabled)continue;
         var rules = appliedSheetRuleRecords(sheets[si]);
         for (var ri=0; ri<rules.length; ri++) {
-          var txt = String(cssRuleText(rules[ri]) || ''); var br = txt.indexOf('{'); if (br < 0) continue;
-          var sel = txt.slice(0, br).trim();
-          var matched = false;
-          var parts = sel.split(',');
-          for (var pi=0; pi<parts.length; pi++){ var s = parts[pi].trim(); if (!s) continue; try { if (cssApply(computedStyleNativeMatches,el,[s])) { matched = true; break; } } catch(e){} }
+          var rule=rules[ri],matched=false;
+          if(rule.type===1){
+            // Match the private selector list before touching declarations. Native
+            // parsing preserves quoted delimiters that serialized text splitting loses.
+            try{matched=cssApply(computedStyleNativeMatches,el,[rule.selectorText]);}catch(e){}
+          }else{
+            var txt = String(cssRuleText(rule) || ''); var br = txt.indexOf('{'); if (br < 0) continue;
+            var sel = txt.slice(0, br).trim(),parts = sel.split(',');
+            for (var pi=0; pi<parts.length; pi++){ var s = parts[pi].trim(); if (!s) continue; try { if (cssApply(computedStyleNativeMatches,el,[s])) { matched = true; break; } } catch(e){} }
+          }
           if (!matched) continue;
-          applyDeclarations(declarationRecord(rules[ri].style));
+          applyDeclarations(declarationRecord(rule.style));
         }
       }
     } catch(e){}

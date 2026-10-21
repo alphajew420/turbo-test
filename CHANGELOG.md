@@ -5,6 +5,16 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+- Match private style-rule selectors before reading declarations, avoiding full
+  serialization of unmatched rules on every ancestor calculation. The captured
+  native matcher receives complete selector lists, preserving quoted braces and
+  commas; non-style-rule fallbacks and import/source order remain unchanged.
+  Add work-count, live CSSOM and hostile-getter controls without a persistent
+  computed-style cache. Preserve a separate Chrome-expected, explicitly ignored
+  regression for preexisting unknown-pseudo CSSOM admission (turbo-surf issue28);
+  its expected failure is recorded rather than treating acceptance as correct.
+  Browser-specific strict/forgiving selector admission remains a separate feature.
+
 - Reuse all resolved ancestor computed-style snapshots within one public read,
   including percentage lookups through auto-sized ancestors before font
   inheritance revisits an earlier node. Capture private WeakMap intrinsics at

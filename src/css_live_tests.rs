@@ -29,6 +29,22 @@ fn run_with_font_defaults(html: &str, code: &str, fonts: Option<(&str, f64)>) ->
     let host = record.get(scope, key.into()).unwrap();
     let key = v8::String::new(scope, "__cssTestHost").unwrap();
     global.set(scope, key.into(), host);
+    if code.contains("__cssTestCollectionRecord") {
+        fn read_collection_record<'s>(
+            scope: &mut v8::PinScope<'s, '_>,
+            args: v8::FunctionCallbackArguments<'s>,
+            mut rv: v8::ReturnValue,
+        ) {
+            if let Ok(object) = v8::Local::<v8::Object>::try_from(args.get(0)) {
+                if let Some(record) = get_interface_record(scope, object) {
+                    rv.set(record);
+                }
+            }
+        }
+        let getter = v8::Function::new(scope, read_collection_record).unwrap();
+        let key = v8::String::new(scope, "__cssTestCollectionRecord").unwrap();
+        global.set(scope, key.into(), getter.into());
+    }
     if code.contains("__fontInertDoc") {
         let document = parse_html_document(scope, "<!doctype html><body><b>inert</b>", false);
         let key = v8::String::new(scope, "__fontInertDoc").unwrap();
@@ -437,6 +453,129 @@ fn computed_ancestor_snapshot_cache_ignores_public_weakmap_hooks() {
         value,
         serde_json::json!({"result":["rgb(255, 0, 0)","128px","10px"],"hooks":0})
     );
+}
+
+#[test]
+fn computed_style_matches_private_selector_lists_before_declaration_work() {
+    let value = run(
+        "<!doctype html><head><style id=s>.target{width:5px;color:green}</style></head><body><div id=t class=target data-token='{,}'></div><div id=other></div>",
+        r#"(()=>{
+          const target=document.getElementById('t'),other=document.getElementById('other'),sheet=document.getElementById('s').sheet;
+          for(let index=0;index<24;index++)sheet.insertRule('.never-'+index+'{width:99px;color:red;--unused:'+index+'}',sheet.cssRules.length);
+          sheet.insertRule('.target{width:11px;color:blue}',sheet.cssRules.length);
+          const matched=sheet.cssRules[sheet.cssRules.length-1],matchedStyle=matched.style,selectorSetter=Object.getOwnPropertyDescriptor(CSSStyleRule.prototype,'selectorText').set,unmatched=Array.from(sheet.cssRules).slice(1,-1);
+          let declarationReads=0,publicReads=0;
+          for(const rule of unmatched){
+            const record=__cssTestCollectionRecord(rule.style).css.declaration,names=record.names;
+            record.names=new Proxy(names,{get(target,key,receiver){declarationReads++;return Reflect.get(target,key,receiver);}});
+          }
+          for(const rule of [...unmatched,matched])for(const key of ['cssText','selectorText','style'])Object.defineProperty(rule,key,{configurable:true,get(){publicReads++;throw Error('public rule getter');}});
+          Object.defineProperty(target,'matches',{configurable:true,get(){publicReads++;throw Error('public matcher getter');}});
+          const saved=Object.getOwnPropertyDescriptor(Element.prototype,'matches');
+          Object.defineProperty(Element.prototype,'matches',{...saved,value(){publicReads++;throw Error('public prototype matcher');}});
+          const retained=getComputedStyle(target),rows=[];
+          try {
+            rows.push([retained.width,retained.color]);
+            matchedStyle.width='17px';rows.push([retained.width,retained.color]);
+            selectorSetter.call(matched,'.never');rows.push([retained.width,retained.color]);
+          }finally{Object.defineProperty(Element.prototype,'matches',saved);}
+          return JSON.stringify({rows,declarationReads,publicReads,otherUntouched:other.id==='other'});
+        })()"#,
+    );
+    assert_eq!(
+        value["publicReads"], 0,
+        "private style computation used public hooks: {value}"
+    );
+    assert_eq!(
+        value["rows"],
+        serde_json::json!([
+            ["11px", "rgb(0, 0, 255)"],
+            ["17px", "rgb(0, 0, 255)"],
+            ["5px", "rgb(0, 128, 0)"]
+        ])
+    );
+    assert_eq!(value["otherUntouched"], true);
+    assert_eq!(
+        value["declarationReads"], 0,
+        "unmatched declarations were serialized: {value}"
+    );
+}
+
+#[test]
+fn computed_selector_lists_preserve_quoted_delimiters_and_live_invalid_assignment() {
+    let value=run(
+        "<!doctype html><head><style id=s>.target{width:7px}[data-token='{,}'] {width:13px} .target, [data-other='a,b'] {height:19px}</style></head><body><div id=t class=target data-token='{,}'></div><div id=other data-other='a,b'></div>",
+        r#"(()=>{
+          const target=document.getElementById('t'),other=document.getElementById('other'),sheet=document.getElementById('s').sheet,rule=sheet.cssRules[1],style=getComputedStyle(target),rows=[];
+          const read=()=>rows.push([style.width,style.height,getComputedStyle(other).height]);
+          read();rule.style.width='23px';read();
+          rule.selectorText="[data-token='missing,{']";read();
+          rule.selectorText="[data-token='{,}']";read();
+          rule.selectorText='.target, ???';read();
+          const invalid=[];
+          for(const selector of ['.target, ???']){
+            try{sheet.insertRule(selector+' {width:99px}',sheet.cssRules.length);invalid.push('accepted');}catch(error){invalid.push(error.name);}
+          }
+          return JSON.stringify({rows,invalid,ruleCount:sheet.cssRules.length,selectorStillMatches:target.matches(rule.selectorText)});
+        })()"#,
+    );
+    assert_eq!(
+        value["rows"],
+        serde_json::json!([
+            ["13px", "19px", "19px"],
+            ["23px", "19px", "19px"],
+            ["7px", "19px", "19px"],
+            ["23px", "19px", "19px"],
+            ["23px", "19px", "19px"]
+        ]),
+        "quoted selector list behavior diverged: {value}"
+    );
+    assert_eq!(
+        value["invalid"],
+        serde_json::json!(["SyntaxError"]),
+        "invalid selector list admission diverged: {value}"
+    );
+    assert_eq!(value["ruleCount"], 3);
+    assert_eq!(value["selectorStillMatches"], true);
+}
+
+#[test]
+#[ignore = "Known Chrome155 unknown-pseudo CSSOM admission gap: https://github.com/miaskiewicz/turbo-surf/issues/28"]
+fn cssom_unknown_pseudo_selector_admission_matches_chrome155() {
+    let value=run(
+        "<!doctype html><head><style id=s>.target{width:7px}[data-token='{,}'] {width:13px} .target, [data-other='a,b'] {height:19px}</style></head><body><div id=t class=target data-token='{,}'></div><div id=other data-other='a,b'></div>",
+        r#"(()=>{
+          const target=document.getElementById('t'),other=document.getElementById('other'),sheet=document.getElementById('s').sheet,rule=sheet.cssRules[1],style=getComputedStyle(target),rows=[];
+          const read=()=>rows.push([style.width,style.height,getComputedStyle(other).height]);
+          read();rule.style.width='23px';read();
+          rule.selectorText="[data-token='missing,{']";read();
+          rule.selectorText="[data-token='{,}']";read();
+          rule.selectorText='.target, ???';read();
+          const invalid=[];
+          for(const selector of ['.target, ???','.target, :definitely-unknown']){
+            try{sheet.insertRule(selector+' {width:99px}',sheet.cssRules.length);invalid.push('accepted');}catch(error){invalid.push(error.name);}
+          }
+          return JSON.stringify({rows,invalid,ruleCount:sheet.cssRules.length,selectorStillMatches:target.matches(rule.selectorText)});
+        })()"#,
+    );
+    assert_eq!(
+        value["rows"],
+        serde_json::json!([
+            ["13px", "19px", "19px"],
+            ["23px", "19px", "19px"],
+            ["7px", "19px", "19px"],
+            ["23px", "19px", "19px"],
+            ["23px", "19px", "19px"]
+        ]),
+        "quoted selector list behavior diverged: {value}"
+    );
+    assert_eq!(
+        value["invalid"],
+        serde_json::json!(["SyntaxError", "SyntaxError"]),
+        "invalid selector list admission diverged: {value}"
+    );
+    assert_eq!(value["ruleCount"], 3);
+    assert_eq!(value["selectorStillMatches"], true);
 }
 
 #[test]
