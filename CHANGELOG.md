@@ -3,6 +3,16 @@
 All notable changes to `@miaskiewicz/turbo-test`. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project uses semantic versioning.
 
+## [Unreleased]
+
+### Release procedure
+
+- Determine missing V8 dependency versions through the official registry API,
+  preserving errors for denied existing archives and exact payload checks.
+- Add a manual, commit-guarded recovery for the immutable v0.4.7 tagged source.
+  It publishes only the reviewed V8 dependency before the original tagged
+  pipeline resumes; the product version, release tag and runtime stay unchanged.
+
 ## [0.4.7] - 2026-10-21
 
 Release the combined browser ownership/lifecycle and computed-style follow-ups
