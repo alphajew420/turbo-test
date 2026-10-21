@@ -94,6 +94,6 @@ it('keeps internal computed-style CSS reads out of target-installed accessor ins
   const element=document.createElement('div');element.className='computed';document.body.appendChild(element);
   const rules=Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype,'cssRules'),text=Object.getOwnPropertyDescriptor(CSSRule.prototype,'cssText');let reads=0;
   Object.defineProperty(CSSStyleSheet.prototype,'cssRules',{...rules,get(){reads++;return rules.get.call(this);}});Object.defineProperty(CSSRule.prototype,'cssText',{...text,get(){reads++;return text.get.call(this);}});
-  try{expect(getComputedStyle(element).getPropertyValue('color')).toBe('red');expect(reads).toBe(0);expect(style.sheet.cssRules[0].cssText).toBe('.computed { color: red; }');expect(reads).toBe(2);}
+  try{expect(getComputedStyle(element).getPropertyValue('color')).toBe('rgb(255, 0, 0)');expect(reads).toBe(0);expect(style.sheet.cssRules[0].cssText).toBe('.computed { color: red; }');expect(reads).toBe(2);}
   finally{Object.defineProperty(CSSStyleSheet.prototype,'cssRules',rules);Object.defineProperty(CSSRule.prototype,'cssText',text);element.remove();style.remove();}
 });
