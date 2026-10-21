@@ -3,7 +3,18 @@
 All notable changes to `@miaskiewicz/turbo-test`. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project uses semantic versioning.
 
-## [Unreleased]
+## [0.4.7] - 2026-10-21
+
+Release the combined browser ownership/lifecycle and computed-style follow-ups
+from PRs #26 and #27. Publish the reviewed Rusty V8149.3.0 teardown fix as
+`turbo-surf-v8` before the runner crate, preserving the upstream SDK version and
+native archive URLs. Packaged consumers resolve the fork through a real package
+alias rather than losing a root-workspace patch. Live DOM, forms, CSSOM and constructor controls retain their
+independent Chrome evidence. Computed style reuses ancestor snapshots only within
+one public read and skips declaration work for unmatched private selectors.
+The unknown-pseudo CSSOM admission regression remains explicitly ignored with
+Chrome's expected SyntaxError; its explicit expected failure is not counted as
+passing conformance. Broader browser parity remains tracked in turbo-surf issue28.
 
 - Match private style-rule selectors before reading declarations, avoiding full
   serialization of unmatched rules on every ancestor calculation. The captured

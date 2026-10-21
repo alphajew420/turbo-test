@@ -11,7 +11,7 @@
 
 [package]
 edition = "2024"
-name = "v8"
+name = "turbo-surf-v8"
 version = "149.3.0"
 authors = ["the Deno authors"]
 build = "build.rs"
@@ -28,7 +28,6 @@ exclude = [
     ".*",
     "AUTHORS",
     "Doxyfile*",
-    "LICENSE*",
     "Makefile*",
     "README*",
     "build/android/",
@@ -105,7 +104,7 @@ autobenches = false
 description = "Rust bindings to V8"
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/denoland/rusty_v8"
+repository = "https://github.com/miaskiewicz/turbo-test"
 
 [features]
 default = ["use_custom_libcxx"]
@@ -260,3 +259,9 @@ version = "6"
 
 [profile.dev]
 opt-level = 1
+
+[package.metadata.turbo-surf-release]
+upstream-package = "v8"
+upstream-version = "149.3.0"
+upstream-revision = "ca9ea592f19c1aa580001aba1b7d81b645912a25"
+scope = "Reviewed Rust weak-handle teardown; official prebuilt SDK unchanged"

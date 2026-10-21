@@ -2150,7 +2150,8 @@ dependencies = [
 [[package]]
 name = "turbo-dom"
 version = "0.5.7"
-source = "git+https://github.com/miaskiewicz/turbo-dom?rev=aaeb290c4fea12a1ed98185f1d0628758da53db1#aaeb290c4fea12a1ed98185f1d0628758da53db1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c759ebdc434d90ce8ba1301ff94a5b17553b61c594de60118e0af8d337f25e4"
 dependencies = [
  "html5ever",
  "log",
@@ -2161,8 +2162,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbo-surf-v8"
+version = "149.3.0"
+dependencies = [
+ "bindgen",
+ "bitflags",
+ "fslock",
+ "gzip-header",
+ "home",
+ "miniz_oxide",
+ "paste",
+ "temporal_capi",
+ "which",
+]
+
+[[package]]
 name = "turbo-test"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "base64",
  "cssparser",
@@ -2181,8 +2197,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "turbo-dom",
+ "turbo-surf-v8",
  "url",
- "v8",
 ]
 
 [[package]]
@@ -2244,21 +2260,6 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
-
-[[package]]
-name = "v8"
-version = "149.3.0"
-dependencies = [
- "bindgen",
- "bitflags",
- "fslock",
- "gzip-header",
- "home",
- "miniz_oxide",
- "paste",
- "temporal_capi",
- "which",
-]
 
 [[package]]
 name = "value-trait"
