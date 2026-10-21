@@ -21,6 +21,25 @@ def files(directory):
     }
 
 
+def release_manifest(data):
+    text = data.decode()
+    replacements = [
+        ('name = "v8"', 'name = "turbo-surf-v8"'),
+        ('repository = "https://github.com/denoland/rusty_v8"',
+         'repository = "https://github.com/miaskiewicz/turbo-test"'),
+        ('    "LICENSE*",\n', ''),
+    ]
+    for old, new in replacements:
+        if old not in text:
+            raise ValueError("upstream release metadata changed: " + old)
+        text = text.replace(old, new, 1)
+    return (text + '\n[package.metadata.turbo-surf-release]\n'
+            'upstream-package = "v8"\n'
+            'upstream-version = "149.3.0"\n'
+            'upstream-revision = "ca9ea592f19c1aa580001aba1b7d81b645912a25"\n'
+            'scope = "Reviewed Rust weak-handle teardown; official prebuilt SDK unchanged"\n').encode()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path)
@@ -68,6 +87,10 @@ def main():
             parser.error("patched isolate source SHA-256 does not match")
         if hashlib.sha256((source / "LICENSE").read_bytes()).hexdigest() != PINS["license_sha256"]:
             parser.error("retained license SHA-256 does not match")
+        manifest = source / "Cargo.toml"
+        manifest.write_bytes(release_manifest(manifest.read_bytes()))
+        if hashlib.sha256(manifest.read_bytes()).hexdigest() != PINS["release_manifest_sha256"]:
+            parser.error("release manifest SHA-256 does not match")
         expected = files(source)
         destination = ROOT / "rusty_v8"
         if args.check:
@@ -89,7 +112,7 @@ def main():
                 path = destination / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
-    print("Verified Rusty V8 " + PINS["version"] + " archive, license and weak teardown patch")
+    print("Verified turbo-surf-v8 " + PINS["version"] + " archive, license, release metadata and weak teardown patch")
 
 
 if __name__ == "__main__":

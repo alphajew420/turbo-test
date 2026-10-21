@@ -93,7 +93,7 @@ node scripts/dom-lifecycle-chrome-control.mjs \
 
 These are bounded behavior controls; broader XML parsing and complete browser
 lifecycle conformance remain separate work. The development public DOM revision
-is pinned in Cargo manifests and does not imply a registry release.
+is available from the published turbo-dom0.5.7 registry floor.
 
 ## Benchmarks
 
