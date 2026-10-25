@@ -137,6 +137,8 @@ mod file_inputs;
 mod focus_group;
 #[path = "html_dialog.rs"]
 mod html_dialog;
+#[path = "typed_om.rs"]
+mod typed_om;
 #[path = "html_invokers.rs"]
 mod html_invokers;
 #[path = "html_popover.rs"]
@@ -7121,6 +7123,7 @@ fn install_with_tree(scope: &mut v8::PinScope, mut tree: Tree) {
     file_inputs::install(scope);
     select_element::install(scope);
     animations::install(scope);
+    typed_om::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
@@ -9490,3 +9493,6 @@ mod animations_tests;
 #[cfg(test)]
 #[path = "file_inputs_tests.rs"]
 mod file_inputs_tests;
+#[cfg(test)]
+#[path = "typed_om_tests.rs"]
+mod typed_om_tests;
