@@ -116,6 +116,8 @@ pub use document_xpath::is_native_xpath_object;
 mod dom_mutations;
 #[path = "element_relations.rs"]
 mod element_relations;
+#[path = "html_dialog.rs"]
+mod html_dialog;
 #[path = "html_invokers.rs"]
 mod html_invokers;
 #[path = "html_popover.rs"]
@@ -409,6 +411,7 @@ struct DomState {
     /// handle → JS node object, for identity (`el === el`).
     cache: HashMap<Handle, v8::Weak<v8::Object>>,
     checked_radios: HashMap<Handle, Option<Handle>>,
+    dialog: html_dialog::State,
     /// shared element object template (internal_field_count = 2).
     el_template: v8::Global<v8::ObjectTemplate>,
     shadow_modes: HashMap<Handle, String>,
@@ -608,6 +611,7 @@ fn parse_html_tree<'s>(
             tree,
             cache: HashMap::new(),
             checked_radios: Default::default(),
+            dialog: Default::default(),
             el_template: template,
             shadow_modes: HashMap::new(),
             basics_state: None,
@@ -3064,6 +3068,7 @@ fn selector_argument<'s>(
     let units = dom_units(scope, args.get(0))?;
     let scalar = String::from_utf16_lossy(&units);
     let transformed = html_popover::selector(scope, node, &scalar)?;
+    let transformed = html_dialog::selector(scope, node, &transformed)?;
     let original = if transformed == scalar {
         units
     } else {
@@ -3345,6 +3350,9 @@ fn el_focus(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
     let Some(h) = receiver_handle(scope, &args, &[1]) else {
         return;
     };
+    if html_dialog::blocks_focus(h) {
+        return;
+    }
     let prev = ACTIVE.with(|a| *a.borrow());
     if prev == Some(h) {
         return;
@@ -6901,6 +6909,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
             tree,
             cache: HashMap::new(),
             checked_radios: Default::default(),
+            dialog: Default::default(),
             el_template,
             shadow_modes: HashMap::new(),
             basics_state: None,
@@ -7009,6 +7018,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     document_xpath::install(scope);
     event_listeners::install(scope);
     element_members::install(scope);
+    html_dialog::install(scope);
     bind_method(scope, global, "__formNative", form_controls_native);
     run_js(scope, include_str!("form_outputs.js"));
     run_js(scope, include_str!("form_controls.js"));
@@ -9363,3 +9373,7 @@ mod utf16_contract_tests;
 #[cfg(test)]
 #[path = "form_outputs_tests.rs"]
 mod form_outputs_tests;
+
+#[cfg(test)]
+#[path = "html_dialog_tests.rs"]
+mod html_dialog_tests;
