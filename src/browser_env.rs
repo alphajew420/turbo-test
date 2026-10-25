@@ -51,8 +51,8 @@ mod script_state;
 #[path = "trusted_types.rs"]
 mod trusted_types;
 pub use script_state::{
-    prepare_script, script_document, script_state, set_document_resource_active, PreparedScript,
-    ScriptState,
+    parser_scripts, prepare_script, script_document, script_state, set_document_resource_active,
+    PreparedScript, ScriptState,
 };
 
 #[path = "mutation_observers.rs"]
@@ -462,6 +462,8 @@ struct DomState {
     shadow_modes: HashMap<Handle, String>,
     nonces: HashMap<Handle, Vec<u16>>,
     scripts: HashMap<Handle, ScriptState>,
+    /// Main-document parser scripts in parse order (see script_state::parse_order).
+    parser_scripts: Vec<Handle>,
     resource_active: bool,
     basics_state: Option<v8::Weak<v8::Object>>,
     control_clone: Option<v8::Weak<v8::Function>>,
@@ -669,6 +671,7 @@ fn parse_html_tree_with<'s>(
     DOM.with(|dom| {
         *dom.borrow_mut() = Some(DomState {
             scripts: script_state::initial(&tree),
+            parser_scripts: Vec::new(),
             resource_active: false,
             nonces: initial_nonces(&tree),
             tree,
@@ -6967,6 +6970,7 @@ fn install_with_tree(scope: &mut v8::PinScope, mut tree: Tree) {
     // The document parser attaches declarative shadow roots (fragment parsing
     // for innerHTML never does); their scripts are ordinary parser scripts.
     let root = tree.root();
+    let parser_scripts = script_state::parse_order(&tree);
     let declared = shadow_html::declarative(&mut tree, root, None);
     // A replacement document is seeded before its new bootstrap probes native
     // methods. Projecting with the previous bootstrap here would delete those
@@ -6991,6 +6995,7 @@ fn install_with_tree(scope: &mut v8::PinScope, mut tree: Tree) {
     DOM.with(|d| {
         *d.borrow_mut() = Some(DomState {
             scripts: script_state::initial(&tree),
+            parser_scripts,
             resource_active: true,
             nonces: initial_nonces(&tree),
             tree,
