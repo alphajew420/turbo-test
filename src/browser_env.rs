@@ -11,6 +11,8 @@
 //! removeChild, get/setAttribute, id/className/tagName/textContent, querySelector(All)/getElementById.
 //! Events, cssom/style, classList, forms etc. grow in P3.3. Gated by `TURBO_RUST_DOM`.
 
+#[path = "css_selector_syntax.rs"]
+mod css_selector_syntax;
 #[path = "cssom_parser.rs"]
 mod cssom_parser;
 #[path = "dom_isolation.rs"]
@@ -1952,7 +1954,13 @@ fn el_cascade_prop(
         return;
     };
     let name = arg_str(scope, &args, 0);
-    let policy = css_policy::cascade_policy(scope);
+    // JS inherits document-sheet values from fresh composed-parent snapshots;
+    // native text only supplies shadow-scoped rules the JS cascade lacks.
+    if !with_tree(|t| css_policy::shadow_scoped(t, h)).unwrap_or(false) {
+        rv.set(v8::String::empty(scope).into());
+        return;
+    }
+    let policy = css_policy::shadow_cascade_policy(scope);
     let val = with_tree(|t| {
         let computed = turbo_dom_parser::rtdom::cascade::computed_style_with_policy(t, h, &policy);
         Some(turbo_dom_parser::rtdom::cascade::get_property_value(
@@ -3050,6 +3058,15 @@ fn selector_argument<'s>(
 ) -> Option<(String, Vec<u16>, bool)> {
     let units = dom_units(scope, args.get(0))?;
     let scalar = String::from_utf16_lossy(&units);
+    // The matcher is lenient; admission uses the same grammar as stylesheets.
+    if css_selector_syntax::selector_list(&scalar).is_none() {
+        throw_dom_error(
+            scope,
+            "SyntaxError",
+            &format!("'{scalar}' is not a valid selector."),
+        );
+        return None;
+    }
     let transformed = html_popover::selector(scope, node, &scalar)?;
     let original = if transformed == scalar {
         units
@@ -8897,7 +8914,7 @@ mod tests {
             const initial=early.sheet!==null && late.sheet===null && document.styleSheets.length===1 && a.getAttribute('style')==='color:blue' && a.style.color==='';
             early.remove();a.style.color='green';const cssom=a.style.color==='green' && a.getAttribute('style')==='color: green;';
             a.setAttribute('style','color:red');const blocked=a.style.color==='green' && a.getAttribute('style')==='color:red' && getComputedStyle(a).color==='rgb(0, 128, 0)';
-            const inherited=globalThis[Symbol.for('ts')].cascadeProp.call(document.getElementById('child'),'color')==='rgb(0, 128, 0)';
+            const inherited=getComputedStyle(document.getElementById('child')).color==='rgb(0, 128, 0)';
             a.removeAttribute('style');const removed=a.style.color==='';
             const privateHooks=typeof globalThis.__writeAppliedInlineStyle==='undefined' && !globalThis[Symbol.for('ts')].attachLinkedStyleSheet && !globalThis[Symbol.for('ts')].readStyleSheetRules;
             return JSON.stringify({initial,cssom,blocked,inherited,removed,privateHooks});})()"#).unwrap();
@@ -9338,6 +9355,10 @@ mod dom_projection_tests;
 #[cfg(test)]
 #[path = "css_adoption_tests.rs"]
 mod css_adoption_tests;
+
+#[cfg(test)]
+#[path = "css_admission_tests.rs"]
+mod css_admission_tests;
 
 #[cfg(test)]
 #[path = "dom_implementation_tests.rs"]
