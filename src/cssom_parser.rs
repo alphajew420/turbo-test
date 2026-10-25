@@ -40,6 +40,55 @@ pub fn is_supported_property(name: &str) -> bool {
                 | "appearance"
                 | "-webkit-appearance"
         )
+        || SCROLL_KEYWORD_PROPERTIES.contains(&name)
+}
+
+// Lightning CSS does not model these CSSOM View / CSS Scroll Snap keyword
+// properties; admit exactly their grammar with Chrome156's serialization.
+const SCROLL_KEYWORD_PROPERTIES: [&str; 4] = [
+    "scroll-behavior",
+    "scroll-snap-align",
+    "scroll-snap-stop",
+    "scroll-snap-type",
+];
+fn scroll_keyword_value(name: &str, value: &str) -> Option<String> {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("var(") || lower.contains("env(") {
+        return Some(value.trim().to_string());
+    }
+    let words: Vec<&str> = lower.split_ascii_whitespace().collect();
+    let wide = ["initial", "inherit", "unset", "revert", "revert-layer"];
+    if let [word] = words.as_slice() {
+        if wide.contains(word) {
+            return Some((*word).to_string());
+        }
+    }
+    let one_of = |word: &&str, options: &[&str]| options.contains(word);
+    match (name, words.as_slice()) {
+        ("scroll-behavior", [word]) if one_of(word, &["auto", "smooth"]) => Some((*word).into()),
+        ("scroll-snap-stop", [word]) if one_of(word, &["normal", "always"]) => Some((*word).into()),
+        ("scroll-snap-type", ["none"]) => Some("none".into()),
+        ("scroll-snap-type", [axis, rest @ ..])
+            if one_of(axis, &["x", "y", "block", "inline", "both"]) =>
+        {
+            match rest {
+                [] | ["proximity"] => Some((*axis).into()),
+                ["mandatory"] => Some(format!("{axis} mandatory")),
+                _ => None,
+            }
+        }
+        ("scroll-snap-align", [first, rest @ ..]) if rest.len() <= 1 => {
+            let align = ["none", "start", "end", "center"];
+            if !one_of(first, &align) || rest.iter().any(|word| !one_of(word, &align)) {
+                return None;
+            }
+            match rest {
+                [second] if second != first => Some(format!("{first} {second}")),
+                _ => Some((*first).into()),
+            }
+        }
+        _ => None,
+    }
 }
 
 fn deferred_value(tokens: &TokenList<'_>) -> bool {
@@ -188,6 +237,20 @@ impl<'i> DeclarationParser<'i> for CssParser {
             let value = consume(input);
             return font_descriptor(&name.to_ascii_lowercase(), &value)
                 .ok_or_else(|| input.new_custom_error(()));
+        }
+        let property = name.to_ascii_lowercase();
+        if SCROLL_KEYWORD_PROPERTIES.contains(&property.as_str()) {
+            let text = input.parse_until_before(Delimiter::Bang, |input| {
+                Ok::<_, ParseError<'i, ()>>(consume(input))
+            })?;
+            let value =
+                scroll_keyword_value(&property, &text).ok_or_else(|| input.new_custom_error(()))?;
+            let important = input.try_parse(parse_important).is_ok();
+            input.expect_exhausted()?;
+            return Ok(format!(
+                "{property}: {value}{};",
+                if important { " !important" } else { "" }
+            ));
         }
         let valid = input.parse_until_before(Delimiter::Bang, |input| {
             // Lightning CSS does not model the CSS2 font-variant shorthand.
@@ -400,7 +463,76 @@ pub fn parse_one(source: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, parse_media, parse_one};
+    use super::{is_supported_property, parse, parse_media, parse_one};
+
+    #[test]
+    fn scroll_keyword_properties_validate_and_serialize_like_chrome156() {
+        for (declaration, expected) in [
+            ("scroll-behavior: SMOOTH", Some("scroll-behavior: smooth;")),
+            ("scroll-behavior: instant", None),
+            ("scroll-behavior: smooth auto", None),
+            (
+                "scroll-behavior: var(--x)",
+                Some("scroll-behavior: var(--x);"),
+            ),
+            (
+                "scroll-snap-type: Y Proximity",
+                Some("scroll-snap-type: y;"),
+            ),
+            (
+                "scroll-snap-type: x  mandatory",
+                Some("scroll-snap-type: x mandatory;"),
+            ),
+            (
+                "scroll-snap-type: both mandatory",
+                Some("scroll-snap-type: both mandatory;"),
+            ),
+            ("scroll-snap-type: mandatory", None),
+            ("scroll-snap-type: y x", None),
+            ("scroll-snap-type: none mandatory", None),
+            (
+                "scroll-snap-type: initial",
+                Some("scroll-snap-type: initial;"),
+            ),
+            (
+                "scroll-snap-align: START end",
+                Some("scroll-snap-align: start end;"),
+            ),
+            (
+                "scroll-snap-align: center center",
+                Some("scroll-snap-align: center;"),
+            ),
+            (
+                "scroll-snap-align: none start",
+                Some("scroll-snap-align: none start;"),
+            ),
+            ("scroll-snap-align: start end center", None),
+            ("scroll-snap-align: left", None),
+            (
+                "scroll-snap-stop: Normal",
+                Some("scroll-snap-stop: normal;"),
+            ),
+            ("scroll-snap-stop: never", None),
+            (
+                "scroll-snap-stop: always !important",
+                Some("scroll-snap-stop: always !important;"),
+            ),
+        ] {
+            let parsed = parse(&format!("a {{ {declaration} }}"));
+            match expected {
+                Some(expected) => assert!(parsed.contains(expected), "{declaration}: {parsed}"),
+                None => assert!(!parsed.contains("scroll-"), "{declaration}: {parsed}"),
+            }
+        }
+        for name in [
+            "scroll-behavior",
+            "scroll-snap-type",
+            "scroll-snap-align",
+            "scroll-snap-stop",
+        ] {
+            assert!(is_supported_property(name));
+        }
+    }
 
     #[test]
     fn recovers_bad_selectors_and_declarations_without_losing_valid_neighbors() {
