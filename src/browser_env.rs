@@ -143,6 +143,9 @@ mod element_relations;
 mod file_inputs;
 #[path = "focus_group.rs"]
 mod focus_group;
+#[path = "editing.rs"]
+mod editing;
+pub use editing::editing_user_input;
 #[path = "html_dialog.rs"]
 mod html_dialog;
 #[path = "typed_om.rs"]
@@ -7208,6 +7211,7 @@ fn install_with_tree(scope: &mut v8::PinScope, mut tree: Tree) {
     user_activation_gates::install(scope);
     view_transitions::install(scope);
     selection::install(scope);
+    editing::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
@@ -9572,7 +9576,6 @@ mod form_outputs_tests;
 #[path = "html_dialog_tests.rs"]
 mod html_dialog_tests;
 #[cfg(test)]
-#[cfg(test)]
 #[path = "sanitizer_tests.rs"]
 mod sanitizer_tests;
 #[cfg(test)]
@@ -9597,3 +9600,7 @@ mod key_order_tests;
 #[cfg(test)]
 #[path = "view_transitions_tests.rs"]
 mod view_transitions_tests;
+
+#[cfg(test)]
+#[path = "editing_tests.rs"]
+mod editing_tests;

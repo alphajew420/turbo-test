@@ -368,10 +368,13 @@ mod tests {
             .any(|entry| !entry.record.is_empty()));
         scope.low_memory_notification();
         scope.low_memory_notification();
+        // Selection editor records stay alive with the document's live Selection; only the
+        // unused createRange boundary records must be released.
         assert!(records
             .0
             .borrow()
             .iter()
+            .filter(|entry| entry.editor.is_none())
             .all(|entry| entry.record.is_empty()));
         reset();
     }
