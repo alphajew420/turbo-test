@@ -48,3 +48,4 @@ Thumbs.db
 
 # git worktrees for parallel agent work (not tracked)
 .wt/
+.claude/worktrees/
