@@ -197,6 +197,22 @@ fn file_inputs_match_chrome156_control() {
     assert_matches(&actual, &control["result"][0]["result"], FILE_INPUT_GAPS);
 }
 
+#[test]
+fn text_state_value_sanitization_matches_chrome156_control() {
+    let probe = include_str!("input_sanitization_probe.js");
+    let cases = include_bytes!("input_sanitization_cases.json");
+    let control = control(
+        include_str!("input_sanitization_chrome156.json"),
+        probe,
+        cases,
+    );
+    let actual = run_probe(
+        probe,
+        "<!doctype html><html><head></head><body></body></html>",
+    );
+    assert_matches(&actual, &control["result"][0]["result"], &[]);
+}
+
 /// Measured Chrome behavior the binding does not reproduce, as `path = binding value`.
 ///
 /// Blink's KURL percent-escapes a space inside a special URL's host ("http://a b/" is
