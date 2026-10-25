@@ -743,7 +743,10 @@
         if (hit) {
           const hitLayout = model(root, [point(hit.node, hit.offset)]);
           const located = locate(hitLayout, 0, point(hit.node, hit.offset), false);
-          if (located && hitLayout.texts.length === texts.length) return [located, box(located[0], located[1]) || candidate];
+          const hitBox = located && hitLayout.texts.length === texts.length ? box(located[0], located[1]) : null;
+          // Only a hit beyond the current line counts (lines then strictly advance, so the
+          // paragraph walk terminates); anything else falls back to the line's first caret.
+          if (hitBox && (forward ? hitBox.top >= current.bottom - 0.5 : hitBox.bottom <= current.top + 0.5)) return [located, hitBox];
         }
         return [position, candidate];
       }
@@ -751,12 +754,13 @@
     };
     const paragraph = position => { const text = texts[position[0]]; return position[0] * 65536 + paragraphStart(text, position[1]); };
     let position = from, current = here;
-    for (;;) {
+    for (let guard = 0; guard < 100000; guard++) {
       const found = adjacent(position, current);
       if (!found) return [position === from ? (forward ? [texts.length - 1, texts[texts.length - 1].length] : [0, 0]) : position, x];
       position = found[0]; current = found[1];
       if (granularity === 'line' || paragraph(position) !== paragraph(from)) return [position, x];
     }
+    return [position, x];
   }
   function modify(state, extend, forward, granularity) {
     if (none(state)) return;
