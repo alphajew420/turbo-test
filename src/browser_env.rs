@@ -141,6 +141,9 @@ mod shadow_html;
 mod select_element;
 #[path = "form_pseudo.rs"]
 mod form_pseudo;
+#[path = "key_order.rs"]
+mod key_order;
+pub use key_order::{defer as defer_key_order, finish as finish_key_order};
 #[path = "shadow_slots.rs"]
 mod shadow_slots;
 
@@ -7121,6 +7124,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     event_handlers::install(scope, None, "about:blank");
     custom_elements::install(scope);
     element_internals::install(scope);
+    key_order::installed(scope);
 }
 
 fn bind_document(scope: &mut v8::PinScope) {
@@ -9415,3 +9419,6 @@ mod html_dialog_tests;
 #[cfg(test)]
 #[path = "form_pseudo_tests.rs"]
 mod form_pseudo_tests;
+#[cfg(test)]
+#[path = "key_order_tests.rs"]
+mod key_order_tests;
