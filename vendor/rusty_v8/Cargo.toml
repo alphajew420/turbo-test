@@ -264,4 +264,4 @@ opt-level = 1
 upstream-package = "v8"
 upstream-version = "149.3.0"
 upstream-revision = "ca9ea592f19c1aa580001aba1b7d81b645912a25"
-scope = "Reviewed Rust weak-handle teardown and interceptor ShouldThrowOnError; official prebuilt SDK unchanged"
+scope = "Reviewed Rust weak-handle teardown; official prebuilt SDK unchanged"
