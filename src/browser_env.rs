@@ -123,6 +123,9 @@ pub use document_xpath::is_native_xpath_object;
 mod dom_mutations;
 #[path = "element_relations.rs"]
 mod element_relations;
+#[path = "editing.rs"]
+mod editing;
+pub use editing::editing_user_input;
 #[path = "html_dialog.rs"]
 mod html_dialog;
 #[path = "html_invokers.rs"]
@@ -7049,6 +7052,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     html_invokers::install(scope);
     input_members::install(scope);
     select_element::install(scope);
+    editing::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
@@ -9406,3 +9410,7 @@ mod form_outputs_tests;
 #[cfg(test)]
 #[path = "html_dialog_tests.rs"]
 mod html_dialog_tests;
+
+#[cfg(test)]
+#[path = "editing_tests.rs"]
+mod editing_tests;
