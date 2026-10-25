@@ -108,6 +108,11 @@ pub fn set_interface_record<'s>(
 
 #[path = "document_basics.rs"]
 mod document_basics;
+#[path = "document_legacy.rs"]
+mod document_legacy;
+pub use document_legacy::{
+    set_document_domain_sandboxed, set_document_last_modified, set_document_origin_keyed,
+};
 #[path = "dom_implementation.rs"]
 mod dom_implementation;
 pub use dom_implementation::set_initializer as set_inert_document_initializer;
@@ -7009,6 +7014,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     run_js(scope, include_str!("element_tokens.js"));
     run_js(scope, include_str!("element_relations.js"));
     run_js(scope, include_str!("document_basics.js"));
+    document_legacy::install(scope);
     capture_node_projector(scope);
     dom_implementation::install(scope);
     template_contents::install(scope);
