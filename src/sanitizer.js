@@ -533,11 +533,15 @@
     return config;
   }
   // (TrustedHTML or DOMString) keeps a trusted value for the sink's own check.
-  const trustedOrString = (value, prefix) => (native("trustedHTML", value) ? value : domString(value, prefix));
-  ns.sanitizerUnsafeArguments = (html, options, owner, name) => {
+  const trustedOrString = (value, prefix) => (native("trustedHTML.is", value) ? value : domString(value, prefix));
+  // setHTMLUnsafe / parseHTMLUnsafe: convert both arguments, run the sink's
+  // Trusted Types check, then validate the sanitizer configuration.
+  ns.sanitizerUnsafeArguments = (receiver, html, options, owner, name) => {
     const prefix = `Failed to execute '${name}' on '${owner}': `;
     html = trustedOrString(html, prefix);
-    return { html, config: resolve(sanitizerSpec(options, prefix, "SetHTMLUnsafeOptions", true), false, prefix) };
+    const spec = sanitizerSpec(options, prefix, "SetHTMLUnsafeOptions", true);
+    html = native("trustedHTML.convert", receiver, html, `${owner} ${name}`, prefix);
+    return { html, config: resolve(spec, false, prefix) };
   };
 
   const shadowCheck = ns.domAccessor("__isShadowRoot", false, "Node"),
@@ -575,7 +579,7 @@
     },
     parseHTMLUnsafe(html, options) {
       required(arguments, "Failed to execute 'parseHTMLUnsafe' on 'Document': ");
-      const converted = ns.sanitizerUnsafeArguments(html, options, "Document", "parseHTMLUnsafe");
+      const converted = ns.sanitizerUnsafeArguments(undefined, html, options, "Document", "parseHTMLUnsafe");
       return native("parse", false, converted.html, converted.config);
     },
   };
