@@ -9,6 +9,9 @@ fn run_probe(probe: &str, prelude: &str) -> serde_json::Value {
     v8::scope!(let scope, isolate);
     let context = v8::Context::new(scope, Default::default());
     let scope = &mut v8::ContextScope::new(scope, context);
+    // Pin the UA font to the macOS Chrome 156 control capture ("Times"/16px) so the
+    // caret/text model's computed-font-dependent values match on every host.
+    assert!(set_computed_font_defaults(context, "Times", 16.0));
     install_with_html(
         scope,
         "<!doctype html><html><head></head><body></body></html>",
@@ -178,6 +181,9 @@ fn run_input_steps(steps: &serde_json::Value) -> serde_json::Value {
     v8::scope!(let scope, isolate);
     let context = v8::Context::new(scope, Default::default());
     let scope = &mut v8::ContextScope::new(scope, context);
+    // Pin the UA font to the macOS Chrome 156 control capture ("Times"/16px) so the
+    // caret/text model's computed-font-dependent values match on every host.
+    assert!(set_computed_font_defaults(context, "Times", 16.0));
     install_with_html(
         scope,
         "<!doctype html><html><head></head><body></body></html>",
