@@ -177,6 +177,7 @@ path = "src/lib.rs"
         source = ROOT / "rusty_v8"
         for relative, pin in [("Cargo.toml", "release_manifest_sha256"),
                               ("src/isolate.rs", "patched_isolate_sha256"),
+                              ("src/function.rs", "patched_function_sha256"),
                               ("LICENSE", "license_sha256")]:
             self.assertEqual(hashlib.sha256((source / relative).read_bytes()).hexdigest(), pins[pin])
         manifest = tomllib.loads((source / "Cargo.toml").read_text())

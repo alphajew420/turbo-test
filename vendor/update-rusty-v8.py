@@ -37,7 +37,7 @@ def release_manifest(data):
             'upstream-package = "v8"\n'
             'upstream-version = "149.3.0"\n'
             'upstream-revision = "ca9ea592f19c1aa580001aba1b7d81b645912a25"\n'
-            'scope = "Reviewed Rust weak-handle teardown; official prebuilt SDK unchanged"\n').encode()
+            'scope = "Reviewed Rust weak-handle teardown and interceptor ShouldThrowOnError; official prebuilt SDK unchanged"\n').encode()
 
 
 def main():
@@ -77,6 +77,9 @@ def main():
         isolate = source / "src/isolate.rs"
         if hashlib.sha256(isolate.read_bytes()).hexdigest() != PINS["original_isolate_sha256"]:
             parser.error("upstream isolate source SHA-256 does not match")
+        function = source / "src/function.rs"
+        if hashlib.sha256(function.read_bytes()).hexdigest() != PINS["original_function_sha256"]:
+            parser.error("upstream callback source SHA-256 does not match")
         subprocess.run(
             ["patch", "--batch", "-p1", "-i", str(patch)],
             cwd=source,
@@ -85,6 +88,8 @@ def main():
         )
         if hashlib.sha256(isolate.read_bytes()).hexdigest() != PINS["patched_isolate_sha256"]:
             parser.error("patched isolate source SHA-256 does not match")
+        if hashlib.sha256(function.read_bytes()).hexdigest() != PINS["patched_function_sha256"]:
+            parser.error("patched callback source SHA-256 does not match")
         if hashlib.sha256((source / "LICENSE").read_bytes()).hexdigest() != PINS["license_sha256"]:
             parser.error("retained license SHA-256 does not match")
         manifest = source / "Cargo.toml"
@@ -112,7 +117,7 @@ def main():
                 path = destination / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
-    print("Verified turbo-surf-v8 " + PINS["version"] + " archive, license, release metadata and weak teardown patch")
+    print("Verified turbo-surf-v8 " + PINS["version"] + " archive, license, release metadata, weak teardown and interceptor mode patches")
 
 
 if __name__ == "__main__":
