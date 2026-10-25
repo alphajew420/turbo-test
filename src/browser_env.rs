@@ -6993,6 +6993,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     document_xpath::install(scope);
     event_listeners::install(scope);
     bind_method(scope, global, "__formNative", form_controls_native);
+    run_js(scope, include_str!("form_outputs.js"));
     run_js(scope, include_str!("form_controls.js"));
     run_js(scope, include_str!("form_collections.js"));
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
@@ -9340,3 +9341,7 @@ mod iframe_credentialless_tests;
 #[cfg(test)]
 #[path = "utf16_contract_tests.rs"]
 mod utf16_contract_tests;
+
+#[cfg(test)]
+#[path = "form_outputs_tests.rs"]
+mod form_outputs_tests;
