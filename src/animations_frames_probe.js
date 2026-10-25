@@ -34,7 +34,8 @@
 
   // Finished promise reactions run before the finish event, both before that frame's callbacks.
   const order = [];
-  const note = (entry) => { if (entry !== "callback" || order[order.length - 1] !== "callback") order.push(entry); };
+  // Callbacks before the finish depend on frame cadence; record the order from the finish on.
+  const note = (entry) => { if (entry !== "callback" || (order.length && order[order.length - 1] !== "callback")) order.push(entry); };
   let watching = true;
   const watch = () => { if (!watching) return; note("callback"); requestAnimationFrame(watch); };
   requestAnimationFrame(watch);

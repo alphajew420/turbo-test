@@ -2,7 +2,7 @@
   "browser": "Chrome/156.0.8078.47",
   "v8": "15.6.75.19",
   "casesSha256": "8c1e57201e2181819aa58792247e736442f4a5278c04eee10fa193c47126719f",
-  "probeSha256": "d6849d10e5cae65a3f3679d1619844c9917fc59e86b2a15469b9684be4b4525e",
+  "probeSha256": "b7604554a228ec5f74bd955a60fd58e9917775107bf2d5f29d9db993e04c87eb",
   "collectorSha256": "968cefb88486f3b7ed97951afc64d032014654012165feb27452e06b63e9c3ad",
   "flags": [
     "--headless=new",
@@ -71,7 +71,6 @@
         [
           "finish-order",
           [
-            "callback",
             "finished:true",
             "finished-microtask",
             "event:200:true:true:finished",
