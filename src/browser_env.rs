@@ -3378,6 +3378,7 @@ fn el_focus(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
     }
     dispatch_synthetic(scope, h, "focus", false, false);
     dispatch_synthetic(scope, h, "focusin", true, false);
+    selection::focused(scope, args.this());
 }
 fn el_blur(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _dom = DomScope::for_object(scope, args.this());
@@ -7049,6 +7050,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     html_invokers::install(scope);
     input_members::install(scope);
     select_element::install(scope);
+    selection::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
@@ -7200,6 +7202,8 @@ const BOOTSTRAP: &str = include_str!("browser_env.js");
 mod range_contents;
 #[path = "range_live.rs"]
 mod range_live;
+#[path = "selection.rs"]
+mod selection;
 
 /// Reclaim native tree records only after their actual owner Document is collected.
 /// Call at a host execution/GC boundary; this never clears a retained document.

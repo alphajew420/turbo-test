@@ -28,6 +28,9 @@ pub(super) fn attribute_changed<'s>(
         script_state::attribute_changed(handle, name);
         form_checked_state::attribute_changed(handle, name);
     }
+    if name == "type" {
+        selection::type_changed(scope, element);
+    }
     if !name.starts_with("aria-") && !matches!(name, "popovertarget" | "commandfor") {
         return;
     }
