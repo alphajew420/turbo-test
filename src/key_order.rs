@@ -4,6 +4,7 @@
 //! without changing their descriptors. An embedder that defines further interfaces after the
 //! binding (turbo-surf) defers the step and finishes it after its own installs.
 use super::*;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 struct Interface {
@@ -50,43 +51,146 @@ fn table() -> &'static [Interface] {
     })
 }
 
-fn array<'s>(scope: &mut v8::PinScope<'s, '_>, items: &[String]) -> v8::Local<'s, v8::Value> {
-    let values: Vec<v8::Local<v8::Value>> = items
+/// The positions (into `labels`) to move, in their final order: Chrome's order for the keys
+/// present, each followed by the keys Chrome lacks that follow it here. Strings and symbols
+/// are ordered separately, as V8 lists them. The longest prefix of the result that already
+/// appears in that order stays; a constant Chrome freezes always moves, to be re-added frozen.
+pub(super) fn plan(labels: &[(String, bool)], order: &[String], fixed: &[String]) -> Vec<usize> {
+    let known: HashMap<&str, usize> = order
         .iter()
-        .map(|item| v8::String::new(scope, item).unwrap().into())
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
         .collect();
-    v8::Array::new_with_elements(scope, &values).into()
+    let mut moved = Vec::new();
+    for symbol in [false, true] {
+        let current: Vec<usize> = (0..labels.len())
+            .filter(|&index| labels[index].1 == symbol)
+            .collect();
+        let mut leading = Vec::new();
+        let mut attached: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut anchor = None;
+        let mut present: Vec<(usize, usize)> = Vec::new();
+        for &index in &current {
+            match known.get(labels[index].0.as_str()) {
+                Some(&rank) => {
+                    anchor = Some(rank);
+                    present.push((rank, index));
+                }
+                None => match anchor {
+                    Some(rank) => attached.entry(rank).or_default().push(index),
+                    None => leading.push(index),
+                },
+            }
+        }
+        present.sort_unstable();
+        let mut desired = leading;
+        for (rank, index) in present {
+            desired.push(index);
+            desired.extend(attached.remove(&rank).unwrap_or_default());
+        }
+        let mut kept = 0;
+        let mut last = None;
+        while kept < desired.len()
+            && last.is_none_or(|last| desired[kept] > last)
+            && !fixed.contains(&labels[desired[kept]].0)
+        {
+            last = Some(desired[kept]);
+            kept += 1;
+        }
+        moved.extend_from_slice(&desired[kept..]);
+    }
+    moved
+}
+
+fn label(scope: &mut v8::PinScope, key: v8::Local<v8::Value>) -> (String, bool) {
+    match v8::Local::<v8::Symbol>::try_from(key) {
+        Ok(symbol) => {
+            let description = symbol.description(scope);
+            let text = if description.is_undefined() {
+                String::new()
+            } else {
+                description.to_rust_string_lossy(scope)
+            };
+            (format!("Symbol({text})"), true)
+        }
+        Err(_) => (key.to_rust_string_lossy(scope), false),
+    }
+}
+
+/// One mover job for `object`, or `None` when it already is in Chrome's order.
+fn job<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+    (order, fixed): &(Vec<String>, Vec<String>),
+) -> Option<v8::Local<'s, v8::Value>> {
+    let args = v8::GetPropertyNamesArgs {
+        mode: v8::KeyCollectionMode::OwnOnly,
+        property_filter: v8::PropertyFilter::ALL_PROPERTIES,
+        index_filter: v8::IndexFilter::IncludeIndices,
+        key_conversion: v8::KeyConversionMode::KeepNumbers,
+    };
+    let names = object.get_own_property_names(scope, args)?;
+    let keys: Vec<v8::Local<v8::Value>> = (0..names.length())
+        .filter_map(|index| names.get_index(scope, index))
+        .collect();
+    let labels: Vec<(String, bool)> = keys.iter().map(|&key| label(scope, key)).collect();
+    let moved = plan(&labels, order, fixed);
+    if moved.is_empty() {
+        return None;
+    }
+    let moved: Vec<v8::Local<v8::Value>> = moved.into_iter().map(|index| keys[index]).collect();
+    let moved = v8::Array::new_with_elements(scope, &moved);
+    let fixed: Vec<v8::Local<v8::Value>> = fixed
+        .iter()
+        .map(|name| v8::String::new(scope, name).unwrap().into())
+        .collect();
+    let fixed = v8::Array::new_with_elements(scope, &fixed);
+    Some(v8::Array::new_with_elements(scope, &[object.into(), moved.into(), fixed.into()]).into())
 }
 
 fn arrange(scope: &mut v8::PinScope) {
     run_js(scope, include_str!("key_order.js"));
     let global = scope.get_current_context().global(scope);
     let key = v8::String::new(scope, "__captureKeyOrder").unwrap();
-    let arranger = global
+    let mover = global
         .get(scope, key.into())
         .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok());
     global.delete(scope, key.into());
-    let Some(arranger) = arranger else {
+    let Some(mover) = mover else {
         return;
     };
-    let mut entries = Vec::new();
+    let prototype_key = v8::String::new(scope, "prototype").unwrap();
+    let constructor_key = v8::String::new(scope, "constructor").unwrap();
+    let mut jobs = Vec::new();
     for interface in table() {
         let name = v8::String::new(scope, &interface.name).unwrap();
         if !global.has_own_property(scope, name.into()).unwrap_or(false) {
             continue;
         }
-        let entry = [
-            name.into(),
-            array(scope, &interface.interface.0),
-            array(scope, &interface.interface.1),
-            array(scope, &interface.prototype.0),
-            array(scope, &interface.prototype.1),
-        ];
-        entries.push(v8::Array::new_with_elements(scope, &entry).into());
+        let Some(constructor) = global
+            .get(scope, name.into())
+            .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+        else {
+            continue;
+        };
+        jobs.extend(job(scope, constructor.into(), &interface.interface));
+        let Some(prototype) = constructor
+            .get(scope, prototype_key.into())
+            .and_then(|value| v8::Local::<v8::Object>::try_from(value).ok())
+        else {
+            continue;
+        };
+        let own = prototype
+            .has_own_property(scope, constructor_key.into())
+            .unwrap_or(false);
+        let back = prototype.get(scope, constructor_key.into());
+        if own && back.is_some_and(|back| back.strict_equals(constructor.into())) {
+            jobs.extend(job(scope, prototype, &interface.prototype));
+        }
     }
-    let entries = v8::Array::new_with_elements(scope, &entries);
+    let jobs = v8::Array::new_with_elements(scope, &jobs);
     let receiver = v8::undefined(scope).into();
-    arranger.call(scope, receiver, &[entries.into()]);
+    mover.call(scope, receiver, &[jobs.into()]);
 }
 
 /// Called at the end of every binding install.

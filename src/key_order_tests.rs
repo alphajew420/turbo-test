@@ -127,3 +127,29 @@ fn deferred_key_order_finishes_like_an_install() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     reset();
 }
+
+/// Keys Chrome lacks travel with the key they follow; an in-order prefix stays put and a
+/// constant to freeze always moves; symbols are planned after strings.
+#[test]
+fn plan_moves_only_the_out_of_order_suffix() {
+    let labels = |names: &[&str]| -> Vec<(String, bool)> {
+        names
+            .iter()
+            .map(|name| (name.to_string(), name.starts_with("Symbol(")))
+            .collect()
+    };
+    let strings = |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+    let order = strings(&["a", "b", "C", "c", "Symbol(Symbol.toStringTag)"]);
+    // current: c x a b Symbol(...) → final a b c x Symbol(...)
+    let current = labels(&["c", "x", "a", "b", "Symbol(Symbol.toStringTag)"]);
+    assert_eq!(key_order::plan(&current, &order, &[]), vec![0, 1]);
+    // An extra before every known key stays first.
+    let current = labels(&["x", "a", "b", "c"]);
+    assert_eq!(key_order::plan(&current, &order, &[]), Vec::<usize>::new());
+    // The constant C must be re-added frozen, so it and everything after it move.
+    let current = labels(&["a", "b", "C", "c"]);
+    assert_eq!(
+        key_order::plan(&current, &order, &strings(&["C"])),
+        vec![2, 3]
+    );
+}
