@@ -133,6 +133,8 @@ mod html_text;
 mod input_members;
 #[path = "shadow_html.rs"]
 mod shadow_html;
+#[path = "select_element.rs"]
+mod select_element;
 #[path = "shadow_slots.rs"]
 mod shadow_slots;
 
@@ -6153,6 +6155,7 @@ fn build_el_template<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
                 | v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS,
         );
     tmpl.set_named_property_handler(handler);
+    select_element::indexed_handler(tmpl);
 
     tmpl
 }
@@ -7035,6 +7038,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     run_js(scope, include_str!("form_collections.js"));
     html_invokers::install(scope);
     input_members::install(scope);
+    select_element::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
