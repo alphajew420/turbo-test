@@ -680,7 +680,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     var lengthGetter=Object.getOwnPropertyDescriptor({get length(){return cssRecord(this).items.length;}},'length').get;
     if(__ns.makeNativeFunction)lengthGetter=__ns.makeNativeFunction(lengthGetter,'get length',0);
     Object.defineProperty(ctor.prototype,'length',{configurable:true,enumerable:true,get:lengthGetter});
-    var item=({item(index){if(!arguments.length)throw new TypeError("Failed to execute 'item': 1 argument required");return cssRecord(this).items[Number(index)>>>0]||null;}}).item;
+    var item=({item(index){if(!arguments.length)throw new TypeError("Failed to execute 'item' on '"+name+"': 1 argument required, but only 0 present.");return cssRecord(this).items[Number(index)>>>0]||null;}}).item;
     if(__ns.makeNativeFunction)item=__ns.makeNativeFunction(item,'item',1);
     Object.defineProperty(ctor.prototype,'item',{configurable:true,enumerable:true,writable:true,value:item});
     Object.defineProperty(ctor.prototype,'constructor',{configurable:true,writable:true,value:ctor});
@@ -1564,6 +1564,7 @@ if(typeof __ns.makeNativeFunction==='function'){
     void applyControlProto;
     var documentSheets=cssList('StyleSheetList',function(){var list=[],els=d.querySelectorAll('style,link');for(var i=0;i<els.length;i++){var sheet=els[i].sheet;if(sheet)list.push(sheet);}return list;});
     documentCSSRecord.cssHost.readSheets=function(){return cssRecord(documentSheets).items;};
+    __ns.styleSheetList=function(refresh){return cssList('StyleSheetList',refresh);};
     try { Object.defineProperty(d, 'styleSheets', { configurable: true, get: function(){return documentSheets;} }); } catch(e){}
 
     // Alias the shim interface-constructor `.prototype`s onto the REAL element/document prototypes,

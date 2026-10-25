@@ -122,6 +122,8 @@ mod html_invokers;
 mod html_popover;
 #[path = "html_text.rs"]
 mod html_text;
+#[path = "shadow_html.rs"]
+mod shadow_html;
 #[path = "shadow_slots.rs"]
 mod shadow_slots;
 
@@ -781,6 +783,7 @@ pub fn import_document_node<'s>(
     script_state::copy(scope, source_node, clone, deep);
     template_contents::copy_contents(scope, source_node, clone, deep);
     custom_elements::cloned(scope, source_node, clone, deep);
+    shadow_html::clone_roots(scope, source_node, clone, deep);
     Ok(clone)
 }
 
@@ -1322,40 +1325,18 @@ fn el_attach_shadow(
         scope.throw_exception(error);
         return;
     }
-    let allowed = with_tree(|tree| {
-        let tag = tree.local_name(host).unwrap_or("");
-        tree.namespace_id(host) == 0
-            && (tag.contains('-')
-                || matches!(
-                    tag,
-                    "article"
-                        | "aside"
-                        | "blockquote"
-                        | "body"
-                        | "div"
-                        | "footer"
-                        | "h1"
-                        | "h2"
-                        | "h3"
-                        | "h4"
-                        | "h5"
-                        | "h6"
-                        | "header"
-                        | "main"
-                        | "nav"
-                        | "p"
-                        | "section"
-                        | "span"
-                ))
-            && tree.shadow_root(host).is_none()
-    })
-    .unwrap_or(false);
-    if !allowed {
+    if !with_tree(|tree| shadow_html::valid_host(tree, host)).unwrap_or(false) {
         throw_dom_error(
             scope,
             "NotSupportedError",
             "This element cannot attach another shadow root",
         );
+        return;
+    }
+    if let Some(existing) = with_tree(|tree| tree.shadow_root(host)).flatten() {
+        if let Some(root) = shadow_html::reattach(scope, existing, &mode) {
+            rv.set(root.into());
+        }
         return;
     }
     let root = with_tree_mut(|tree| tree.attach_shadow(host)).unwrap();
@@ -1369,6 +1350,7 @@ fn el_attach_shadow(
     });
     let node = wrap(scope, root);
     shadow_slots::configure(scope, node, assignment == "manual");
+    shadow_html::configure(scope, node, options);
     rv.set(node.into());
 }
 
@@ -3389,6 +3371,8 @@ fn get_active_element(
     if active.is_none() {
         ACTIVE.with(|a| *a.borrow_mut() = None);
     }
+    // Focus inside shadow trees is retargeted to the document-level host.
+    let active = active.and_then(|h| with_tree(|t| shadow_html::retarget(t, h, t.root())));
     let h = active.or_else(|| with_tree(|t| t.query_selector("body")).flatten());
     if let Some(h) = h {
         let node = wrap(scope, h);
@@ -3729,6 +3713,7 @@ fn el_clone_node<'s>(
         }
         copy_control_state(scope, args.this(), node, deep);
         custom_elements::cloned(scope, source, node, deep);
+        shadow_html::clone_roots(scope, source, node, deep);
         rv.set(node.into());
     }
 }
@@ -7001,6 +6986,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     template_contents::install(scope);
     mutation_observers::install(scope);
     shadow_slots::install(scope);
+    shadow_html::install(scope);
     script_state::install(scope);
     range_contents::install(scope);
     bind_method(scope, global, "__htmlTextNative", html_text::dispatch);
