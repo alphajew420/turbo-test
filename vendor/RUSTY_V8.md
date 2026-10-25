@@ -16,6 +16,21 @@ This changes Rust ownership cleanup, preserving the dependency version and
 official prebuilt native archive. It does not update the embedded V8 engine to
 Chrome 155. The experimental 155 SDK remains a separate build and validation task.
 
+# Interceptor ShouldThrowOnError
+
+Upstream `PropertyCallbackArguments::should_throw_on_error` calls a binding.cc
+wrapper typed as `PropertyCallbackInfo<Value>`. V8 folds that instantiation to
+`false`: only `void`/`Boolean` callbacks (setter, definer, deleter) carry the
+should-throw slot. The prebuilt archive compiles binding.cc, so the patch fixes
+the Rust side in `src/function.rs`: `PropertyCallbackArguments` records whether
+its callback type carries the slot, reads the Smi right after the holder slot
+(V8's `kShouldThrowOnErrorIndex == kHolderIndex + 1`) and resolves the inferred
+mode through V8's exported `v8::internal::ShouldThrowOnError(Isolate*)`. Getter,
+query and enumerator callbacks keep returning `false`. The offline
+`tests/interceptor_should_throw.rs` regression checks strict and sloppy [[Set]]
+and [[Delete]], `Object.defineProperty` and the three `Reflect` forms for named
+and indexed interceptors; the original dependency reports `false` for all.
+
 The committed vendor includes every Rust source, generated platform binding,
 root manifest/metadata, example, test, benchmark and tooling file from the archive,
 plus its upstream license. Native C++ source trees are omitted from the default
