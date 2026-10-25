@@ -129,6 +129,9 @@ mod html_dialog;
 mod html_invokers;
 #[path = "html_popover.rs"]
 mod html_popover;
+#[path = "pointer_events.rs"]
+mod pointer_events;
+pub use pointer_events::{host_pointer, PointerLockPolicy};
 #[path = "html_text.rs"]
 mod html_text;
 #[path = "input_members.rs"]
@@ -438,6 +441,7 @@ struct DomState {
     css_policy: css_policy::PolicyState,
     event_handlers: event_handlers::State,
     popover: html_popover::State,
+    pointer: pointer_events::State,
     input_members: input_members::State,
     browsing_context: bool,
     ownership: Option<dom_ownership::Graph>,
@@ -651,6 +655,7 @@ fn parse_html_tree_with<'s>(
             css_policy: Default::default(),
             event_handlers: Default::default(),
             popover: Default::default(),
+            pointer: Default::default(),
             input_members: Default::default(),
             browsing_context: false,
             ownership: None,
@@ -6965,6 +6970,7 @@ fn install_with_tree(scope: &mut v8::PinScope, mut tree: Tree) {
             css_policy: Default::default(),
             event_handlers: Default::default(),
             popover: Default::default(),
+            pointer: Default::default(),
             input_members: Default::default(),
             browsing_context: true,
             ownership: None,
@@ -7079,6 +7085,7 @@ fn install_with_tree(scope: &mut v8::PinScope, mut tree: Tree) {
     event_listeners::install(scope);
     element_members::install(scope);
     html_dialog::install(scope);
+    pointer_events::install(scope);
     bind_method(scope, global, "__formNative", form_controls_native);
     run_js(scope, include_str!("form_outputs.js"));
     run_js(scope, include_str!("form_controls.js"));
@@ -9446,3 +9453,5 @@ mod html_dialog_tests;
 #[cfg(test)]
 #[path = "sanitizer_tests.rs"]
 mod sanitizer_tests;
+#[path = "pointer_events_tests.rs"]
+mod pointer_events_tests;
