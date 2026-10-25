@@ -9453,5 +9453,6 @@ mod html_dialog_tests;
 #[cfg(test)]
 #[path = "sanitizer_tests.rs"]
 mod sanitizer_tests;
+#[cfg(test)]
 #[path = "pointer_events_tests.rs"]
 mod pointer_events_tests;
