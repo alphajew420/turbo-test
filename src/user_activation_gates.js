@@ -18,7 +18,7 @@
   const namespaceOf = accessor(g.Element.prototype, 'namespaceURI'), localNameOf = accessor(g.Element.prototype, 'localName');
   const getAttribute = g.Element.prototype.getAttribute, hasAttribute = g.Element.prototype.hasAttribute;
   const checkInput = ns.domAccessor('nodeType', false, 'HTML:input'), checkSelect = ns.domAccessor('nodeType', false, 'HTML:select');
-  const EventType = g.Event, ToggleEvent = g.ToggleEvent;
+  const EventType = g.Event, ToggleEvent = g.ToggleEvent, hostOf = accessor(g.ShadowRoot.prototype, 'host');
   const isElement = value => { try { return apply(nodeType, value, []) === 1; } catch (_) { return false; } };
   const isDocument = value => { try { return apply(nodeType, value, []) === 9; } catch (_) { return false; } };
   const query = (node, kind) => Native('query', node, kind);
@@ -96,10 +96,34 @@
         rejectRequest(new ErrorType(late));
         return;
       }
-      const changed = Native('fullscreen-push', element, prefixed);
+      const changeType = prefixed ? 'webkitfullscreenchange' : 'fullscreenchange';
+      const changed = [];
+      // The element enters its document's top layer, and each same-origin ancestor
+      // document's frame container becomes that document's fullscreen element.
+      for (let node = element; node !== null; node = containerOf(node)) {
+        if (!Native('fullscreen-push', node, prefixed)) break;
+        unfocusOutside(node);
+        changed[changed.length] = node;
+      }
       resolve();
-      if (changed) schedule(element, () => fire(element, prefixed ? 'webkitfullscreenchange' : 'fullscreenchange'));
+      for (let index = 0; index < changed.length; index++) { const node = changed[index]; schedule(node, () => fire(node, changeType)); }
     });
+  }
+  // Chrome clears focus outside the new fullscreen element.
+  const activeOf = accessor(g.Document.prototype, 'activeElement'), blurOf = g.HTMLElement.prototype.blur;
+  const parentOf = accessor(g.Node.prototype, 'parentNode');
+  const inside = (node, ancestor) => { for (let current = node; current;) { if (current === ancestor) return true; const parent = apply(parentOf, current, []); current = parent !== null ? parent : apply(nodeType, current, []) === 11 ? apply(hostOf, current, []) : null; } return false; };
+  function unfocusOutside(element) {
+    const document = Native('document', element), active = apply(activeOf, document, []);
+    if (active !== null && apply(localNameOf, active, []) !== 'body' && !inside(active, element)) try { apply(blurOf, active, []); } catch (_) {}
+  }
+  // The frame container of `node`'s document in its parent document, when reachable.
+  function containerOf(node) {
+    try {
+      const view = Native('document', node).defaultView;
+      const frame = view ? view.frameElement : null;
+      return frame && isElement(frame) ? frame : null;
+    } catch (_) { return null; }
   }
   method(g.Element.prototype, 'requestFullscreen', function (options) {
     if (!isElement(this)) return reject(new ErrorType(requestPrefix + 'Illegal invocation'));
@@ -120,13 +144,28 @@
 
   const documentProto = g.Document.prototype, exitPrefix = "Failed to execute 'exitFullscreen' on 'Document': ";
   const top = document => Native('fullscreen-top', document);
+  const changeOf = (owner, exited) => { const element = exited[0], type = exited[1] ? 'webkitfullscreenchange' : 'fullscreenchange'; schedule(owner, () => fire(connected(element) ? element : owner, type)); };
+  // Unfullscreening a frame container fully exits its content document's stack.
+  function unfullscreenInner(element) {
+    let inner = null;
+    try { inner = apply(localNameOf, element, []) === 'iframe' ? element.contentDocument : null; } catch (_) {}
+    if (!inner) return;
+    for (let exited; (exited = Native('fullscreen-pop', inner)) !== null;) { changeOf(inner, exited); unfullscreenInner(exited[0]); }
+  }
   function exit(document, resolve) {
     schedule(document, () => {
       const exited = Native('fullscreen-pop', document);
+      if (exited !== null) unfullscreenInner(exited[0]);
+      // A document left without a fullscreen element no longer keeps its container fullscreen.
+      if (exited !== null && top(document) === null) {
+        const container = containerOf(document);
+        if (container !== null && top(Native('document', container)) === container) {
+          const owner = Native('document', container);
+          changeOf(owner, Native('fullscreen-pop', owner));
+        }
+      }
       resolve();
-      if (exited === null) return;
-      const element = exited[0], type = exited[1] ? 'webkitfullscreenchange' : 'fullscreenchange';
-      schedule(document, () => fire(connected(element) ? element : document, type));
+      if (exited !== null) changeOf(document, exited);
     });
   }
   method(documentProto, 'exitFullscreen', function () {
@@ -147,7 +186,7 @@
     enumerable: true, configurable: true,
   });
   // The fullscreen element retargeted against the document (out of shadow trees).
-  const rootOf = g.Node.prototype.getRootNode, hostOf = accessor(g.ShadowRoot.prototype, 'host');
+  const rootOf = g.Node.prototype.getRootNode;
   const retarget = element => { for (let root = apply(rootOf, element, []); apply(nodeType, root, []) === 11; root = apply(rootOf, element, [])) element = apply(hostOf, root, []); return element; };
   lenient('fullscreen', document => top(document) !== null);
   lenient('fullscreenElement', document => { const element = top(document); return element === null ? null : retarget(element); });
