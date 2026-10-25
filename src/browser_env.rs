@@ -19,6 +19,8 @@ mod dom_isolation;
 mod dom_ownership;
 #[path = "element_internals.rs"]
 mod element_internals;
+#[path = "element_members.rs"]
+mod element_members;
 pub use dom_isolation::{activate_isolate, reset_isolate, NativeDomScope};
 #[path = "storage_ownership.rs"]
 mod storage_ownership;
@@ -6992,6 +6994,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     html_popover::install(scope);
     document_xpath::install(scope);
     event_listeners::install(scope);
+    element_members::install(scope);
     bind_method(scope, global, "__formNative", form_controls_native);
     run_js(scope, include_str!("form_controls.js"));
     run_js(scope, include_str!("form_collections.js"));
