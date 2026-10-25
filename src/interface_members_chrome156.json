@@ -1,0 +1,274 @@
+{
+  "browser": "Chrome/156.0.8078.47",
+  "v8": "15.6.75.19",
+  "casesSha256": "157c52ec0b721c4e37657a2769a7fb9d3461ac2bd683d4241f90500e221c4024",
+  "probeSha256": "7727df964971dac5e3703f48a87f38c4d29c94173fc8615f40f797d4d0b30589",
+  "collectorSha256": "eff66fa3d1ac0bb8d9cd965e2d7fdb9f6ef3fa41d0a8ca092898c3208a567e9a",
+  "flags": [
+    "--headless=new",
+    "--remote-debugging-pipe",
+    "--user-data-dir=<fresh-profile>",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "--disable-component-extensions-with-background-pages",
+    "about:blank"
+  ],
+  "errors": [],
+  "result": [
+    {
+      "id": "interface-members",
+      "result": {
+        "mediaConstants": [
+          [
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 0
+            },
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 0
+            },
+            0,
+            0
+          ],
+          [
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 1
+            },
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 1
+            },
+            1,
+            1
+          ],
+          [
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 2
+            },
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 2
+            },
+            2,
+            2
+          ],
+          [
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 3
+            },
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 3
+            },
+            3,
+            3
+          ],
+          [
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 0
+            },
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 0
+            },
+            0,
+            0
+          ],
+          [
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 1
+            },
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 1
+            },
+            1,
+            1
+          ],
+          [
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 2
+            },
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 2
+            },
+            2,
+            2
+          ],
+          [
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 3
+            },
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 3
+            },
+            3,
+            3
+          ],
+          [
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 4
+            },
+            {
+              "c": false,
+              "e": true,
+              "w": false,
+              "v": 4
+            },
+            4,
+            4
+          ]
+        ],
+        "mediaLoadingDesc": {
+          "c": true,
+          "e": true,
+          "get": {
+            "name": "get loading",
+            "length": 0
+          },
+          "set": {
+            "name": "set loading",
+            "length": 1
+          }
+        },
+        "mediaLoading": [
+          [
+            "eager",
+            null
+          ],
+          [
+            "lazy",
+            "lazy"
+          ],
+          [
+            "lazy",
+            "LAZY"
+          ],
+          [
+            "eager",
+            "eager"
+          ],
+          [
+            "eager",
+            "bogus"
+          ],
+          [
+            "eager",
+            ""
+          ],
+          [
+            "eager",
+            "null"
+          ],
+          [
+            "eager",
+            "7"
+          ],
+          [
+            "eager"
+          ],
+          [
+            "eager"
+          ]
+        ],
+        "mediaLoadingBrand": [
+          "throw",
+          "TypeError"
+        ],
+        "scriptSupports": [
+          {
+            "c": true,
+            "e": true,
+            "w": true,
+            "v": {
+              "name": "supports",
+              "length": 1
+            }
+          },
+          true,
+          true,
+          true,
+          true,
+          true,
+          false,
+          false,
+          false,
+          false,
+          "throw",
+          [
+            "ok",
+            true
+          ]
+        ],
+        "plugins": [
+          {
+            "c": true,
+            "e": true,
+            "get": {
+              "name": "get plugins",
+              "length": 0
+            },
+            "set": "undefined"
+          },
+          true,
+          "[object HTMLCollection]"
+        ],
+        "toBlob": {
+          "c": true,
+          "e": true,
+          "w": true,
+          "v": {
+            "name": "toBlob",
+            "length": 1
+          }
+        }
+      }
+    }
+  ]
+}
