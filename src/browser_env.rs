@@ -70,6 +70,12 @@ pub use mutation_observers::{install_mutation_consumer, remove_mutation_consumer
 pub fn capture_popover_scheduler(scope: &mut v8::PinScope) {
     html_popover::capture_scheduler(scope);
 }
+/// Capture the host's rendering seam for view transitions: `host("frame", step)` runs
+/// `step(timestamp)` after the next frame's animation frame callbacks, `host("suppress",
+/// flag)` pauses or resumes rendering updates, and `host("hidden")` reports page visibility.
+pub fn capture_view_transition_host(scope: &mut v8::PinScope, host: v8::Local<v8::Function>) {
+    view_transitions::capture_host(scope, host);
+}
 
 /// Capture the embedder's `File` interface once the runtime has installed it, before
 /// page script: FileList selections, file form entries and DataTransfer use it.
@@ -175,6 +181,8 @@ pub use user_activation_gates::{
     light_dismiss, modal_backdrop, notify_user_activation, process_close_watchers,
     set_activation_host, ActivationHost, ActivationQuery,
 };
+#[path = "view_transitions.rs"]
+mod view_transitions;
 
 /// Host-only composed identities for native layout. This seam does not expose
 /// closed roots or private assignment records to guest JavaScript.
@@ -478,6 +486,7 @@ struct DomState {
     popover: html_popover::State,
     pointer: pointer_events::State,
     activation: user_activation_gates::State,
+    view_transitions: view_transitions::State,
     input_members: input_members::State,
     browsing_context: bool,
     ownership: Option<dom_ownership::Graph>,
@@ -694,6 +703,7 @@ fn parse_html_tree_with<'s>(
             popover: Default::default(),
             pointer: Default::default(),
             activation: Default::default(),
+            view_transitions: Default::default(),
             input_members: Default::default(),
             browsing_context: false,
             ownership: None,
@@ -1339,6 +1349,32 @@ fn with_tree_mut<R>(f: impl FnOnce(&mut Tree) -> R) -> Option<R> {
 
 // ---- element methods -------------------------------------------------------------------------
 
+/// Hosts that install their own DOMException after the binding (turbo-surf's runtime) hand
+/// it over here, so natively raised exceptions are instances of the realm's interface.
+pub fn register_dom_exception(scope: &mut v8::PinScope, constructor: v8::Local<v8::Function>) {
+    // The constructor's own realm, never the (possibly parent) current context.
+    let Some(context) = constructor.get_creation_context(scope) else {
+        return;
+    };
+    let global = context.global(scope);
+    let key = dom_exception_key(scope);
+    global.set_private(scope, key, constructor.into());
+}
+/// A DOMException of the current realm's registered interface.
+fn new_dom_exception<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    name: &str,
+    message: &str,
+) -> Option<v8::Local<'s, v8::Object>> {
+    let text = v8::String::new(scope, message)?;
+    let name = v8::String::new(scope, name)?;
+    let global = scope.get_current_context().global(scope);
+    let key = dom_exception_key(scope);
+    let constructor = global
+        .get_private(scope, key)
+        .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())?;
+    constructor.new_instance(scope, &[text.into(), name.into()])
+}
 fn dom_exception_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
     let name = v8::String::new(scope, "turbo.native.DOMException").unwrap();
     v8::Private::for_api(scope, Some(name))
@@ -3149,6 +3185,7 @@ fn selector_argument<'s>(
     let transformed = html_dialog::selector(scope, node, &transformed)?;
     let transformed = interest_invokers::selector(scope, node, &transformed)?;
     let transformed = form_pseudo::selector(scope, node, &transformed)?;
+    let transformed = view_transitions::selector(scope, node, &transformed)?;
     let original = if transformed == scalar {
         units
     } else {
@@ -7036,6 +7073,7 @@ fn install_with_tree(scope: &mut v8::PinScope, mut tree: Tree) {
             popover: Default::default(),
             pointer: Default::default(),
             activation: Default::default(),
+            view_transitions: Default::default(),
             input_members: Default::default(),
             browsing_context: true,
             ownership: None,
@@ -7167,6 +7205,7 @@ fn install_with_tree(scope: &mut v8::PinScope, mut tree: Tree) {
     hyperlink_utils::install(scope);
     form_pseudo::install(scope);
     user_activation_gates::install(scope);
+    view_transitions::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
@@ -9550,3 +9589,7 @@ mod form_pseudo_tests;
 #[cfg(test)]
 #[path = "key_order_tests.rs"]
 mod key_order_tests;
+
+#[cfg(test)]
+#[path = "view_transitions_tests.rs"]
+mod view_transitions_tests;
