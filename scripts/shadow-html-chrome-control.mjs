@@ -1,5 +1,6 @@
 // Capture a shadow-root/HTML-serialization probe in independently installed headless Chrome.
-// Usage: node scripts/shadow-html-chrome-control.mjs --probe src/x_probe.js --out src/x_chrome156.json [--chrome PATH]
+// Usage: node scripts/shadow-html-chrome-control.mjs --probe src/x_probe.js --out src/x_chrome156.json [--chrome PATH] [--page PAGE.html]
+// --page serves that document (recorded with its SHA-256) instead of the empty default page.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +10,12 @@ import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 const { values } = parseArgs({
-  options: { probe: { type: "string" }, out: { type: "string" }, chrome: { type: "string" } },
+  options: {
+    probe: { type: "string" },
+    out: { type: "string" },
+    chrome: { type: "string" },
+    page: { type: "string" },
+  },
 });
 if (!values.probe || !values.out) throw Error("Pass --probe PROBE.js --out ORACLE.json");
 const executable = resolve(
@@ -19,9 +25,12 @@ const executable = resolve(
 );
 if (!existsSync(executable)) throw Error(`Chrome not found at ${executable}`);
 const source = readFileSync(resolve(values.probe), "utf8");
+const page = values.page
+  ? readFileSync(resolve(values.page), "utf8")
+  : "<!doctype html><html><head></head><body></body></html>";
 const server = createServer((_request, response) => {
   response.setHeader("Content-Type", "text/html");
-  response.end("<!doctype html><html><head></head><body></body></html>");
+  response.end(page);
 });
 await new Promise((done) => server.listen(0, "127.0.0.1", done));
 const profile = mkdtempSync(join(tmpdir(), "turbo-shadow-html-oracle-"));
@@ -98,6 +107,9 @@ try {
     recordedAt: new Date().toISOString(),
     fixture: basename(values.probe),
     probeSha256: createHash("sha256").update(source).digest("hex"),
+    ...(values.page
+      ? { page: basename(values.page), pageSha256: createHash("sha256").update(page).digest("hex") }
+      : {}),
     flags: ["--headless=new", "--disable-extensions"],
     result: JSON.parse(evaluated.result.value),
   };
