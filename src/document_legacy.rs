@@ -99,25 +99,33 @@ fn supported<'s>(
     )?;
     Some(result.is_true())
 }
-fn all_index_setter<'s, 'i>(
+// Setter/definer callbacks are generic over the ReturnValue type: the stock SDK
+// passes `ReturnValue<()>`, source-built engines (V8 15.4+) `ReturnValue<Boolean>`.
+fn all_index_setter<'s, 'i, T: 'static>(
     scope: &mut v8::PinScope<'s, 'i>,
     index: u32,
     _value: v8::Local<'s, v8::Value>,
     args: v8::PropertyCallbackArguments<'s>,
-    mut rv: v8::ReturnValue<()>,
-) -> v8::Intercepted {
+    mut rv: v8::ReturnValue<T>,
+) -> v8::Intercepted
+where
+    for<'cb> v8::ReturnValue<'cb, T>: NamedMutationResult,
+{
     if !reject(scope, &args, false, &index_message(index, "set")) {
-        rv.set_bool(false);
+        rv.set_success(false);
     }
     v8::Intercepted::kYes
 }
-fn all_index_definer<'s, 'i>(
+fn all_index_definer<'s, 'i, T: 'static>(
     scope: &mut v8::PinScope<'s, 'i>,
     index: u32,
     _descriptor: &v8::PropertyDescriptor,
     args: v8::PropertyCallbackArguments<'s>,
-    _rv: v8::ReturnValue<()>,
-) -> v8::Intercepted {
+    _rv: v8::ReturnValue<T>,
+) -> v8::Intercepted
+where
+    for<'cb> v8::ReturnValue<'cb, T>: NamedMutationResult,
+{
     reject(scope, &args, true, &index_message(index, "define"));
     v8::Intercepted::kYes
 }
@@ -155,28 +163,34 @@ fn all_named_mutation<'s>(
         &named_message(&text, operation),
     ))
 }
-fn all_named_setter<'s, 'i>(
+fn all_named_setter<'s, 'i, T: 'static>(
     scope: &mut v8::PinScope<'s, 'i>,
     name: v8::Local<'s, v8::Name>,
     _value: v8::Local<'s, v8::Value>,
     args: v8::PropertyCallbackArguments<'s>,
-    mut rv: v8::ReturnValue<()>,
-) -> v8::Intercepted {
+    mut rv: v8::ReturnValue<T>,
+) -> v8::Intercepted
+where
+    for<'cb> v8::ReturnValue<'cb, T>: NamedMutationResult,
+{
     let Some(thrown) = all_named_mutation(scope, name, &args, "set") else {
         return v8::Intercepted::kNo;
     };
     if !thrown {
-        rv.set_bool(false);
+        rv.set_success(false);
     }
     v8::Intercepted::kYes
 }
-fn all_named_definer<'s, 'i>(
+fn all_named_definer<'s, 'i, T: 'static>(
     scope: &mut v8::PinScope<'s, 'i>,
     name: v8::Local<'s, v8::Name>,
     _descriptor: &v8::PropertyDescriptor,
     args: v8::PropertyCallbackArguments<'s>,
-    _rv: v8::ReturnValue<()>,
-) -> v8::Intercepted {
+    _rv: v8::ReturnValue<T>,
+) -> v8::Intercepted
+where
+    for<'cb> v8::ReturnValue<'cb, T>: NamedMutationResult,
+{
     match all_named_mutation(scope, name, &args, "define") {
         None => v8::Intercepted::kNo,
         Some(_) => v8::Intercepted::kYes,
