@@ -56,6 +56,7 @@ def require_same_distribution(expected, actual):
 def verify_source(source_root=ROOT):
     pins = json.loads((source_root / "RUSTY_V8_SOURCE_PINS.json").read_text())
     checks = {"Cargo.toml": "release_manifest_sha256", "src/isolate.rs": "patched_isolate_sha256",
+              "src/function.rs": "patched_function_sha256",
               "LICENSE": "license_sha256", "tests/test_api.rs": "release_teardown_tests_sha256"}
     for path, pin in checks.items():
         if hashlib.sha256((source_root / "rusty_v8" / path).read_bytes()).hexdigest() != pins[pin]:
