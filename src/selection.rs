@@ -24,19 +24,24 @@ thread_local! {
 }
 
 pub(super) fn clear() {
-    WATCHED.with(|set| set.borrow_mut().clear());
+    // Teardown can run while thread-locals are being destroyed.
+    let _ = WATCHED.try_with(|set| set.borrow_mut().clear());
 }
 
 /// `node` is about to leave its parent: disconnect value ranges of watched controls inside.
 pub(super) fn removing(scope: &mut v8::PinScope, node: Handle) {
-    let dom = DOM_ID.with(|id| id.get());
-    let watched: Vec<Handle> = WATCHED.with(|set| {
-        set.borrow()
-            .iter()
-            .filter(|(id, _)| *id == dom)
-            .map(|(_, handle)| *handle)
-            .collect()
-    });
+    let Ok(dom) = DOM_ID.try_with(|id| id.get()) else {
+        return;
+    };
+    let watched: Vec<Handle> = WATCHED
+        .try_with(|set| {
+            set.borrow()
+                .iter()
+                .filter(|(id, _)| *id == dom)
+                .map(|(_, handle)| *handle)
+                .collect()
+        })
+        .unwrap_or_default();
     if watched.is_empty() {
         return;
     }
@@ -63,7 +68,7 @@ pub(super) fn removing(scope: &mut v8::PinScope, node: Handle) {
         return;
     };
     for control in inside {
-        WATCHED.with(|set| set.borrow_mut().remove(&(dom, control)));
+        let _ = WATCHED.try_with(|set| set.borrow_mut().remove(&(dom, control)));
         let Some(hook) = hooks.removed.to_local(scope) else {
             return;
         };
