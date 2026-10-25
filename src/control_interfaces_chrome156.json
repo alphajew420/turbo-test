@@ -2,7 +2,7 @@
   "browser": "Chrome/156.0.8078.47",
   "v8": "15.6.75.19",
   "casesSha256": "4b9763173e9fa662bf2b32ebe3bd3376843500ec7fd49729b3eecfbd33cbec36",
-  "probeSha256": "472bdf24a14ebcf06fa9ec0c2c6c3d4a6611ed9a2108b3f3400effc66e7be712",
+  "probeSha256": "fdd097137051ff1bb1b0073f70e8ffe2b8897bdbeaf57dd5183e23a0f7671b7a",
   "collectorSha256": "eff66fa3d1ac0bb8d9cd965e2d7fdb9f6ef3fa41d0a8ca092898c3208a567e9a",
   "flags": [
     "--headless=new",
@@ -1534,6 +1534,192 @@
               }
             ]
           },
+          "ProgressEvent": {
+            "ctor": {
+              "length": {
+                "c": true,
+                "e": false,
+                "w": false,
+                "v": 1
+              },
+              "name": {
+                "c": true,
+                "e": false,
+                "w": false,
+                "v": "ProgressEvent"
+              },
+              "prototype": {
+                "c": false,
+                "e": false,
+                "w": false,
+                "v": "object"
+              }
+            },
+            "proto": {
+              "Symbol(Symbol.toStringTag)": {
+                "c": true,
+                "e": false,
+                "w": false,
+                "v": "ProgressEvent"
+              },
+              "constructor": {
+                "c": true,
+                "e": false,
+                "w": true,
+                "v": {
+                  "name": "ProgressEvent",
+                  "length": 1,
+                  "ctor": true,
+                  "proto": true
+                }
+              },
+              "lengthComputable": {
+                "c": true,
+                "e": true,
+                "get": {
+                  "name": "get lengthComputable",
+                  "length": 0,
+                  "ctor": false,
+                  "proto": false
+                },
+                "set": "undefined"
+              },
+              "loaded": {
+                "c": true,
+                "e": true,
+                "get": {
+                  "name": "get loaded",
+                  "length": 0,
+                  "ctor": false,
+                  "proto": false
+                },
+                "set": "undefined"
+              },
+              "total": {
+                "c": true,
+                "e": true,
+                "get": {
+                  "name": "get total",
+                  "length": 0,
+                  "ctor": false,
+                  "proto": false
+                },
+                "set": "undefined"
+              }
+            },
+            "parent": "Event",
+            "protoParent": "[object Event]",
+            "global": {
+              "c": true,
+              "e": false,
+              "w": true,
+              "v": {
+                "name": "ProgressEvent",
+                "length": 1,
+                "ctor": true,
+                "proto": true
+              }
+            },
+            "construct": [
+              "ok",
+              {
+                "isTrusted": false
+              }
+            ]
+          },
+          "CloseEvent": {
+            "ctor": {
+              "length": {
+                "c": true,
+                "e": false,
+                "w": false,
+                "v": 1
+              },
+              "name": {
+                "c": true,
+                "e": false,
+                "w": false,
+                "v": "CloseEvent"
+              },
+              "prototype": {
+                "c": false,
+                "e": false,
+                "w": false,
+                "v": "object"
+              }
+            },
+            "proto": {
+              "Symbol(Symbol.toStringTag)": {
+                "c": true,
+                "e": false,
+                "w": false,
+                "v": "CloseEvent"
+              },
+              "code": {
+                "c": true,
+                "e": true,
+                "get": {
+                  "name": "get code",
+                  "length": 0,
+                  "ctor": false,
+                  "proto": false
+                },
+                "set": "undefined"
+              },
+              "constructor": {
+                "c": true,
+                "e": false,
+                "w": true,
+                "v": {
+                  "name": "CloseEvent",
+                  "length": 1,
+                  "ctor": true,
+                  "proto": true
+                }
+              },
+              "reason": {
+                "c": true,
+                "e": true,
+                "get": {
+                  "name": "get reason",
+                  "length": 0,
+                  "ctor": false,
+                  "proto": false
+                },
+                "set": "undefined"
+              },
+              "wasClean": {
+                "c": true,
+                "e": true,
+                "get": {
+                  "name": "get wasClean",
+                  "length": 0,
+                  "ctor": false,
+                  "proto": false
+                },
+                "set": "undefined"
+              }
+            },
+            "parent": "Event",
+            "protoParent": "[object Event]",
+            "global": {
+              "c": true,
+              "e": false,
+              "w": true,
+              "v": {
+                "name": "CloseEvent",
+                "length": 1,
+                "ctor": true,
+                "proto": true
+              }
+            },
+            "construct": [
+              "ok",
+              {
+                "isTrusted": false
+              }
+            ]
+          },
           "HTMLAnchorElement.url": {
             "href": {
               "c": true,
@@ -2221,6 +2407,41 @@
                 "isTrusted"
               ],
               true
+            ],
+            "TypeError",
+            "TypeError"
+          ],
+          "progress": [
+            [
+              true,
+              5.7,
+              -1
+            ],
+            [
+              false,
+              9007199254740992,
+              3
+            ],
+            [
+              false,
+              0,
+              0
+            ],
+            "TypeError",
+            "TypeError",
+            "TypeError",
+            "TypeError"
+          ],
+          "close": [
+            [
+              true,
+              4464,
+              "4"
+            ],
+            [
+              false,
+              0,
+              ""
             ],
             "TypeError",
             "TypeError"

@@ -20,7 +20,7 @@
     return { ctor: shape(C), proto: shape(C.prototype), parent: Object.getPrototypeOf(C).name, protoParent: Object.prototype.toString.call(Object.getPrototypeOf(C.prototype)), global: desc(globalThis, name), construct: run(() => new C('x')) };
   };
   const out = { shapes: {} };
-  for (const name of ['HTMLLabelElement', 'HTMLOptionElement', 'HTMLSelectElement', 'HTMLTextAreaElement', 'HTMLOptionsCollection', 'CustomEvent', 'PopStateEvent', 'HashChangeEvent'])
+  for (const name of ['HTMLLabelElement', 'HTMLOptionElement', 'HTMLSelectElement', 'HTMLTextAreaElement', 'HTMLOptionsCollection', 'CustomEvent', 'PopStateEvent', 'HashChangeEvent', 'ProgressEvent', 'CloseEvent'])
     out.shapes[name] = iface(name);
   const urlNames = ['href', 'origin', 'protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash', 'toString'];
   for (const name of ['HTMLAnchorElement', 'HTMLAreaElement']) {
@@ -138,6 +138,8 @@
     out.events = {
       custom: [c.detail.a, c.bubbles, c2.detail, init, proto(c), run(() => new CustomEvent())[1], run(() => CustomEvent('x'))[1], run(() => Object.getOwnPropertyDescriptor(CustomEvent.prototype, 'detail').get.call(new Event('q')))[1], run(() => c.initCustomEvent())[1]],
       pop: [p.state.s, new PopStateEvent('p').state, p.hasUAVisualTransition, proto(p), run(() => new PopStateEvent())[1], run(() => Object.getOwnPropertyDescriptor(PopStateEvent.prototype, 'state').get.call(c))[1]],
+      progress: [new ProgressEvent('p', { lengthComputable: 1, loaded: 5.7, total: -1 }), new ProgressEvent('p', { loaded: 2 ** 53, total: '3' }), new ProgressEvent('p')].map((e) => [e.lengthComputable, e.loaded, e.total]).concat([run(() => new ProgressEvent('p', { total: NaN }))[1], run(() => new ProgressEvent('p', { loaded: Infinity }))[1], run(() => new ProgressEvent())[1], run(() => Object.getOwnPropertyDescriptor(ProgressEvent.prototype, 'loaded').get.call(p))[1]]),
+      close: [new CloseEvent('close', { wasClean: 'yes', code: 70000, reason: 4 }), new CloseEvent('close')].map((e) => [e.wasClean, e.code, e.reason]).concat([run(() => new CloseEvent())[1], run(() => Object.getOwnPropertyDescriptor(CloseEvent.prototype, 'code').get.call(p))[1]]),
       hash: [h.oldURL, h.newURL, new HashChangeEvent('h').oldURL, proto(h), run(() => new HashChangeEvent())[1], run(() => Object.getOwnPropertyDescriptor(HashChangeEvent.prototype, 'newURL').get.call(p))[1]],
     };
   }
