@@ -21,6 +21,8 @@ mod dom_isolation;
 mod dom_ownership;
 #[path = "element_internals.rs"]
 mod element_internals;
+#[path = "animations.rs"]
+mod animations;
 #[path = "element_members.rs"]
 mod element_members;
 pub use dom_isolation::{activate_isolate, reset_isolate, NativeDomScope};
@@ -7093,6 +7095,7 @@ fn install_with_tree(scope: &mut v8::PinScope, mut tree: Tree) {
     html_invokers::install(scope);
     input_members::install(scope);
     select_element::install(scope);
+    animations::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
@@ -9456,3 +9459,6 @@ mod sanitizer_tests;
 #[cfg(test)]
 #[path = "pointer_events_tests.rs"]
 mod pointer_events_tests;
+#[cfg(test)]
+#[path = "animations_tests.rs"]
+mod animations_tests;
