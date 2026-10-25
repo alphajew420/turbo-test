@@ -13,6 +13,68 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   It publishes only the reviewed V8 dependency before the original tagged
   pipeline resumes; the product version, release tag and runtime stay unchanged.
 
+## [0.4.8] - 2026-10-25 — Chrome-parity batch for turbo-surf#28
+
+Closes a large set of measured missing DOM members and behaviours from
+turbo-surf issue 28's paired API inventory. Every closed surface has an
+independently captured Chrome 156.0.8078.47 / V8 15.6.75.19 control
+(`src/*_chrome156.json`, probe SHA recorded) and an offline regression that runs
+the same probe in the binding and asserts equality; irreducible deltas are pinned
+as explicit KNOWN_GAP assertions, never skipped. No presence-only stubs: members
+that cannot be truthful without a browser stay open. Integration PR: #29.
+
+### Added
+- HTMLMeterElement / HTMLProgressElement / HTMLOutputElement reflection, clamping,
+  `htmlFor` token list and Chrome's output default-value/reset behaviour.
+- HTMLSelectElement collection API (`add`/`remove`/`item`/`namedItem`/`length`/
+  `size`/`type`/iterator, indexed access) and a live, same-object
+  `HTMLOptionsCollection` for `select.options`; live `selectedOptions`.
+- HTMLInputElement / HTMLTextAreaElement members (`stepUp`/`stepDown` with Blink's
+  Decimal arithmetic, `valueAsDate`/`valueAsNumber`, `maxLength`/`minLength`,
+  `size`/`cols`/`rows`/`wrap`, `indeterminate`, `list`, `textLength`, `type`, …)
+  and Chrome value sanitization per input type.
+- File-state inputs: `FileList`, `input.files`, `webkitEntries`, fakepath values,
+  file form entries, and the `DataTransfer` / `DataTransferItemList` family.
+- Invoker commands (`command`, `commandForElement`, `popoverTargetAction/Element`,
+  `CommandEvent`) and genuine `HTMLDialogElement` behaviour (`show`/`showModal`/
+  `close`/`requestClose`/`returnValue`/`closedBy`, events, `:modal`/`:open`,
+  focusing steps, `method=dialog`).
+- `getHTML`/`setHTMLUnsafe`, ShadowRoot init state (`clonable`/`serializable`/
+  `delegatesFocus`), `activeElement`, `styleSheets`, `onslotchange`; declarative
+  shadow DOM in the main document parse and `Document.parseHTML[Unsafe]`.
+- HTML Sanitizer API and safe `Element`/`ShadowRoot` `setHTML`.
+- `ShadowRoot.referenceTarget`, interest invokers (`interestForElement`,
+  `InterestEvent`), and `focusgroup` arrow-key navigation.
+- `document.all` (undetectable `HTMLAllCollection`), `domain`, `lastModified`,
+  inert fullscreen / pointer-lock / picture-in-picture state.
+- Pointer capture and pointer lock state machines driven by trusted input.
+- Web Animations (`Element.animate`, `getAnimations`, `document.timeline`,
+  `Animation`, `KeyframeEffect`, …) applied through computed style.
+- CSS Typed OM Level 1 (`computedStyleMap`, `attributeStyleMap`, `styleMap`, all
+  value classes) with a Chromium-156-generated property registry.
+- CSS `zoom` grammar and computed value; `Element.pseudo()` / `CSSPseudoElement`;
+  `Document.fragmentDirective`; `webkitMatchesSelector`; eight Element-level event
+  handlers; CustomEvent/PopStateEvent/HashChangeEvent/ProgressEvent/CloseEvent;
+  native link URL members on `<a>`/`<area>`.
+
+### Fixed
+- Strict CSSOM selector admission: unknown pseudo-classes are rejected like Chrome
+  (forgiving `:is()`/`:where()` preserved); `querySelector`/`matches`/`closest`
+  now throw `SyntaxError` for selectors Chrome rejects. The previously ignored
+  unknown-pseudo regression now passes.
+- Implicit inherited `color`/`visibility` see CSSOM rule mutations.
+- Input-only members removed from the wrong control prototypes (HTMLLabelElement,
+  HTMLSelectElement, HTMLTextAreaElement, HTMLOptionElement); control members
+  enumerable as in Chrome.
+- `document.activeElement` retargets out of shadow trees; `form.elements` works for
+  forms inside shadow roots; a plain `new Event('click')` no longer runs checkbox
+  activation; `<noscript>` serializes literally with scripting enabled.
+
+### Known gaps
+- Composed events dispatched inside a shadow tree still don't reach the host's
+  ancestors; rusty_v8 `should_throw_on_error()` deltas on interceptors; prototype
+  own-key order (`constructor` first). Tracked in turbo-surf issue 28.
+
 ## [0.4.7] - 2026-10-21
 
 Release the combined browser ownership/lifecycle and computed-style follow-ups
