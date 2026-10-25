@@ -958,6 +958,9 @@ if(typeof __ns.makeNativeFunction==='function'){
     // is entered. Without it, partials commit and the controlled reset mangles the result.
     var validForType = function(el, v){
       var t = (el.getAttribute('type') || 'text').toLowerCase();
+      // Range, the date/time family and textarea newlines follow Chromium (input_members.js).
+      var sanitized = __ns.sanitizeControlValue ? __ns.sanitizeControlValue(el, t, v) : undefined;
+      if (sanitized !== undefined) return sanitized;
       if (t === 'date') return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
       if (t === 'time') return /^\d{2}:\d{2}(:\d{2})?$/.test(v) ? v : '';
       if (t === 'month') return /^\d{4}-\d{2}$/.test(v) ? v : '';

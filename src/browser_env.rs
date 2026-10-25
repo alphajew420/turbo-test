@@ -118,6 +118,8 @@ mod element_relations;
 mod html_popover;
 #[path = "html_text.rs"]
 mod html_text;
+#[path = "input_members.rs"]
+mod input_members;
 #[path = "shadow_slots.rs"]
 mod shadow_slots;
 
@@ -416,6 +418,7 @@ struct DomState {
     css_policy: css_policy::PolicyState,
     event_handlers: event_handlers::State,
     popover: html_popover::State,
+    input_members: input_members::State,
     browsing_context: bool,
     ownership: Option<dom_ownership::Graph>,
     ownership_dirty: bool,
@@ -611,6 +614,7 @@ fn parse_html_tree<'s>(
             css_policy: Default::default(),
             event_handlers: Default::default(),
             popover: Default::default(),
+            input_members: Default::default(),
             browsing_context: false,
             ownership: None,
             ownership_dirty: true,
@@ -786,6 +790,7 @@ fn copy_control_state<'s>(
     clone: v8::Local<'s, v8::Object>,
     deep: bool,
 ) {
+    input_members::copy(scope, source, clone, deep);
     let function = {
         let _source = DomScope::for_object(scope, source);
         DOM.with(|dom| {
@@ -4583,6 +4588,8 @@ fn el_dispatch_event(
     };
     let check_snapshot = click_check.map(|_| form_checked_state::snapshot(target));
     let check_was = click_check.map(|_| form_checked_state::checked(target));
+    let indeterminate_was =
+        (click_check == Some(CheckKind::Checkbox)).then(|| input_members::pre_activation(target));
     if let (Some(kind), Some(was)) = (click_check, check_was) {
         let next = if kind == CheckKind::Radio { true } else { !was };
         form_checked_state::set(target, next);
@@ -4780,6 +4787,9 @@ fn el_dispatch_event(
             dispatch_synthetic(scope, target, "change", true, false);
         } else if let Some(snapshot) = check_snapshot {
             form_checked_state::restore(snapshot);
+            if let Some(previous) = indeterminate_was {
+                input_members::cancel_activation(target, previous);
+            }
         }
     }
 
@@ -6892,6 +6902,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
             css_policy: Default::default(),
             event_handlers: Default::default(),
             popover: Default::default(),
+            input_members: Default::default(),
             browsing_context: true,
             ownership: None,
             ownership_dirty: true,
@@ -6995,6 +7006,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     bind_method(scope, global, "__formNative", form_controls_native);
     run_js(scope, include_str!("form_controls.js"));
     run_js(scope, include_str!("form_collections.js"));
+    input_members::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
