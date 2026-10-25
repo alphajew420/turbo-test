@@ -13,7 +13,7 @@
   const ErrorType = TypeError, RangeType = RangeError;
   const isFiniteNumber = Number.isFinite, isNaNValue = Number.isNaN, mathAbs = Math.abs, mathMin = Math.min, mathMax = Math.max, mathRound = Math.round, mathTrunc = Math.trunc, mathTan = Math.tan, mathPI = Math.PI, mathE = Math.E, mathPow = Math.pow, mathSqrt = Math.sqrt, mathSin = Math.sin, mathCos = Math.cos, mathAsin = Math.asin, mathAcos = Math.acos, mathAtan = Math.atan, mathAtan2 = Math.atan2, mathLog = Math.log, mathExp = Math.exp, mathFloor = Math.floor, mathCeil = Math.ceil, mathSign = Math.sign;
   const lowerCase = Function.prototype.call.bind(String.prototype.toLowerCase);
-  const charCode = Function.prototype.call.bind(String.prototype.charCodeAt), sliceText = Function.prototype.call.bind(String.prototype.slice), startsWith = Function.prototype.call.bind(String.prototype.startsWith), indexOfText = Function.prototype.call.bind(String.prototype.indexOf), trimText = Function.prototype.call.bind(String.prototype.trim), toPrecision = Function.prototype.call.bind(Number.prototype.toPrecision), replaceText = Function.prototype.call.bind(String.prototype.replace), testRegExp = Function.prototype.call.bind(RegExp.prototype.test), execRegExp = Function.prototype.call.bind(RegExp.prototype.exec);
+  const charCode = Function.prototype.call.bind(String.prototype.charCodeAt), sliceText = Function.prototype.call.bind(String.prototype.slice), startsWith = Function.prototype.call.bind(String.prototype.startsWith), indexOfText = Function.prototype.call.bind(String.prototype.indexOf), trimText = Function.prototype.call.bind(String.prototype.trim), replaceText = Function.prototype.call.bind(String.prototype.replace), testRegExp = Function.prototype.call.bind(RegExp.prototype.test), execRegExp = Function.prototype.call.bind(RegExp.prototype.exec);
   const weakGet = Function.prototype.call.bind(WeakMap.prototype.get), weakSet = Function.prototype.call.bind(WeakMap.prototype.set);
   const mapGet = Function.prototype.call.bind(Map.prototype.get), mapSet = Function.prototype.call.bind(Map.prototype.set);
   const arrayIterator = Array.prototype[Symbol.iterator], symbolIterator = Symbol.iterator, symbolTag = Symbol.toStringTag;
@@ -134,7 +134,7 @@
   const unitSuffix = (name) => name === 'number' ? '' : name === 'percent' ? '%' : name;
 
   // %.6g: six significant digits, exponent form outside [1e-4, 1e6), trailing zeros dropped.
-  const toExponential = Function.prototype.call.bind(Number.prototype.toExponential), toFixed = Function.prototype.call.bind(Number.prototype.toFixed);
+  const toExponential = Function.prototype.call.bind(Number.prototype.toExponential);
   const stripZeros = (text) => indexOfText(text, '.') >= 0 ? replaceText(replaceText(text, /0+$/, ''), /\.$/, '') : text;
   // Round to six significant digits half-to-even on the exact binary value, as %.6g does.
   function formatG(number) {
@@ -397,8 +397,17 @@
   const isName = (c) => isNameStart(c) || isDigit(c) || c === 45;
   const isSpace = (c) => c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
   const fromCode = String.fromCodePoint;
+  // css-syntax-3 input preprocessing: CRLF/CR/FF to LF and NUL to U+FFFD.
+  function preprocess(source) {
+    let text = '';
+    for (let index = 0; index < source.length; index++) {
+      const c = charCode(source, index);
+      if (c === 13) { text += '\n'; if (charCode(source, index + 1) === 10) index++; } else if (c === 12) text += '\n'; else if (c === 0) text += '\uFFFD'; else text += source[index];
+    }
+    return text;
+  }
   function tokenize(source) {
-    const text = replaceText(replaceText(toStringValue(source), /\r\n?|\f/g, '\n'), /\0/g, '�');
+    const text = preprocess(toStringValue(source));
     const tokens = list(), length = text.length; let at = 0;
     const code = (offset) => at + offset < length ? charCode(text, at + offset) : -1;
     const validEscape = (a, b) => a === 92 && b !== 10;
@@ -1367,7 +1376,7 @@
   });
   attribute('CSSPerspective', 'length', (self) => brand(self, brandSets.CSSPerspective).length, (self, length) => { const record = brand(self, brandSets.CSSPerspective), value = perspectiveLength(length); if (!value) throw fail('Must pass length or none to CSSPerspective'); record.length = value; });
   let matrixApi = null;
-  const MATRIX_FIELDS = plain(['m11', 'm12', 'm13', 'm14', 'm21', 'm22', 'm23', 'm24', 'm31', 'm32', 'm33', 'm34', 'm41', 'm42', 'm43', 'm44', 'a', 'b', 'c', 'd', 'e', 'f']), MATRIX_SETTERS = plain(['m12', 'm21', 'a', 'b', 'c', 'd', 'e', 'f']);
+  const MATRIX_FIELDS = plain(['m11', 'm12', 'm13', 'm14', 'm21', 'm22', 'm23', 'm24', 'm31', 'm32', 'm33', 'm34', 'm41', 'm42', 'm43', 'm44', 'a', 'b', 'c', 'd', 'e', 'f']), MATRIX_SETTERS = plain(['m12', 'm21', 'm34', 'a', 'b', 'c', 'd', 'e', 'f']);
   // DOMMatrix lives in the embedding (turbo-surf web_geometry); capture its members on first use.
   function matrices() {
     if (matrixApi) return matrixApi;
@@ -1375,18 +1384,19 @@
     if (typeof Matrix !== 'function' || typeof ReadOnly !== 'function') return null;
     const getter = (name) => Object.getOwnPropertyDescriptor(ReadOnly.prototype, name).get;
     const fields = list(); for (let index = 0; index < MATRIX_FIELDS.length; index++) fields[MATRIX_FIELDS[index]] = getter(MATRIX_FIELDS[index]);
-    matrixApi = { Matrix, is2D: getter('is2D'), fields, fromMatrix: Matrix.fromMatrix, multiplySelf: Matrix.prototype.multiplySelf, translateSelf: Matrix.prototype.translateSelf, scaleSelf: Matrix.prototype.scaleSelf, rotateAxisAngleSelf: Matrix.prototype.rotateAxisAngleSelf, skewXSelf: Matrix.prototype.skewXSelf, skewYSelf: Matrix.prototype.skewYSelf, perspectiveSelf: Matrix.prototype.perspectiveSelf, setters: (() => { const result = create(null); for (let index = 0; index < MATRIX_SETTERS.length; index++) result[MATRIX_SETTERS[index]] = Object.getOwnPropertyDescriptor(Matrix.prototype, MATRIX_SETTERS[index]).set; return result; })() };
+    matrixApi = { Matrix, is2D: getter('is2D'), fields, fromMatrix: Matrix.fromMatrix, multiplySelf: Matrix.prototype.multiplySelf, translateSelf: Matrix.prototype.translateSelf, scaleSelf: Matrix.prototype.scaleSelf, rotateAxisAngleSelf: Matrix.prototype.rotateAxisAngleSelf, skewXSelf: Matrix.prototype.skewXSelf, skewYSelf: Matrix.prototype.skewYSelf, setters: (() => { const result = create(null); for (let index = 0; index < MATRIX_SETTERS.length; index++) result[MATRIX_SETTERS[index]] = Object.getOwnPropertyDescriptor(Matrix.prototype, MATRIX_SETTERS[index]).set; return result; })() };
     return matrixApi;
   }
-  const isMatrix = (value) => { const api = matrices(); if (!api || value === null || typeof value !== 'object') return false; try { apply(api.is2D, value, []); return true; } catch (error) { return false; } };
+  const isMatrix = (value) => { const api = matrices(); if (!api || value === null || typeof value !== 'object') return false; try { apply(api.is2D, value, []); return true; } catch { return false; } };
   const matrixField = (matrix, name) => apply(matrices().fields[name], matrix, []);
   defineInterface('CSSMatrixComponent', 'CSSTransformComponent', 1, function (matrix, options) {
     requireArguments(arguments, 1);
     if (!isMatrix(matrix)) throw fail("parameter 1 is not of type 'DOMMatrixReadOnly'.");
     let is2D;
-    if (options !== undefined && options !== null) { if (typeof options !== 'object' && typeof options !== 'function') throw fail("parameter 2 is not of type 'CSSMatrixComponentOptions'."); const flag = options.is2D; if (flag !== undefined) is2D = !!flag; }
+    if (options !== undefined && options !== null) { if (typeof options !== 'object' && typeof options !== 'function') throw fail("The provided value is not of type 'CSSMatrixComponentOptions'."); const flag = options.is2D; if (flag !== undefined) is2D = !!flag; }
     if (is2D === undefined) is2D = apply(matrices().is2D, matrix, []);
-    return attach(this, { family: 'CSSMatrixComponent', kind: 'matrix', matrix, is2D });
+    // The component keeps its own DOMMatrix copy of the argument.
+    return attach(this, { family: 'CSSMatrixComponent', kind: 'matrix', matrix: apply(matrices().fromMatrix, matrices().Matrix, [matrix]), is2D });
   });
   attribute('CSSMatrixComponent', 'matrix', (self) => brand(self, brandSets.CSSMatrixComponent).matrix, (self, value) => {
     const record = brand(self, brandSets.CSSMatrixComponent);
@@ -1450,7 +1460,8 @@
         if (!numericRecord(record.length)) return newMatrix();
         const length = toUnit(record.length, 'px');
         if (!length) throw fail('Cannot create matrix if units are not compatible with px');
-        const matrix = newMatrix(); apply(api.perspectiveSelf, matrix, [mathMax(1, numericRecord(length).value)]); return matrix;
+        // gfx::Transform::ApplyPerspectiveDepth: m34 = -1 / depth.
+        const matrix = newMatrix(); apply(api.setters.m34, matrix, [-1 / mathMax(1, numericRecord(length).value)]); return matrix;
       }
       case 'matrix': {
         if (record.is2D && !apply(api.is2D, record.matrix, [])) {
@@ -1913,7 +1924,6 @@
       if (property.custom) return false;
       if (property.meta.customIdent) return id !== 'default';
       if (id === null) return false;
-      const types = property.meta.types;
       return hasType(property.meta, 'Keyword') && hasKeyword(property.meta, id);
     }
     if (record.family === 'CSSStyleValue') return !!record.property && record.property === property.name;
@@ -2468,13 +2478,14 @@
   // Background/mask layer longhands repeat to the image layer count; url() resolves.
   const IMAGE_LAYERS = plainSet(['background-image', 'mask-image', 'list-style-image', 'border-image-source', 'shape-outside']);
   const BACKGROUND_LAYERS = plainSet(['background-attachment', 'background-blend-mode', 'background-clip', 'background-origin', 'background-position-x', 'background-position-y', 'background-repeat', 'background-size']);
-  const baseOf = ns.domAccessor('baseURI', false, 'Node');
-  let urlApi;
+  // The embedding refines Node.baseURI after the binding installs, so capture it on first use.
+  let urlApi, baseOf;
   // The embedding's WHATWG URL parser when present, else RFC 3986 reference resolution.
   function absoluteUrl(context, relative) {
+    if (!baseOf) { const descriptor = Object.getOwnPropertyDescriptor(g.Node.prototype, 'baseURI'); baseOf = descriptor && descriptor.get ? descriptor.get : ns.domAccessor('baseURI', false, 'Node'); }
     const base = apply(baseOf, context.element, []);
     if (urlApi === undefined) { const URLConstructor = g.URL; urlApi = typeof URLConstructor === 'function' ? { URLConstructor, href: Object.getOwnPropertyDescriptor(URLConstructor.prototype, 'href').get } : null; }
-    if (urlApi) { try { return apply(urlApi.href, new urlApi.URLConstructor(relative, base), []); } catch (error) { return relative; } }
+    if (urlApi) { try { return apply(urlApi.href, new urlApi.URLConstructor(relative, base), []); } catch { return relative; } }
     return resolveReference(relative, base);
   }
   function resolveReference(reference, base) {
@@ -2482,6 +2493,8 @@
     const parts = execRegExp(/^([A-Za-z][A-Za-z0-9+.-]*:)(\/\/[^/?#]*)?([^?#]*)(\?[^#]*)?(#.*)?$/, base);
     if (!parts) return reference;
     const scheme = parts[1], authority = parts[2] || '', basePath = parts[3] || '/';
+    // An opaque-path base (about:blank) cannot resolve a relative reference.
+    if (!authority && !startsWith(basePath, '/')) return reference;
     if (startsWith(reference, '//')) return scheme + reference;
     if (reference === '') return scheme + authority + basePath + (parts[4] || '');
     if (startsWith(reference, '#')) return scheme + authority + basePath + (parts[4] || '') + reference;
@@ -2656,6 +2669,6 @@
       const name = FACTORIES[index], key = lowerCase(name);
       push(result, [name, make(function (value) { const args = arguments; return enter((message) => executeMessage(name, 'CSS', message), () => { requireArguments(args, 1); return unitValue(toDouble(value), key); }); }, name, 1)]);
     }
-    return result;
+    return toArray(result);
   };
 })();
