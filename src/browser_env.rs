@@ -114,6 +114,8 @@ pub use document_xpath::is_native_xpath_object;
 mod dom_mutations;
 #[path = "element_relations.rs"]
 mod element_relations;
+#[path = "html_invokers.rs"]
+mod html_invokers;
 #[path = "html_popover.rs"]
 mod html_popover;
 #[path = "html_text.rs"]
@@ -3398,6 +3400,9 @@ fn el_click(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
     let Some(h) = receiver_handle(scope, &args, &[1]) else {
         return;
     };
+    if html_invokers::disabled_control(h) {
+        return;
+    }
     let name = v8::String::new(scope, "turbo-dom.click.active").unwrap();
     let key = v8::Private::for_api(scope, Some(name));
     let receiver = args.this();
@@ -4772,6 +4777,10 @@ fn el_dispatch_event(
         }
     }
 
+    if not_prevented && ty == "click" {
+        html_invokers::activate(scope, event_obj, target);
+    }
+
     // Finish the checkbox/radio activation: a canceled click reverts the pre-toggle; otherwise fire
     // the DOM `input` + `change` events (jsdom does this; some libs listen for them directly).
     if let (Some(_kind), Some(_was)) = (click_check, check_was) {
@@ -4825,7 +4834,12 @@ fn is_submit_control(h: Handle) -> bool {
         let tag = t.tag_name(h).unwrap_or_default().to_ascii_uppercase();
         let ty = t.get_attribute(h, "type").map(|s| s.to_ascii_lowercase());
         match tag.as_str() {
-            "BUTTON" => !matches!(ty.as_deref(), Some("button" | "reset")),
+            "BUTTON" => match ty.as_deref() {
+                Some("submit") => true,
+                Some("button" | "reset") => false,
+                // Auto state: an invoker button with a missing/invalid type never submits.
+                _ => !t.has_attribute(h, "command") && !t.has_attribute(h, "commandfor"),
+            },
             "INPUT" => matches!(ty.as_deref(), Some("submit" | "image")),
             _ => false,
         }
@@ -6995,6 +7009,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     bind_method(scope, global, "__formNative", form_controls_native);
     run_js(scope, include_str!("form_controls.js"));
     run_js(scope, include_str!("form_collections.js"));
+    html_invokers::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
