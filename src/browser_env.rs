@@ -118,6 +118,8 @@ mod element_relations;
 mod html_popover;
 #[path = "html_text.rs"]
 mod html_text;
+#[path = "select_element.rs"]
+mod select_element;
 #[path = "shadow_slots.rs"]
 mod shadow_slots;
 
@@ -6120,6 +6122,7 @@ fn build_el_template<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
                 | v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS,
         );
     tmpl.set_named_property_handler(handler);
+    select_element::indexed_handler(tmpl);
 
     tmpl
 }
@@ -6995,6 +6998,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     bind_method(scope, global, "__formNative", form_controls_native);
     run_js(scope, include_str!("form_controls.js"));
     run_js(scope, include_str!("form_collections.js"));
+    select_element::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
