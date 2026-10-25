@@ -110,6 +110,8 @@ pub fn set_interface_record<'s>(
 mod document_basics;
 #[path = "document_legacy.rs"]
 mod document_legacy;
+#[path = "interceptor_mode.rs"]
+mod interceptor_mode;
 pub use document_legacy::{
     set_document_domain_sandboxed, set_document_last_modified, set_document_origin_keyed,
 };
