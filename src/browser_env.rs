@@ -139,6 +139,8 @@ mod input_members;
 mod shadow_html;
 #[path = "select_element.rs"]
 mod select_element;
+#[path = "form_pseudo.rs"]
+mod form_pseudo;
 #[path = "shadow_slots.rs"]
 mod shadow_slots;
 
@@ -3082,6 +3084,7 @@ fn selector_argument<'s>(
     }
     let transformed = html_popover::selector(scope, node, &scalar)?;
     let transformed = html_dialog::selector(scope, node, &transformed)?;
+    let transformed = form_pseudo::selector(scope, node, &transformed)?;
     let original = if transformed == scalar {
         units
     } else {
@@ -7051,6 +7054,7 @@ fn install_with_tree(scope: &mut v8::PinScope, tree: Tree) {
     html_invokers::install(scope);
     input_members::install(scope);
     select_element::install(scope);
+    form_pseudo::install(scope);
     let key = v8::String::new(scope, "__captureFormDataEvent").unwrap();
     if let Some(callback) = global
         .get(scope, key.into())
@@ -9408,3 +9412,6 @@ mod form_outputs_tests;
 #[cfg(test)]
 #[path = "html_dialog_tests.rs"]
 mod html_dialog_tests;
+#[cfg(test)]
+#[path = "form_pseudo_tests.rs"]
+mod form_pseudo_tests;
