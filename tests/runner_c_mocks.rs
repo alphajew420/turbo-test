@@ -70,12 +70,16 @@ fn esm_graph_dynamic_import_rejects_with_the_module_error() {
     let p = Project::new("rc-dyn-cause");
     p.file("package.json", r#"{"name":"rc-dyn-cause"}"#);
     p.file("throws.cjs", "throw new Error('cjs body boom');\n");
+    // unreadable source: the load fails without an exception, so the rejection is generic
+    std::fs::write(p.path("badutf.mjs"), b"export const x = \"\xff\xfe\";\n").unwrap();
     p.file(
         "a.test.js",
         "test('rejects with the body error', async () => {\n  \
-         await expect(import('./throws.cjs')).rejects.toThrow('cjs body boom');\n});\n",
+         await expect(import('./throws.cjs')).rejects.toThrow('cjs body boom');\n});\n\
+         test('a load without an exception', async () => {\n  \
+         await expect(import('./badutf.mjs')).rejects.toThrow('dynamic import failed: ./badutf.mjs');\n});\n",
     );
-    assert_passes(&turbo_test(&p.dir, &[], &[]), 1);
+    assert_passes(&turbo_test(&p.dir, &[], &[]), 2);
 }
 
 #[test]
