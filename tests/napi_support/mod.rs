@@ -17,9 +17,10 @@ pub fn c_source(stem: &str) -> &'static str {
         "init_lock" => include_str!("init_lock.c"),
         "init_nested" => include_str!("init_nested.c"),
         "init_throw" => include_str!("init_throw.c"),
-        "init_wrap" => include_str!("init_wrap.c"),
+        "init_unsupported" => include_str!("init_unsupported.c"),
         "noreg" => include_str!("noreg.c"),
         "second" => include_str!("second.c"),
+        "wrap" => include_str!("wrap.c"),
         _ => panic!("unknown napi fixture {stem}"),
     }
 }
@@ -33,6 +34,8 @@ pub fn spec(name: &str) -> &'static str {
         "init_lock.test.ts" => include_str!("init_lock.test.ts"),
         "reentry.test.ts" => include_str!("reentry.test.ts"),
         "addons.test.ts" => include_str!("addons.test.ts"),
+        "wrap.test.ts" => include_str!("wrap.test.ts"),
+        "wrap_teardown.test.ts" => include_str!("wrap_teardown.test.ts"),
         _ => panic!("unknown napi spec {name}"),
     }
 }

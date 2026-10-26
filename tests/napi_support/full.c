@@ -452,19 +452,6 @@ static napi_value f_buf_info_nulls(napi_env env, napi_callback_info info) {
     return dbl(env, g_status);
 }
 
-static napi_value f_wrap(napi_env env, napi_callback_info info) {
-    Args a = args(env, info);
-    ST(napi_wrap(env, arg(env, &a, 0), (void *)1, NULL, NULL, NULL));
-    return NULL;
-}
-
-static napi_value f_unwrap(napi_env env, napi_callback_info info) {
-    Args a = args(env, info);
-    void *r = NULL;
-    ST(napi_unwrap(env, arg(env, &a, 0), &r));
-    return NULL;
-}
-
 static napi_value f_new_instance(napi_env env, napi_callback_info info) {
     Args a = args(env, info);
     napi_value out = NULL;
@@ -690,6 +677,7 @@ static napi_value f_after_throw(napi_env env, napi_callback_info info) {
     st[k++] = napi_new_instance(env, ctor, 0, NULL, &out);
     st[k++] = napi_wrap(env, obj, (void *)1, NULL, NULL, NULL);
     st[k++] = napi_unwrap(env, obj, &data);
+    st[k++] = napi_remove_wrap(env, obj, &data);
     /* no JS: napi_ok */
     st[k++] = napi_get_undefined(env, &out);
     st[k++] = napi_get_null(env, &out);
@@ -765,8 +753,6 @@ static const struct {
     {"extBufNull", f_ext_buf_null},
     {"bufInfo", f_buf_info},
     {"bufInfoNulls", f_buf_info_nulls},
-    {"wrap", f_wrap},
-    {"unwrap", f_unwrap},
     {"newInstance", f_new_instance},
     {"throwVal", f_throw_val},
     {"throwErr", f_throw_err},

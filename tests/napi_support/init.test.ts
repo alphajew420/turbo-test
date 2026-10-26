@@ -16,8 +16,8 @@ test('a JS exception thrown during init is a catchable require() error', () => {
 });
 
 test('an unsupported entrypoint called during init is a catchable require() error', () => {
-  expect(() => require('./init_wrap.node')).toThrow(
-    'native addon threw during module init: Error: turbo-test: N-API napi_wrap is not implemented (native addon called an unsupported entrypoint)',
+  expect(() => require('./init_unsupported.node')).toThrow(
+    'native addon threw during module init: Error: turbo-test: N-API napi_new_instance is not implemented (native addon called an unsupported entrypoint)',
   );
 });
 

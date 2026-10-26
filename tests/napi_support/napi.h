@@ -58,8 +58,9 @@ extern napi_status napi_is_array(napi_env, napi_value, bool *);
 extern napi_status napi_get_array_length(napi_env, napi_value, uint32_t *);
 extern napi_status napi_get_element(napi_env, napi_value, uint32_t, napi_value *);
 extern napi_status napi_get_property_names(napi_env, napi_value, napi_value *);
-extern napi_status napi_wrap(napi_env, napi_value, void *, void *, void *, napi_ref *);
+extern napi_status napi_wrap(napi_env, napi_value, void *, napi_finalize, void *, napi_ref *);
 extern napi_status napi_unwrap(napi_env, napi_value, void **);
+extern napi_status napi_remove_wrap(napi_env, napi_value, void **);
 extern napi_status napi_new_instance(napi_env, napi_value, size_t, const napi_value *,
                                      napi_value *);
 extern napi_status napi_throw(napi_env, napi_value);

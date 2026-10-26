@@ -503,18 +503,14 @@ describe('arraybuffers, typed arrays, buffers', () => {
 });
 
 describe('unsupported entrypoints throw catchable errors', () => {
-  test('napi_wrap / napi_unwrap / napi_new_instance', () => {
-    expect(() => a.wrap({})).toThrow(
-      'turbo-test: N-API napi_wrap is not implemented (native addon called an unsupported entrypoint)',
+  test('napi_new_instance', () => {
+    expect(() => a.newInstance(class {})).toThrow(
+      'turbo-test: N-API napi_new_instance is not implemented (native addon called an unsupported entrypoint)',
     );
-    expect(a.status()).toBe(PENDING_EXCEPTION);
-    expect(() => a.unwrap({})).toThrow(/N-API napi_unwrap is not implemented/);
-    expect(a.status()).toBe(PENDING_EXCEPTION);
-    expect(() => a.newInstance(class {})).toThrow(/N-API napi_new_instance is not implemented/);
     expect(a.status()).toBe(PENDING_EXCEPTION);
     let caught: unknown;
     try {
-      a.wrap({});
+      a.newInstance(class {});
     } catch (e) {
       caught = e;
     }
@@ -646,8 +642,8 @@ describe('errors and exceptions', () => {
       class {},
     );
     const ex = r.pop();
-    expect(r.slice(0, 21)).toEqual(Array(21).fill(PENDING_EXCEPTION));
-    expect(r.slice(21)).toEqual(Array(23).fill(OK));
+    expect(r.slice(0, 22)).toEqual(Array(22).fill(PENDING_EXCEPTION));
+    expect(r.slice(22)).toEqual(Array(23).fill(OK));
     expect(ran).toBe(false);
     // the first exception is the pending one; later throws did not replace it
     expect(ex.message).toBe('first');

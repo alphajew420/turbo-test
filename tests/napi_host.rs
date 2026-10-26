@@ -3,9 +3,10 @@
 //! `napi_*` entrypoint produced (values, statuses, thrown errors, pending exceptions), plus the
 //! module-init paths (exports vs returned value, throwing init, unsupported entrypoint, missing
 //! init symbol, a file that fails to dlopen, a nested require() during init, init serialized
-//! across workers), re-entrant callbacks and several addons loaded side by side. The expected
+//! across workers), re-entrant callbacks, several addons loaded side by side, and napi_wrap with
+//! its finalizers (on collection and at env teardown). The expected
 //! values are Node-API's: the same specs pass against Node 26 with the same fixtures, except for
-//! host-only behaviour (unsupported napi_wrap etc., reference ids, cases where Node aborts or
+//! host-only behaviour (unsupported napi_new_instance etc., reference ids, cases where Node aborts or
 //! deadlocks).
 #![cfg(unix)]
 
@@ -54,7 +55,7 @@ fn module_init_outcomes() {
     for stem in [
         "init_custom",
         "init_throw",
-        "init_wrap",
+        "init_unsupported",
         "noreg",
         "init_nested",
         "second",
@@ -96,4 +97,47 @@ fn each_addon_keeps_its_own_env() {
     compile_addon(&p, "second");
     p.file("addons.test.ts", spec("addons.test.ts"));
     assert_all_pass(&p, 2);
+}
+
+#[test]
+fn objects_wrap_native_pointers() {
+    let p = project("napi-wrap");
+    compile_addon(&p, "wrap");
+    p.file("wrap.test.ts", spec("wrap.test.ts"));
+    // --expose-gc: the spec collects wrapped objects to run their finalizers
+    let r = turbo_test(
+        &p.dir,
+        &["--reporter", "json"],
+        &[("TURBO_V8_FLAGS", "--expose-gc")],
+    );
+    let j = json_report(&r);
+    assert_eq!(j["numFailedTests"], 0, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 5, "{}", r.all());
+}
+
+/// Objects still wrapped when the addon's env is torn down (the file's isolate is disposed) have
+/// their finalizers run then, newest first, as Node does at exit: references can still be
+/// deleted, JS cannot run (napi_pending_exception).
+#[test]
+fn wrap_finalizers_run_at_env_teardown() {
+    let p = project("napi-wrap-teardown");
+    compile_addon(&p, "wrap");
+    p.file("wrap_teardown.test.ts", spec("wrap_teardown.test.ts"));
+    let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
+    let j = json_report(&r);
+    assert_eq!(j["numPassedTests"], 1, "{}", r.all());
+    let lines: Vec<&str> = r
+        .stderr
+        .lines()
+        .filter(|l| l.starts_with("wrap teardown finalizer:"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "wrap teardown finalizer: id=42 hint=142 delete_reference=0 call_function=10",
+            "wrap teardown finalizer: id=41 hint=141 delete_reference=0 call_function=10",
+        ],
+        "{}",
+        r.all()
+    );
 }

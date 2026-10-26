@@ -27,10 +27,12 @@ fn env_for(scope: &mut v8::PinScope) -> Box<Env> {
     Box::new(Env {
         isolate: std::ptr::null_mut(),
         scope: scope as *mut v8::PinScope as *mut c_void,
-        context: None,
+        context: v8::Global::new(scope, scope.get_current_context()),
         last_exception: None,
         fns: Vec::new(),
         refs: Vec::new(),
+        wraps: Default::default(),
+        next_wrap: 0,
     })
 }
 
