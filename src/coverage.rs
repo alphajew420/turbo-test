@@ -663,10 +663,12 @@ pub fn map_script(file: &Path, ranges: &[(usize, usize, i64)], funcs: &[(String,
     };
 
     // line coverage
-    for (li, &off) in line_start.iter().enumerate() {
-        if li == 0 {
-            continue; // wrapper line
-        }
+    for &off in line_start {
+        // the wrapper line and esbuild's interop prologue (mapped to (0, 0), so it would make
+        // even a blank or type-only line 1 look executable) are not source lines
+        let Some(li) = meta.code_line(off) else {
+            continue;
+        };
         let Some(count) = innermost(off) else { continue };
         if let Some(src_line) = src_line_of(li) {
             record(file, src_line, count.max(0) as u64);

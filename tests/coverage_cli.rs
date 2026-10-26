@@ -808,3 +808,35 @@ fn esm_export_getters_are_not_counted_as_functions() {
     );
     assert_eq!(summary_of(&j, &p.path("lib.js"), "functions"), (1, 2));
 }
+
+#[test]
+fn esm_prologue_does_not_make_a_type_only_or_blank_line_1_executable() {
+    let p = esbuild_project("cov-i34-line1");
+    p.file(
+        "src/typed.ts",
+        "type N = number;\nexport function f(x: N): N {\n  return x;\n}\n",
+    );
+    p.file(
+        "src/blank.ts",
+        "\nexport function h(): number {\n  return 3;\n}\n",
+    );
+    p.file(
+        "t.test.ts",
+        "import { f } from './src/typed';\nimport { h } from './src/blank';\n\
+test('t', () => { expect(f(1)).toBe(1); expect(h()).toBe(3); });\n",
+    );
+    let r = turbo_test(&p.dir, &["--coverage", "--coverage-reporter", "lcov"], &[]);
+    assert_ok(&r);
+    let lcov = read(&p, "coverage/lcov.info");
+    for file in ["src/typed.ts", "src/blank.ts"] {
+        let rec = lcov_record(&lcov, &p.path(file));
+        // vitest reports DA:3 only; turbo-test also counts the declaration and closing-brace
+        // lines (its c8-style line model) — but never the type-only / blank line 1.
+        assert_eq!(
+            lines_with(&rec, "DA:"),
+            vec!["DA:2,1", "DA:3,1", "DA:4,1"],
+            "{file}"
+        );
+        assert!(rec.contains("LF:3\nLH:3\n"), "{rec}");
+    }
+}

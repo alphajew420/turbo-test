@@ -520,6 +520,25 @@ fn interop_prologue_has_no_source_positions_or_functions() {
     assert_eq!(stmts_of(&p), BTreeMap::from([(0, (1, 1)), (1, (3, 1))]));
 }
 
+#[test]
+fn interop_prologue_lines_are_not_source_line_1() {
+    let p = esm_meta("esm-prologue-lines.js");
+    let lf = (
+        at(ESM_GEN, "function longExportedName", 0),
+        at(ESM_GEN, "}\nfunction api", 1),
+    );
+    let ranges = vec![
+        (0, WRAP.len() + ESM_GEN.len(), 1), // module body: the prologue runs
+        (lf.0, lf.1, 0),                    // the line-1 function never does
+    ];
+    map_script(&p, &ranges, &[]);
+    // line 1 is only the never-run function; the prologue (count 1) does not count as line 1
+    assert_eq!(
+        lines_of(&p),
+        BTreeMap::from([(1, 0), (2, 1), (3, 1), (4, 1)])
+    );
+}
+
 // ---- mapping V8 ranges onto lines / functions / branches / statements -----------------------
 
 #[test]
