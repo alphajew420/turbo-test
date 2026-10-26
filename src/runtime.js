@@ -1919,16 +1919,19 @@ function __snapBody(serialized) { return `\n${serialized}\n`; }
 
 // ---- expect ----
 function makeExpect(actual, negated = false) {
+  // `msg` is a thunk: the failure message (and the formatting of the operands in it) is built
+  // only when the assertion fails, as vitest does — formatting can throw (a native class
+  // prototype whose members check their receiver) and must not fail a passing assertion.
   const ok = (pass, msg) => {
-    if (negated ? pass : !pass) throw new Error(msg);
+    if (negated ? pass : !pass) throw new Error(msg());
   };
   const api = {
     get not() { return makeExpect(actual, !negated); },
-    toBeTypeOf(t) { ok(typeof actual === t, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be typeof ${t}, got ${typeof actual}`); },
-    toSatisfy(fn) { ok(!!fn(actual), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to satisfy predicate`); },
+    toBeTypeOf(t) { ok(typeof actual === t, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be typeof ${t}, got ${typeof actual}`); },
+    toSatisfy(fn) { ok(!!fn(actual), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to satisfy predicate`); },
     toHaveBeenCalledExactlyOnceWith(...a) {
       const calls = actual.mock && actual.mock.calls;
-      ok(calls && calls.length === 1 && deepEqual(calls[0], a), `expected spy called exactly once with ${fmt(a)}`);
+      ok(calls && calls.length === 1 && deepEqual(calls[0], a), () => `expected spy called exactly once with ${fmt(a)}`);
     },
     // async matchers: `await expect(promise).resolves.toX(...)`, `.rejects.toX(...)`, and
     // `.resolves.not.toX(...)` / `.rejects.not.toX(...)` (the `.not` returns a negated proxy).
@@ -1952,28 +1955,28 @@ function makeExpect(actual, negated = false) {
       } });
       return mk(negated);
     },
-    toBe(e) { ok(Object.is(actual, e), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be ${fmt(e)}`); },
-    toEqual(e) { ok(deepEqual(actual, e), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to equal ${fmt(e)}`); },
-    toStrictEqual(e) { ok(deepEqual(actual, e, true), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to strictly equal ${fmt(e)}`); },
-    toBeTruthy() { ok(!!actual, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be truthy`); },
-    toBeFalsy() { ok(!actual, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be falsy`); },
-    toBeNull() { ok(actual === null, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be null`); },
-    toBeUndefined() { ok(actual === undefined, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be undefined`); },
-    toBeDefined() { ok(actual !== undefined, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be defined`); },
-    toBeNaN() { ok(Number.isNaN(actual), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be NaN`); },
-    toBeGreaterThan(n) { ok(actual > n, `expected ${fmt(actual)} > ${fmt(n)}`); },
-    toBeGreaterThanOrEqual(n) { ok(actual >= n, `expected ${fmt(actual)} >= ${fmt(n)}`); },
-    toBeLessThan(n) { ok(actual < n, `expected ${fmt(actual)} < ${fmt(n)}`); },
-    toBeLessThanOrEqual(n) { ok(actual <= n, `expected ${fmt(actual)} <= ${fmt(n)}`); },
-    toBeCloseTo(n, d = 2) { ok(Math.abs(actual - n) < Math.pow(10, -d) / 2, `expected ${fmt(actual)} close to ${fmt(n)}`); },
-    toContain(x) { ok(actual != null && actual.includes && actual.includes(x), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain ${fmt(x)}`); },
-    toContainEqual(x) { ok(Array.isArray(actual) && actual.some((a) => deepEqual(a, x)), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain equal ${fmt(x)}`); },
-    toBeInstanceOf(ctor) { ok(actual instanceof ctor, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be instance of ${ctor && ctor.name}`); },
+    toBe(e) { ok(Object.is(actual, e), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be ${fmt(e)}`); },
+    toEqual(e) { ok(deepEqual(actual, e), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to equal ${fmt(e)}`); },
+    toStrictEqual(e) { ok(deepEqual(actual, e, true), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to strictly equal ${fmt(e)}`); },
+    toBeTruthy() { ok(!!actual, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be truthy`); },
+    toBeFalsy() { ok(!actual, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be falsy`); },
+    toBeNull() { ok(actual === null, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be null`); },
+    toBeUndefined() { ok(actual === undefined, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be undefined`); },
+    toBeDefined() { ok(actual !== undefined, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be defined`); },
+    toBeNaN() { ok(Number.isNaN(actual), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be NaN`); },
+    toBeGreaterThan(n) { ok(actual > n, () => `expected ${fmt(actual)} > ${fmt(n)}`); },
+    toBeGreaterThanOrEqual(n) { ok(actual >= n, () => `expected ${fmt(actual)} >= ${fmt(n)}`); },
+    toBeLessThan(n) { ok(actual < n, () => `expected ${fmt(actual)} < ${fmt(n)}`); },
+    toBeLessThanOrEqual(n) { ok(actual <= n, () => `expected ${fmt(actual)} <= ${fmt(n)}`); },
+    toBeCloseTo(n, d = 2) { ok(Math.abs(actual - n) < Math.pow(10, -d) / 2, () => `expected ${fmt(actual)} close to ${fmt(n)}`); },
+    toContain(x) { ok(actual != null && actual.includes && actual.includes(x), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain ${fmt(x)}`); },
+    toContainEqual(x) { ok(Array.isArray(actual) && actual.some((a) => deepEqual(a, x)), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain equal ${fmt(x)}`); },
+    toBeInstanceOf(ctor) { ok(actual instanceof ctor, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be instance of ${ctor && ctor.name}`); },
     toMatchObject(obj) {
       const sub = (a, e) => (e instanceof Asymmetric) ? e.matches(a)
         : e == null || typeof e !== 'object' ? deepEqual(a, e)
         : a != null && typeof a === 'object' && Object.keys(e).every((k) => sub(a[k], e[k]));
-      ok(sub(actual, obj), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match object ${fmt(obj)}`);
+      ok(sub(actual, obj), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match object ${fmt(obj)}`);
     },
     toThrowError(e) { return api.toThrow(e); },
     // File snapshot: serialize `actual`, key by `<full test name> <counter>` under
@@ -1992,7 +1995,7 @@ function makeExpect(actual, negated = false) {
         globalThis.__fs_writeFileSync(sf.path, __serializeSnapFile(map));
         return;
       }
-      ok(map[key] === body, `snapshot mismatch for "${key}"\n- Snapshot\n+ Received\n- ${map[key].trim()}\n+ ${body.trim()}`);
+      ok(map[key] === body, () => `snapshot mismatch for "${key}"\n- Snapshot\n+ Received\n- ${map[key].trim()}\n+ ${body.trim()}`);
     },
     // Inline snapshot: compares against the provided string arg (whitespace-normalized, matching
     // vitest's trimming). AUTO-WRITE back into the source on first run / -u is UNSUPPORTED — pass
@@ -2002,7 +2005,7 @@ function makeExpect(actual, negated = false) {
       const body = __serialize(actual);
       if (expected === undefined) return; // no auto-write; treat as accepted (documented gap)
       const norm = (s) => String(s).replace(/^\n/, '').replace(/\n\s*$/, '').split('\n').map((l) => l.trim()).join('\n');
-      ok(norm(body) === norm(expected), `inline snapshot mismatch\n- ${norm(expected)}\n+ ${norm(body)}`);
+      ok(norm(body) === norm(expected), () => `inline snapshot mismatch\n- ${norm(expected)}\n+ ${norm(body)}`);
     },
     toThrowErrorMatchingSnapshot(_hint) {
       let msg;
@@ -2017,7 +2020,7 @@ function makeExpect(actual, negated = false) {
       makeExpect(msg).toMatchInlineSnapshot(expected);
     },
     toStrictEqual_alias() {},
-    toHaveLength(n) { ok(actual != null && actual.length === n, `expected length ${actual && actual.length} ${negated ? 'not ' : ''}to be ${n}`); },
+    toHaveLength(n) { ok(actual != null && actual.length === n, () => `expected length ${actual && actual.length} ${negated ? 'not ' : ''}to be ${n}`); },
     toHaveProperty(path, value) {
       let cur = actual, present;
       // A literal key (incl. one containing dots, e.g. a CSS selector) takes precedence over
@@ -2032,44 +2035,44 @@ function makeExpect(actual, negated = false) {
         }
       }
       const pass = arguments.length < 2 ? present : (present && deepEqual(cur, value));
-      ok(pass, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to have property ${fmt(path)}${arguments.length < 2 ? '' : ' = ' + fmt(value)}`);
+      ok(pass, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to have property ${fmt(path)}${arguments.length < 2 ? '' : ' = ' + fmt(value)}`);
     },
-    toMatch(re) { const r = re instanceof RegExp ? re : new RegExp(re); ok(r.test(actual), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match ${r}`); },
+    toMatch(re) { const r = re instanceof RegExp ? re : new RegExp(re); ok(r.test(actual), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match ${r}`); },
     toThrow(expected) {
       let threw = false, err;
       // expect(fn).toThrow() calls the fn; expect(promise).rejects.toThrow() passes the already-
       // rejected error as `actual` (not callable) — treat it as the thrown value directly.
       if (typeof actual === 'function') { try { actual(); } catch (e) { threw = true; err = e; } }
       else if (actual instanceof Error) { threw = true; err = actual; }
-      if (!expected) { ok(threw, `expected function ${negated ? 'not ' : ''}to throw`); return; }
+      if (!expected) { ok(threw, () => `expected function ${negated ? 'not ' : ''}to throw`); return; }
       const msg = err && (err.message || String(err)) || '';
       let matches;
       if (expected instanceof RegExp) matches = expected.test(msg);
       else if (typeof expected === 'function') matches = err instanceof expected; // toThrow(ErrorClass)
       else if (expected && typeof expected === 'object') matches = err && (expected.message == null || String(err.message || '').includes(expected.message)); // toThrow({message})
       else matches = msg.includes(expected);
-      ok(threw && matches, `expected to throw matching ${fmt(expected)}, got ${fmt(msg)}`);
+      ok(threw && matches, () => `expected to throw matching ${fmt(expected)}, got ${fmt(msg)}`);
     },
-    toHaveBeenCalled() { ok(actual.mock && actual.mock.calls.length > 0, `expected spy ${negated ? 'not ' : ''}to have been called`); },
-    toHaveBeenCalledTimes(n) { ok(actual.mock && actual.mock.calls.length === n, `expected spy called ${n}x, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
+    toHaveBeenCalled() { ok(actual.mock && actual.mock.calls.length > 0, () => `expected spy ${negated ? 'not ' : ''}to have been called`); },
+    toHaveBeenCalledTimes(n) { ok(actual.mock && actual.mock.calls.length === n, () => `expected spy called ${n}x, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
     toHaveBeenCalledWith(...a) {
       const found = actual.mock && actual.mock.calls.some((c) => deepEqual(c, a));
-      const got = actual.mock ? `; received ${actual.mock.calls.length} call(s): ${fmt(actual.mock.calls)}` : '; not a spy';
-      ok(found, `expected spy ${negated ? 'not ' : ''}to have been called with ${fmt(a)}${negated ? '' : got}`);
+      const got = () => actual.mock ? `; received ${actual.mock.calls.length} call(s): ${fmt(actual.mock.calls)}` : '; not a spy';
+      ok(found, () => `expected spy ${negated ? 'not ' : ''}to have been called with ${fmt(a)}${negated ? '' : got()}`);
     },
-    toHaveBeenCalledOnce() { ok(actual.mock && actual.mock.calls.length === 1, `expected spy called once, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
+    toHaveBeenCalledOnce() { ok(actual.mock && actual.mock.calls.length === 1, () => `expected spy called once, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
     toHaveBeenLastCalledWith(...a) {
       const calls = actual.mock && actual.mock.calls;
       const last = calls && calls.length ? calls[calls.length - 1] : undefined;
-      ok(last && deepEqual(last, a), `expected spy last called with ${fmt(a)}, got ${fmt(last)}`);
+      ok(last && deepEqual(last, a), () => `expected spy last called with ${fmt(a)}, got ${fmt(last)}`);
     },
     toHaveBeenNthCalledWith(n, ...a) {
       const calls = actual.mock && actual.mock.calls;
       const c = calls && calls[n - 1];
-      ok(c && deepEqual(c, a), `expected spy call #${n} with ${fmt(a)}, got ${fmt(c)}`);
+      ok(c && deepEqual(c, a), () => `expected spy call #${n} with ${fmt(a)}, got ${fmt(c)}`);
     },
-    toHaveReturned() { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return'), `expected spy to have returned`); },
-    toHaveReturnedWith(v) { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return' && deepEqual(r.value, v)), `expected spy to have returned ${fmt(v)}`); },
+    toHaveReturned() { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return'), () => `expected spy to have returned`); },
+    toHaveReturnedWith(v) { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return' && deepEqual(r.value, v)), () => `expected spy to have returned ${fmt(v)}`); },
   };
   // custom matchers registered via expect.extend (e.g. @testing-library/jest-dom)
   for (const name of Object.keys(__customMatchers)) {

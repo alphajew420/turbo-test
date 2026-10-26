@@ -1,7 +1,7 @@
 //! Runtime semantics that follow Node/vitest: the `URL` polyfill resolves relative references
 //! like Node's WHATWG `URL`; an entry file's hoisted mock factory runs once; without esbuild the
 //! entry prepass replays `vi.hoisted` values and awaits async factories; a setup file that throws
-//! fails every test file using it.
+//! fails every test file using it; a passing matcher never formats its operands.
 #![cfg(unix)]
 
 mod common;
@@ -299,4 +299,50 @@ fn a_setup_file_that_fails_to_link_fails_the_test_file() {
         "{}",
         r.all()
     );
+}
+
+/// turbo-test#43 item 2: a passing matcher never formats its operands (vitest builds the
+/// failure message lazily); an operand whose JSON/string conversion throws — like a native
+/// class prototype whose members check their receiver — fails only a failing assertion. The
+/// spec passes under vitest 4.1.12 (matchers that vitest itself formats or deep-compares on a
+/// pass, such as toContain and toHaveBeenCalledWith, are left out).
+const LAZY_MESSAGE_TEST: &str = r#"import { test, expect, vi } from 'vitest';
+const bad = () => { throw new TypeError('Illegal invocation'); };
+const h = { toString: bad, valueOf: bad, toJSON: bad, [Symbol.toPrimitive]: bad };
+Object.defineProperty(h, 'x', { get: bad, enumerable: true });
+const spy = vi.fn();
+spy(h);
+const cases = {
+  toBe: () => expect(h).toBe(h),
+  toBeTruthy: () => expect(h).toBeTruthy(),
+  notToBeFalsy: () => expect(h).not.toBeFalsy(),
+  notToBeNull: () => expect(h).not.toBeNull(),
+  notToBeUndefined: () => expect(h).not.toBeUndefined(),
+  toBeDefined: () => expect(h).toBeDefined(),
+  toBeTypeOf: () => expect(h).toBeTypeOf('object'),
+  toSatisfy: () => expect(h).toSatisfy(() => true),
+  toBeInstanceOf: () => expect(h).toBeInstanceOf(Object),
+  toHaveProperty: () => expect(h).toHaveProperty('toString'),
+  toHaveBeenLastCalledWith: () => expect(spy).toHaveBeenLastCalledWith(h),
+  toHaveBeenNthCalledWith: () => expect(spy).toHaveBeenNthCalledWith(1, h),
+  toHaveReturnedWith: () => expect(spy).toHaveReturnedWith(undefined),
+  toHaveBeenCalled: () => expect(spy).toHaveBeenCalled(),
+  toEqual: () => expect(h).toEqual(h),
+  toStrictEqual: () => expect(h).toStrictEqual(h),
+  toMatchObject: () => expect(h).toMatchObject({}),
+};
+for (const [name, fn] of Object.entries(cases)) test(name, fn);
+test('a failing matcher still formats its message', () => {
+  expect(() => expect(1).toBe(2)).toThrow('expected 1 to be 2');
+  expect(() => expect([1]).toHaveLength(2)).toThrow('expected');
+  expect(() => expect(h).toBe(1)).toThrow('Illegal invocation');
+});
+"#;
+
+#[test]
+fn passing_matchers_do_not_format_their_operands() {
+    let p = Project::new("rc-lazy-msg");
+    p.file("lazy.test.ts", LAZY_MESSAGE_TEST);
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_passes(&r, 18);
 }
