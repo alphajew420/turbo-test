@@ -14,7 +14,7 @@ mod common;
 mod napi_support;
 
 use common::{json_report, turbo_test, Project};
-use napi_support::{compile_addon, spec};
+use napi_support::{compile_addon, compile_addon_as, spec};
 
 /// A throwaway project with esbuild linked in (the module runner's CJS path is what gives specs
 /// a `require()`, as in a real vitest project).
@@ -297,4 +297,46 @@ fn self_registered_modules_load() {
     let j = json_report(&r);
     assert_eq!(j["numFailedTests"], 0, "{}", r.all());
     assert_eq!(j["numPassedTests"], 2, "{}", r.all());
+}
+
+/// napi_get_version (10) and napi_get_node_version (the Node.js version process.versions.node
+/// names), and an addon's declared module API version (node_api_module_get_api_version_v1) as
+/// Node: primitives can be referenced from 10, below 8 is 8, above 10 fails require() (but
+/// NAPI_VERSION_EXPERIMENTAL), and at env teardown a call that would run JS is
+/// napi_cannot_run_js from 10 (napi_pending_exception before). The teardown lines are Node 26's.
+#[test]
+fn addons_declare_their_node_api_version() {
+    let p = project("napi-apiversion");
+    for (version, name) in [
+        ("10", "v10"),
+        ("3", "v3"),
+        ("2147483647", "vexp"),
+        ("11", "v11"),
+    ] {
+        compile_addon_as(
+            &p,
+            "apiversion",
+            name,
+            &[&format!("-DTT_VERSION={version}")],
+        );
+    }
+    p.file("apiversion.test.ts", spec("apiversion.test.ts"));
+    let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
+    let j = json_report(&r);
+    assert_eq!(j["numFailedTests"], 0, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 4, "{}", r.all());
+    let lines: Vec<&str> = r
+        .stderr
+        .lines()
+        .filter(|l| l.starts_with("apiversion "))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "apiversion 3 teardown: napi_call_function=10",
+            "apiversion 10 teardown: napi_call_function=23",
+        ],
+        "{}",
+        r.all()
+    );
 }

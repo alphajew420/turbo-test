@@ -13,6 +13,7 @@ const NAPI_H: &str = include_str!("napi.h");
 pub fn c_source(stem: &str) -> &'static str {
     match stem {
         "api" => include_str!("api.c"),
+        "apiversion" => include_str!("apiversion.c"),
         "cleanup" => include_str!("cleanup.c"),
         "fatal" => include_str!("fatal.c"),
         "full" => include_str!("full.c"),
@@ -36,6 +37,7 @@ pub fn c_source(stem: &str) -> &'static str {
 pub fn spec(name: &str) -> &'static str {
     match name {
         "api.test.ts" => include_str!("api.test.ts"),
+        "apiversion.test.ts" => include_str!("apiversion.test.ts"),
         "cleanup.test.ts" => include_str!("cleanup.test.ts"),
         "full.test.ts" => include_str!("full.test.ts"),
         "huge.test.ts" => include_str!("huge.test.ts"),
@@ -56,10 +58,17 @@ pub fn spec(name: &str) -> &'static str {
 /// Compile fixture `stem` into `<project>/<stem>.node`. Fails loudly when `cc` is missing:
 /// these tests must not silently skip on a runner without a C compiler.
 pub fn compile_addon(p: &Project, stem: &str) -> PathBuf {
+    compile_addon_as(p, stem, stem, &[])
+}
+
+/// Compile fixture `stem` into `<project>/<name>.node` with extra compiler `defines`
+/// (`-DNAME=VALUE`), for one fixture built several ways.
+pub fn compile_addon_as(p: &Project, stem: &str, name: &str, defines: &[&str]) -> PathBuf {
     p.file("csrc/napi.h", NAPI_H);
     let src = p.file(&format!("csrc/{stem}.c"), c_source(stem));
-    let out = p.path(&format!("{stem}.node"));
+    let out = p.path(&format!("{name}.node"));
     let mut cmd = Command::new("cc");
+    cmd.args(defines);
     cmd.arg("-shared");
     if cfg!(target_os = "macos") {
         // leave the napi_* imports to be bound against the host executable at load time

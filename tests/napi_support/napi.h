@@ -197,6 +197,14 @@ typedef struct {
     void *reserved[4];
 } napi_module;
 extern void napi_module_register(napi_module *);
+extern napi_status napi_get_version(napi_env, uint32_t *);
+typedef struct {
+    uint32_t major;
+    uint32_t minor;
+    uint32_t patch;
+    const char *release;
+} napi_node_version;
+extern napi_status napi_get_node_version(napi_env, const napi_node_version **);
 extern napi_status napi_stub(void);
 typedef enum {
     napi_default = 0,

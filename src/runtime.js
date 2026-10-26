@@ -39,7 +39,8 @@ globalThis.process = {
   // version for a gnu build, '' for a musl build.
   report: { getReport: () => ({ header: { glibcVersionRuntime: globalThis.__ttGlibc || undefined } }) },
   version: 'v24.0.0',
-  versions: { node: '24.0.0', v8: '12.0.0', modules: '127' },
+  // napi: the Node-API version the native host implements (src/napi_host.rs NAPI_VERSION)
+  versions: { node: '24.0.0', v8: '12.0.0', modules: '127', napi: '10' },
   argv: ['node', 'turbo-test'],
   cwd: () => globalThis.__cwd || '/',
   nextTick: (fn, ...a) => __loop.nextTicks.push(() => fn(...a)),

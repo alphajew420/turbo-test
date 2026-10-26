@@ -3366,10 +3366,10 @@ pub unsafe extern "C" fn napi_create_reference(
 ) -> napi_status {
     checked(env, || {
         let s = scope(env);
-        // as Node for an addon without a declared module API version (8): only objects, functions
-        // and symbols can be referenced
+        // as Node: before module API version 10 only objects, functions and symbols can be
+        // referenced (from 10 any value; one that cannot be held weakly goes at count 0)
         let value = to_local(v);
-        if !(value.is_object() || value.is_symbol()) {
+        if (*env).module_api_version < 10 && !(value.is_object() || value.is_symbol()) {
             return napi_invalid_arg;
         }
         let r = new_ref(&mut *env, Ref::new(s, value, initial_refcount));
@@ -3993,6 +3993,71 @@ pub unsafe extern "C" fn napi_unref_threadsafe_function(
     checked(env, || napi_ok)
 }
 
+// ---- versions --------------------------------------------------------------------
+
+/// The highest Node-API version the host implements (Node's NODE_API_SUPPORTED_VERSION_MAX).
+pub const NAPI_VERSION: u32 = 10;
+
+/// NAPI_VERSION_EXPERIMENTAL, the module API version of an addon built with NAPI_EXPERIMENTAL.
+const NAPI_VERSION_EXPERIMENTAL: i32 = i32::MAX;
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_version(env: napi_env, out: *mut u32) -> napi_status {
+    basic(env, || {
+        *out_arg(out)? = NAPI_VERSION;
+        Ok(())
+    })
+}
+
+/// napi_node_version: the Node.js version the host stands in for.
+#[repr(C)]
+pub struct napi_node_version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+    pub release: *const c_char,
+}
+
+// SAFETY: the version is immutable static data (`release` points at a static string).
+unsafe impl Sync for napi_node_version {}
+
+/// The Node.js version reported to addons: the one the runtime's process.version names.
+static NODE_VERSION: napi_node_version = napi_node_version {
+    major: 24,
+    minor: 0,
+    patch: 0,
+    release: c"node".as_ptr(),
+};
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_node_version(
+    env: napi_env,
+    out: *mut *const napi_node_version,
+) -> napi_status {
+    basic(env, || {
+        *out_arg(out)? = &NODE_VERSION;
+        Ok(())
+    })
+}
+
+/// The module API version `lib` declares (its node_api_module_get_api_version_v1), as Node's
+/// node_napi_env__::New: none or below 8 is 8, above 10 (but NAPI_VERSION_EXPERIMENTAL) an
+/// error naming the addon.
+unsafe fn module_api_version(lib: &libloading::Library, path: &Path) -> Result<i32, String> {
+    type GetVersion = unsafe extern "C" fn() -> i32;
+    let Ok(get) = lib.get::<GetVersion>(b"node_api_module_get_api_version_v1") else {
+        return Ok(DEFAULT_MODULE_API_VERSION);
+    };
+    match get() {
+        v if v > NAPI_VERSION as i32 && v != NAPI_VERSION_EXPERIMENTAL => Err(format!(
+            "{} requires Node-API version {v}, but this version of Node.js only supports version \
+             {NAPI_VERSION} add-ons.",
+            file_url(path)
+        )),
+        v => Ok(v.max(DEFAULT_MODULE_API_VERSION)),
+    }
+}
+
 /// The module init symbol exported by the addon.
 type RegisterFn = unsafe extern "C" fn(napi_env, napi_value) -> napi_value;
 
@@ -4101,9 +4166,11 @@ pub fn load_addon(
         SELF_REGISTERED.with(|r| r.set(None));
         let lib = open_library(path).map_err(|e| dlopen_error(&loader_message(&e)))?;
         let register = module_init(&lib, path)?;
+        let version = module_api_version(&lib, path)?;
 
         let mut env = Box::new(Env::new(scope_ref));
         env.filename = std::ffi::CString::new(file_url(path)).unwrap_or_default();
+        env.module_api_version = version;
         let env_ptr: napi_env = Box::into_raw(env);
         // The isolate owns the env from here on (freed with it, like the functions using it), at
         // its place in the teardown order (Node registers the env's own cleanup hook here).
