@@ -1179,7 +1179,9 @@ const __fs = {
   unlinkSync: (p) => globalThis.__fs_rmSync(String(p)),
   statSync: (p) => { const isDir = globalThis.__fs_existsSync(String(p)) && globalThis.__fs_readdirSync(String(p)).length >= 0 && !globalThis.__fs_existsSync(String(p) + '/.'); return { isFile: () => true, isDirectory: () => false, size: 0, mtimeMs: 0 }; },
   readdirSync: (p) => globalThis.__fs_readdirSync(String(p)),
+  symlinkSync: (target, p) => globalThis.__fs_symlinkSync(String(target), String(p)),
   promises: {
+    symlink: (target, p) => { try { __fs.symlinkSync(target, p); return Promise.resolve(); } catch (e) { return Promise.reject(e); } },
     readFile: (p, enc) => Promise.resolve(globalThis.__fs_readFileSync(String(p), enc ? 'utf8' : '')),
     writeFile: (p, data) => { globalThis.__fs_writeFileSync(String(p), data == null ? '' : String(data)); return Promise.resolve(); },
     appendFile: (p, data) => { try { __fs.appendFileSync(p, data); return Promise.resolve(); } catch (e) { return Promise.reject(e); } },

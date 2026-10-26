@@ -4549,6 +4549,7 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "__fs_mkdirSync", fs_mkdir_sync);
     bind_fn(scope, global, "__fs_rmSync", fs_rm_sync);
     bind_fn(scope, global, "__fs_readdirSync", fs_readdir_sync);
+    bind_fn(scope, global, "__fs_symlinkSync", fs_symlink_sync);
     bind_fn(scope, global, "__ttStructuredClone", crate::structured_clone::native_structured_clone);
     if std::env::var("TURBO_STACK").is_ok() {
         if let Some(code) = v8::String::new(scope, "globalThis.__TT_STACK=true") {
@@ -4691,6 +4692,45 @@ fn fs_append_file_sync(
         .and_then(|mut f| f.write_all(data.as_bytes()));
     if let Err(e) = res {
         throw(scope, &format!("appendFileSync {p}: {e}"));
+    }
+}
+
+/// The Node error code and description of an OS error (`EEXIST`, "file already exists"), as
+/// libuv names them; None for an error that is not one of these.
+fn errno_name(e: &std::io::Error) -> Option<(&'static str, &'static str)> {
+    const NAMES: [(i32, &str, &str); 5] = [
+        (2, "ENOENT", "no such file or directory"),
+        (13, "EACCES", "permission denied"),
+        (17, "EEXIST", "file already exists"),
+        (20, "ENOTDIR", "not a directory"),
+        (1, "EPERM", "operation not permitted"),
+    ];
+    let errno = e.raw_os_error()?;
+    NAMES.iter().find(|(n, _, _)| *n == errno).map(|&(_, c, d)| (c, d))
+}
+
+/// native fs.symlinkSync(target, path): a symbolic link at `path` to `target`; a failure throws
+/// Node's error (`EEXIST: file already exists, symlink 'target' -> 'path'`, its `code`).
+fn fs_symlink_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let target = args.get(0).to_rust_string_lossy(scope);
+    let path = args.get(1).to_rust_string_lossy(scope);
+    #[cfg(unix)]
+    let res = std::os::unix::fs::symlink(&target, &path);
+    #[cfg(not(unix))]
+    let res = std::os::windows::fs::symlink_file(&target, &path);
+    if let Err(e) = res {
+        let (code, desc) = errno_name(&e).unwrap_or(("EIO", "i/o error"));
+        let msg = format!("{code}: {desc}, symlink '{target}' -> '{path}'");
+        let msg = v8::String::new(scope, &msg).unwrap();
+        let err = v8::Exception::error(scope, msg);
+        if let Ok(obj) = v8::Local::<v8::Object>::try_from(err) {
+            for (k, v) in [("code", code), ("syscall", "symlink"), ("path", &target), ("dest", &path)] {
+                let k = v8::String::new(scope, k).unwrap();
+                let v = v8::String::new(scope, v).unwrap();
+                obj.set(scope, k.into(), v.into());
+            }
+        }
+        scope.throw_exception(err);
     }
 }
 

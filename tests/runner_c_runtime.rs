@@ -420,3 +420,40 @@ fn structured_clone_follows_node() {
         assert_passes(&r, 3);
     }
 }
+
+/// turbo-test#48: fs.symlinkSync and fs.promises.symlink create symbolic links; a failure is
+/// Node's error (code, syscall, message). The spec passes under vitest 4.1.12.
+const SYMLINK_TEST: &str = r#"import { test, expect } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+
+// expected values: vitest 4.1.12 (Node 26.11)
+test('fs.symlinkSync / fs.promises.symlink create symbolic links', async () => {
+  const dir = `${new URL(".", import.meta.url).pathname}sym-${Date.now()}`;
+  fs.mkdirSync(dir);
+  fs.writeFileSync(`${dir}/target.txt`, 'through the link');
+  expect(fs.symlinkSync(`${dir}/target.txt`, `${dir}/link.txt`)).toBe(undefined);
+  expect(fs.readFileSync(`${dir}/link.txt`, 'utf8')).toBe('through the link');
+  let err: any;
+  try { fs.symlinkSync(`${dir}/target.txt`, `${dir}/link.txt`); } catch (e) { err = e; }
+  expect([err.code, err.syscall, err.message]).toEqual([
+    'EEXIST', 'symlink', `EEXIST: file already exists, symlink '${dir}/target.txt' -> '${dir}/link.txt'`,
+  ]);
+  await fs.promises.symlink('target.txt', `${dir}/relative.txt`);
+  expect(fs.readFileSync(`${dir}/relative.txt`, 'utf8')).toBe('through the link');
+  let err2: any;
+  await fs.promises.symlink('x', `${dir}/missing/link`).catch((e) => { err2 = e; });
+  expect(err2.code).toBe('ENOENT');
+  fs.rmSync(dir, { recursive: true });
+  void os;
+});
+"#;
+
+#[test]
+fn fs_symlink_creates_links() {
+    let p = Project::new("rc-symlink");
+    p.with_esbuild();
+    p.file("sym.test.ts", SYMLINK_TEST);
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_passes(&r, 1);
+}
