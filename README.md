@@ -360,10 +360,12 @@ export default defineConfig({
 });
 ```
 
-`@/foo` resolves to `src/foo` (and never captures `@scope/pkg` node_modules imports). A regex `find`
-is skipped (alias keys are strings); the alias target is taken from the last string literal in the
-value, which covers `path.resolve(__dirname, '…')`, `fileURLToPath(new URL('…', import.meta.url))`,
-and bare literals.
+`@/foo` resolves to `src/foo` (and never captures `@scope/pkg` node_modules imports). A regex-literal
+`find` is skipped; a quoted `find` is a prefix match whatever its first character (`'/@z'` included).
+The alias target is derived from the value's string literals, which covers
+`path.resolve(__dirname, '…')` / `path.join(…)` (all segments joined), `fileURLToPath(new URL('…',
+import.meta.url))`, string concatenation (`__dirname + '/z'`, `path.resolve(__dirname, 'src') +
+'/sub'`) and bare literals.
 
 ## Compatibility notes
 
