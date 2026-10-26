@@ -4576,7 +4576,12 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
             global.set(scope, key.into(), value.into());
         }
     }
-    bind_fn(scope, global, "__ttStructuredClone", crate::structured_clone::native_structured_clone);
+    bind_fn(
+        scope,
+        global,
+        "__ttStructuredClone",
+        crate::structured_clone::native_structured_clone,
+    );
     if std::env::var("TURBO_STACK").is_ok() {
         if let Some(code) = v8::String::new(scope, "globalThis.__TT_STACK=true") {
             if let Some(s) = v8::Script::compile(scope, code, None) {
@@ -4732,12 +4737,19 @@ fn errno_name(e: &std::io::Error) -> Option<(&'static str, &'static str)> {
         (1, "EPERM", "operation not permitted"),
     ];
     let errno = e.raw_os_error()?;
-    NAMES.iter().find(|(n, _, _)| *n == errno).map(|&(_, c, d)| (c, d))
+    NAMES
+        .iter()
+        .find(|(n, _, _)| *n == errno)
+        .map(|&(_, c, d)| (c, d))
 }
 
 /// native fs.symlinkSync(target, path): a symbolic link at `path` to `target`; a failure throws
 /// Node's error (`EEXIST: file already exists, symlink 'target' -> 'path'`, its `code`).
-fn fs_symlink_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn fs_symlink_sync(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
     let target = args.get(0).to_rust_string_lossy(scope);
     let path = args.get(1).to_rust_string_lossy(scope);
     #[cfg(unix)]
@@ -4750,7 +4762,12 @@ fn fs_symlink_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         let msg = v8::String::new(scope, &msg).unwrap();
         let err = v8::Exception::error(scope, msg);
         if let Ok(obj) = v8::Local::<v8::Object>::try_from(err) {
-            for (k, v) in [("code", code), ("syscall", "symlink"), ("path", &target), ("dest", &path)] {
+            for (k, v) in [
+                ("code", code),
+                ("syscall", "symlink"),
+                ("path", &target),
+                ("dest", &path),
+            ] {
                 let k = v8::String::new(scope, k).unwrap();
                 let v = v8::String::new(scope, v).unwrap();
                 obj.set(scope, k.into(), v.into());
@@ -5593,7 +5610,8 @@ fn drive_tests_bounded(
         }
         if crate::napi_host::keeps_loop_alive(scope) {
             let delay = call_global_number(scope, global, "__ttNextMacroDelay");
-            let timeout = (delay >= 0.0).then(|| std::time::Duration::from_secs_f64(delay / 1000.0));
+            let timeout =
+                (delay >= 0.0).then(|| std::time::Duration::from_secs_f64(delay / 1000.0));
             if crate::napi_host::wait_native_task(scope, timeout) {
                 continue;
             }

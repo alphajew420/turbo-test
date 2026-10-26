@@ -489,6 +489,10 @@ fn os_tmpdir_and_homedir_follow_the_environment() {
         "import { test, expect } from 'vitest';\nimport * as os from 'os';\n\
          test('dirs', () => {\n  expect(os.tmpdir()).toBe('/tt/tmp/dir');\n  expect(os.homedir()).toBe('/tt/home');\n});\n",
     );
-    let r = turbo_test(&p.dir, &[], &[("TMPDIR", "/tt/tmp/dir/"), ("HOME", "/tt/home")]);
+    let r = turbo_test(
+        &p.dir,
+        &[],
+        &[("TMPDIR", "/tt/tmp/dir/"), ("HOME", "/tt/home")],
+    );
     assert_passes(&r, 1);
 }

@@ -846,11 +846,20 @@ fn vitest_setup_files_follow_vitest_config_resolution_order() {
 /// `isolate: false` is read from each of them.
 #[test]
 fn every_vitest_config_name_marks_a_vitest_project() {
-    for name in ["vitest.config.cjs", "vitest.config.cts", "vite.config.mts", "vite.config.cjs"] {
+    for name in [
+        "vitest.config.cjs",
+        "vitest.config.cts",
+        "vite.config.mts",
+        "vite.config.cjs",
+    ] {
         let d = tmp(&format!("cfg-esm-{name}"));
         put(&d, "package.json", "{}");
         // (a jest config with the node environment would make it CJS-first)
-        put(&d, "jest.config.js", "module.exports = { testEnvironment: 'node' }");
+        put(
+            &d,
+            "jest.config.js",
+            "module.exports = { testEnvironment: 'node' }",
+        );
         put(&d, name, "module.exports = { test: { isolate: false } }");
         assert!(!cjs_first_project_uncached(&d.join("a.test.ts")), "{name}");
         assert!(vitest_isolate_false(&d.join("a.test.ts")), "{name}");
@@ -1358,7 +1367,12 @@ fn tsc_transform_esm_requires_typescript() {
 #[test]
 fn os_tmpdir_follows_node() {
     let env = |pairs: &'static [(&'static str, &'static str)]| {
-        move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+        move |k: &str| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        }
     };
     assert_eq!(node_tmpdir(env(&[("TMPDIR", "/a/b/")])), "/a/b");
     assert_eq!(node_tmpdir(env(&[("TMPDIR", ""), ("TMP", "/t")])), "/t");
