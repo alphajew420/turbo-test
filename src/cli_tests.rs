@@ -388,6 +388,25 @@ fn schedule_slowest_first_ties_keep_order() {
 }
 
 #[test]
+fn non_finite_history_entries_are_ignored() {
+    // turbo-test#32 item 1: `a\tNaN` parses as f64 NaN and panicked the partial_cmp sort.
+    let t = Tmp::new("nan");
+    let path = t.0.join("durations.tsv");
+    std::fs::write(&path, "a\tNaN\nb\tinf\nc\t-inf\nd\t7\n").unwrap();
+    let hist = load_durations(&path);
+    assert_eq!(hist.len(), 1, "{hist:?}");
+    assert_eq!(hist["d"], 7.0);
+    // Even a NaN that reaches the scheduler directly sorts deterministically, never panics:
+    // NaN ranks above every finite duration (total order), finite entries stay slowest-first.
+    let files: Vec<PathBuf> = ["a", "b", "c"].iter().map(PathBuf::from).collect();
+    let mut raw = HashMap::new();
+    raw.insert("a".to_string(), 3.0);
+    raw.insert("b".to_string(), f64::NAN);
+    raw.insert("c".to_string(), 9.0);
+    assert_eq!(schedule_order(&files, &raw), vec![1, 2, 0]);
+}
+
+#[test]
 fn history_updates_only_files_that_ran() {
     let files: Vec<PathBuf> = ["a", "b"].iter().map(PathBuf::from).collect();
     let mut hist = HashMap::new();

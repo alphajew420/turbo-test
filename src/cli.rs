@@ -321,13 +321,14 @@ pub fn durations_path() -> PathBuf {
         .join("durations.tsv")
 }
 
-/// Load the `path\tms` duration history (missing file / malformed lines → ignored).
+/// Load the `path\tms` duration history (missing file / malformed lines → ignored). `f64` parsing
+/// accepts `NaN`/`inf`; such entries are malformed too (a hand-edited or corrupt cache) → ignored.
 pub fn load_durations(path: &Path) -> HashMap<String, f64> {
     let mut m = HashMap::new();
     if let Ok(s) = std::fs::read_to_string(path) {
         for line in s.lines() {
             if let Some((p, d)) = line.split_once('\t') {
-                if let Ok(ms) = d.parse::<f64>() {
+                if let Some(ms) = d.parse::<f64>().ok().filter(|ms| ms.is_finite()) {
                     m.insert(p.to_string(), ms);
                 }
             }
@@ -347,7 +348,9 @@ pub fn save_durations(path: &Path, m: &HashMap<String, f64>) {
 }
 
 /// Duration-aware order: slowest historical first (unknown = 0 ms; ties keep argv order —
-/// work-stealing handles the rest). Returns indices into `files`.
+/// work-stealing handles the rest). Returns indices into `files`. `total_cmp`, not
+/// `partial_cmp().unwrap()`: a non-finite duration (which `load_durations` already drops) must
+/// never panic the run.
 pub fn schedule_order(files: &[PathBuf], hist: &HashMap<String, f64>) -> Vec<usize> {
     let mut order: Vec<usize> = (0..files.len()).collect();
     order.sort_by(|&a, &b| {
@@ -359,7 +362,7 @@ pub fn schedule_order(files: &[PathBuf], hist: &HashMap<String, f64>) -> Vec<usi
             .get(&files[b].to_string_lossy().to_string())
             .copied()
             .unwrap_or(0.0);
-        db.partial_cmp(&da).unwrap()
+        db.total_cmp(&da)
     });
     order
 }
