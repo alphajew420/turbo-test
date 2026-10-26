@@ -325,7 +325,7 @@ fn drive_loop_rejects_a_broken_runtime_contract() {
 }
 
 #[test]
-fn synthetic_modules_for_shared_assets_defaults_and_unshimmed_builtins() {
+fn synthetic_modules_for_shared_assets_defaults_and_builtins() {
     let p = Project::new("rb-esm-synth");
     p.file("package.json", r#"{"name":"rb-esm-synth"}"#);
     p.file("shared.json", r#"{"n": 1}"#);
@@ -351,7 +351,7 @@ test('synthetic modules', () => {
   expect(fromA).toBe('1:k');
   expect(def.default).toBe('dflt');
   expect(named).toBe('n');
-  expect(typeof vm).toBe('object');
+  expect(vm.runInThisContext('1 + 1')).toBe(2);
 });
 "#,
     );

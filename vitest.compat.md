@@ -150,6 +150,28 @@ Mostly strong. Notable gaps:
 | `toMatchObject` / `toContainEqual` / `toSatisfy` / `toHaveBeenCalledOnce` / `toHaveBeenNthCalledWith` | ✅ | Present (verified by `test/compat-api.test.mjs`). |
 | `bench()` | ❌ | No benchmark API. |
 
+### Node built-in modules
+
+Tests run in bare V8, so Node's builtins are runtime shims (`src/runtime.js` `__nodeBuiltins`).
+`import x from 'node:x'`, `import { a } from 'x'` and `require('x')` all get the same object on both
+loader paths (ESM graph and module runner); `node:` prefixes are accepted. Every listed builtin
+has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve.
+
+| builtin | provided |
+|---|---|
+| `buffer` | `Buffer` (the runtime's global `Buffer`), `atob`, `btoa`, `Blob`, `File`. |
+| `fs`, `fs/promises` | Native-backed `existsSync`/`readFileSync`/`writeFileSync`/`appendFileSync` (a real `O_APPEND` append)/`mkdirSync`/`rmSync`/`readdirSync`; `promises` (= `fs/promises`): `readFile`, `writeFile`, `appendFile`, `mkdir`, `rm`, `readdir`; `constants` (the platform-independent ones: `F_OK`/`R_OK`/`W_OK`/`X_OK`, `O_RDONLY`/`O_WRONLY`/`O_RDWR`, `S_IF*`, `COPYFILE_*`). `statSync` is a stub (always a file). No callback-style API, no streams. |
+| `process` | `globalThis.process`. |
+| `timers`, `timers/promises` | The global timers (fake timers drive the same functions); `timers.promises` = `timers/promises`: `setTimeout`, `setImmediate`, `setInterval` (async iterator), `scheduler.wait`/`scheduler.yield`, all honouring `{ signal }` (`AbortError`, code `ABORT_ERR`). |
+| `assert`, `assert/strict` | Node's API: `ok`, `equal`/`notEqual`, `strictEqual`/`notStrictEqual`, `deepEqual`/`deepStrictEqual` (+ `not…`; Map/Set/Date/RegExp/Error/typed arrays/boxed primitives/prototypes/cycles), `throws`/`doesNotThrow`, `rejects`/`doesNotReject` (class / RegExp / validation function / object matchers), `match`/`doesNotMatch`, `ifError`, `fail`, `AssertionError` (`code: 'ERR_ASSERTION'`, `actual`/`expected`/`operator`). `assert/strict` = `assert.strict` (the `equal`/`deepEqual` family is strict). Generated messages are shorter than Node's diffs. |
+| `querystring` | Node's `parse`/`decode` (incl. `sep`/`eq`/`maxKeys`/`decodeURIComponent`), `stringify`/`encode`, `escape`, `unescape`. |
+| `string_decoder` | `StringDecoder` for `utf8`, `utf16le`/`ucs2`, `latin1`/`binary`, `ascii`, `hex`, `base64`, `base64url`, buffering partial characters across `write()`s like Node (U+FFFD for invalid / truncated UTF-8). |
+| `vm` | `runInThisContext`, `Script#runInThisContext`, `compileFunction` (current context), `isContext` (always `false` for objects). `createContext`, `runInContext`, `runInNewContext` (and the `Script` variants) throw: tests run in a single V8 context. A `Script`'s syntax error surfaces when it runs, not at construction. |
+| `worker_threads` | The main-thread view: `isMainThread: true`, `parentPort: null`, `threadId: 0`, `workerData: null`, `resourceLimits: {}`, `MessageChannel`/`MessagePort` (the runtime's), `get`/`setEnvironmentData`, `markAsUntransferable`/`isMarkedAsUntransferable`, `SHARE_ENV`. `new Worker()` throws (one thread). |
+| `inspector` | No inspector is active: `url()` is `undefined`, `waitForDebugger()` throws `ERR_INSPECTOR_NOT_ACTIVE`, `Session#post` throws `ERR_INSPECTOR_NOT_CONNECTED`, `open()`/`Session#connect()` throw; `console`, `close()`. |
+| `constants` | Node's merge of `os.constants` (`errno`, `priority`, `signals`), `fs.constants` and `crypto.constants`. `os.constants.signals`/`errno` carry the POSIX numbers Linux and macOS share (empty on Windows). |
+| `path`, `os`, `url`, `util`, `events`, `stream`, `crypto`, `module`, `child_process`, `perf_hooks`, `http`, `https`, `http2`, `net`, `tls`, `zlib`, `dns`, `dns/promises`, `tty`, `dgram`, `readline`, `v8`, `diagnostics_channel`, `async_hooks` | Load-time surfaces (enough for libraries to import and construct); see `src/runtime.js`. No real networking, processes or compression. |
+
 ---
 
 ## 5. Config-file reading (`cli.js`)

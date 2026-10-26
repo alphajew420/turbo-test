@@ -4237,18 +4237,19 @@ fn fs_readdir_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
     rv.set(arr.into());
 }
 
-/// node builtin module names we shim.
+/// Node builtin module names we shim; each has an entry in runtime.js `__nodeBuiltins` (a unit
+/// test checks that), served to `import` and `require` alike by `ensure_node_builtin`.
+#[rustfmt::skip]
+const NODE_BUILTINS: &[&str] = &[
+    "fs", "fs/promises", "path", "module", "os", "child_process", "url", "util", "events",
+    "stream", "assert", "assert/strict", "perf_hooks", "crypto", "buffer", "querystring",
+    "string_decoder", "timers", "timers/promises", "http", "http2", "https", "net", "tls", "zlib",
+    "dns", "dns/promises", "tty", "constants", "dgram", "readline", "v8", "diagnostics_channel",
+    "process", "async_hooks", "worker_threads", "vm", "inspector",
+];
+
 fn is_node_builtin(spec: &str) -> bool {
-    let s = spec.strip_prefix("node:").unwrap_or(spec);
-    matches!(
-        s,
-        "fs" | "fs/promises" | "path" | "module" | "os" | "child_process" | "url" | "util"
-            | "events" | "stream" | "assert" | "assert/strict" | "perf_hooks" | "crypto"
-            | "buffer" | "querystring" | "string_decoder" | "timers" | "timers/promises"
-            | "http" | "http2" | "https" | "net" | "tls" | "zlib" | "dns" | "dns/promises"
-            | "tty" | "constants" | "dgram" | "readline" | "v8" | "diagnostics_channel"
-            | "process" | "async_hooks" | "worker_threads" | "vm" | "inspector"
-    )
+    NODE_BUILTINS.contains(&spec.strip_prefix("node:").unwrap_or(spec))
 }
 
 /// Register a node builtin as a synthetic module sourced from globalThis.__nodeBuiltins[name].
@@ -4262,12 +4263,10 @@ fn ensure_node_builtin<'s>(scope: &mut v8::PinScope<'s, '_>, spec: &str) -> Opti
     let builtins = v8::Local::<v8::Object>::try_from(global.get(scope, bk.into())?).ok()?;
     let lookup_name = spec.strip_prefix("node:").unwrap_or(spec);
     let nk = v8::String::new(scope, lookup_name)?;
-    let exports_val = builtins.get(scope, nk.into())?;
-    let exports_val = if exports_val.is_undefined() {
-        v8::Object::new(scope).into()
-    } else {
-        exports_val
-    };
+    // every NODE_BUILTINS name has a shim; a missing one is a bug, not an empty module
+    let exports_val = builtins
+        .get(scope, nk.into())
+        .filter(|v| !v.is_undefined())?;
     let names = object_keys(scope, global, exports_val);
     let exports_global = v8::Global::new(scope, exports_val);
     let synth = make_synthetic(scope, &names)?;

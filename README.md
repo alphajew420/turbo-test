@@ -377,6 +377,9 @@ import.meta.url))`, string concatenation (`__dirname + '/z'`, `path.resolve(__di
   stubbed so the file still runs.
 - `Date.now()` reflects a real base + the virtual event-loop clock, so `setTimeout`-driven elapsed
   assertions pass deterministically.
+- Node built-in modules (`node:buffer`, `fs/promises`, `assert/strict`, `timers/promises`,
+  `querystring`, `string_decoder`, `vm`, `worker_threads`, …) are runtime shims; what each one
+  provides is listed in [vitest.compat.md](vitest.compat.md#node-built-in-modules).
 
 ## Requirements
 

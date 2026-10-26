@@ -150,6 +150,24 @@ fn builtin_and_test_api_module_names() {
 }
 
 #[test]
+fn every_node_builtin_has_a_non_empty_shim() {
+    // each name (bare and `node:`-prefixed) resolves to a runtime.js shim with exports — no
+    // builtin imports as an empty module
+    with_context(|scope, _| {
+        for name in NODE_BUILTINS {
+            for spec in [name.to_string(), format!("node:{name}")] {
+                assert_eq!(ensure_node_builtin(scope, &spec), Some(()), "{spec}");
+                let key = PathBuf::from(format!("<node:{spec}>"));
+                let names = REGISTRY.with(|r| r.borrow().cjs_export_names.get(&key).cloned());
+                assert!(names.is_some_and(|n| !n.is_empty()), "{spec}: no exports");
+            }
+        }
+        // a name without a shim is refused, not served as `{}`
+        assert_eq!(ensure_node_builtin(scope, "missing-shim"), None);
+    });
+}
+
+#[test]
 fn test_report_ok_means_nothing_failed() {
     let r = |passed, failed| TestReport {
         passed,
