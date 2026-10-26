@@ -41,17 +41,27 @@ use oxc_transformer::{HelperLoaderMode, TransformOptions, Transformer};
 /// esbuild baseline. (esbuild is still used for node_modules bundling, coverage, and
 /// decorator-metadata regardless — see the gate in `read_transformed`.)
 pub fn enabled() -> bool {
-    match std::env::var("TURBO_NATIVE_CJS") {
-        Ok(v) => v != "0" && !v.is_empty(),
-        Err(_) => true,
+    default_on(std::env::var("TURBO_NATIVE_CJS").ok().as_deref())
+}
+
+/// A default-ON switch's value: unset (or non-UTF-8) → on; `0` or empty → off; anything else → on.
+fn default_on(v: Option<&str>) -> bool {
+    match v {
+        Some(v) => v != "0" && !v.is_empty(),
+        None => true,
     }
+}
+
+/// A default-OFF switch's value: on iff set to a non-empty (UTF-8) value.
+fn non_empty(v: Option<&str>) -> bool {
+    v.is_some_and(|v| !v.is_empty())
 }
 
 /// Strict mode (conformity coverage measurement): when on, the runner does NOT fall back to esbuild
 /// for app files the native emitter can't handle — the unhandled module surfaces as a load error so
 /// the harness can count true native coverage instead of it being silently masked by the fallback.
 pub fn strict() -> bool {
-    std::env::var("TURBO_NATIVE_CJS_STRICT").map(|v| !v.is_empty()).unwrap_or(false)
+    non_empty(std::env::var("TURBO_NATIVE_CJS_STRICT").ok().as_deref())
 }
 
 /// Whether to use the native bundler for **node_modules** packages (P2b). **Default ON** (opt out
@@ -61,10 +71,7 @@ pub fn strict() -> bool {
 /// native app + native deps, and esbuild remains the automatic fallback for any package the bundler
 /// can't handle, so this is zero-regression.
 pub fn deps_enabled() -> bool {
-    match std::env::var("TURBO_NATIVE_DEPS") {
-        Ok(v) => v != "0" && !v.is_empty(),
-        Err(_) => true,
-    }
+    default_on(std::env::var("TURBO_NATIVE_DEPS").ok().as_deref())
 }
 
 /// How a reference to an imported local must be rewritten so bindings stay live.
@@ -287,6 +294,11 @@ pub fn emit(path: &Path, src: &str) -> Option<String> {
 /// (External helper mode), which `runtime.js` provides globally — so the native path no longer needs
 /// the esbuild/tsc metadata fallback (which is unavailable when the project ships no esbuild binary).
 pub fn emit_with(path: &Path, src: &str, legacy_decorators: bool) -> Option<String> {
+    emit_inner(path, src, legacy_decorators, crate::coverage::enabled())
+}
+
+/// `emit_with` with the coverage decision injected: `with_map = true` appends the inline source map.
+fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -> Option<String> {
     let alloc = Allocator::default();
     let stype = SourceType::from_path(path).ok()?;
     let parsed = Parser::new(&alloc, src, stype).parse();
@@ -324,7 +336,7 @@ pub fn emit_with(path: &Path, src: &str, legacy_decorators: bool) -> Option<Stri
     let ast = AstBuilder::new(&alloc);
 
     let ctx = LowerCtx { exports_obj: "__tt_exports".to_string(), resolve: None };
-    let map_src = if crate::coverage::enabled() { Some((path, src)) } else { None };
+    let map_src = if with_map { Some((path, src)) } else { None };
     let (parts, mappings) = lower(ast, scoping, &ctx, &mut program, map_src)?;
 
     // No ESM module syntax → CJS/script: return the transformed body unwrapped (no preamble).
@@ -478,9 +490,7 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
         match stmt {
             Statement::ImportDeclaration(decl) => {
                 seq += 1;
-                if !collect_import(&decl, seq, ctx, &mut imports, &mut requires) {
-                    return None;
-                }
+                collect_import(&decl, seq, ctx, &mut imports, &mut requires);
             }
             Statement::ExportNamedDeclaration(decl) => {
                 seq += 1;
@@ -576,14 +586,14 @@ fn map_var_specs(
 }
 
 /// Render one ImportDeclaration into require/init line(s) + import-map entries, under `ctx`.
-/// Returns false on an unhandled form.
+/// Every import form is handled.
 fn collect_import(
     decl: &ImportDeclaration,
     seq: usize,
     ctx: &LowerCtx,
     imports: &mut HashMap<SymbolId, Access>,
     requires: &mut Vec<String>,
-) -> bool {
+) {
     let src = decl.source.value.as_str();
     let sref = ctx.source_ref(src);
 
@@ -597,7 +607,7 @@ fn collect_import(
             SourceRef::BundledEsm { id } => requires.push(format!("init_{id}();")),
             SourceRef::BundledCjs { id } => requires.push(format!("require_{id}();")),
         }
-        return true;
+        return;
     };
 
     let has_default_or_ns = specifiers.iter().any(|s| {
@@ -648,7 +658,6 @@ fn collect_import(
             map_var_specs(specifiers, &var, imports);
         }
     }
-    true
 }
 
 /// `export <decl>` / `export { ... } [from "s"]`.
@@ -959,3 +968,7 @@ mod tests_dynimport {
 }
 
 
+
+#[cfg(test)]
+#[path = "esm_cjs_tests.rs"]
+mod tests_more;
