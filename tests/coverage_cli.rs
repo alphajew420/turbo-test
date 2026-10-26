@@ -865,3 +865,21 @@ fn braceless_if_throw_that_never_fires_is_an_uncovered_statement() {
         vec!["BRDA:2,0,0,0", "BRDA:2,0,1,1"]
     );
 }
+
+#[test]
+fn lines_inside_never_run_switch_cases_are_uncovered() {
+    let (p, lcov, j) = issue34_run("cov-i34-switch");
+    let rec = lcov_record(&lcov, &p.path("sw.js"));
+    // only `case 'a'` ran. vitest reports DA:2-5; turbo-test also counts the declaration and the
+    // function's closing line (its c8-style line model).
+    assert_eq!(
+        lines_with(&rec, "DA:"),
+        vec!["DA:1,1", "DA:2,1", "DA:3,1", "DA:4,0", "DA:5,0", "DA:7,1"]
+    );
+    assert_eq!(
+        lines_with(&rec, "BRDA:"),
+        vec!["BRDA:2,0,0,1", "BRDA:2,0,1,0", "BRDA:2,0,2,0"]
+    );
+    assert_eq!(summary_of(&j, &p.path("sw.js"), "lines"), (4, 6));
+    assert_eq!(summary_of(&j, &p.path("sw.js"), "statements"), (2, 4));
+}

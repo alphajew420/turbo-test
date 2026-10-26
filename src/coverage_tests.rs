@@ -595,6 +595,55 @@ fn braceless_consequent_statement_takes_its_own_range() {
     );
 }
 
+/// turbo-test#34's sw.js and the code part of esbuild's output, with esbuild's own mappings:
+/// each `case`/`default`/`}` line opens with a segment covering only its indentation, mapped to
+/// where the previous source token ended (`    default:` → the `2` of `return 2;`).
+const SW_SRC: &str = "\
+export function sw(x) {
+  switch (x) {
+    case 'a': return 1;
+    case 'b': return 2;
+    default: return 0;
+  }
+}
+";
+const SW_GEN: &str = "\
+function sw(x) {
+  switch (x) {
+    case \"a\":
+      return 1;
+    case \"b\":
+      return 2;
+    default:
+      return 0;
+  }
+}";
+const SW_MAP: &str = "AAAO,SAAS,GAAG,GAAG;AACpB,UAAQ,GAAG;AAAA,IACT,KAAK;AAAK,aAAO;AAAA,IACjB,KAAK;AAAK,aAAO;AAAA,IACjB;AAAS,aAAO;AAAA,EAClB;AACF";
+
+#[test]
+fn a_line_opening_with_a_blank_only_segment_is_not_attributed_to_the_previous_line() {
+    let p = vpath("switch-lines.js");
+    let w = inline_wrapped(SW_GEN, &format!("{{\"mappings\":\"{SW_MAP}\"}}"));
+    register_meta(&p, &w, SW_SRC);
+    assert_eq!(
+        meta_for(&p).unwrap().blank_first,
+        vec![false, false, true, false, true, false, true, false, true, false]
+    );
+    // V8's ranges for sw('a'): the function, and the two cases that never ran
+    let ranges = vec![
+        (at(SW_GEN, "function", 0), WRAP.len() + SW_GEN.len(), 1),
+        (at(SW_GEN, "case \"b\"", 0), at(SW_GEN, "return 2;", 9), 0),
+        (at(SW_GEN, "default", 0), at(SW_GEN, "return 0;", 9), 0),
+    ];
+    map_script(&p, &ranges, &[]);
+    // `    default:` and `  }` are credited to lines 4 and 5 (where their indentation segment
+    // points) but open outside both case ranges: they take the count of the token they point at
+    assert_eq!(
+        lines_of(&p),
+        BTreeMap::from([(1, 1), (2, 1), (3, 1), (4, 0), (5, 0), (7, 1)])
+    );
+}
+
 // ---- mapping V8 ranges onto lines / functions / branches / statements -----------------------
 
 #[test]

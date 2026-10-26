@@ -377,6 +377,8 @@ struct ScriptMeta {
     code_span: Option<(usize, usize)>,
     /// per gen line, per segment: blank lead-in columns of its run (see `segment_leads`)
     leads: Vec<Vec<u32>>,
+    /// per gen line: its first segment covers blanks only (see `blank_first_segments`)
+    blank_first: Vec<bool>,
 }
 
 impl ScriptMeta {
@@ -453,6 +455,29 @@ fn segment_leads(gen_lines: &[&[u16]], orig_lines: &[&[u16]], segs: &Segments) -
     out
 }
 
+/// Per gen line: whether its first segment's generated run is blank only. esbuild opens such a
+/// line (`    case "b":`, `    default:`, `  }`) with a segment for its indentation that points
+/// at where the PREVIOUS source token ended (`    default:` → the `2` of `return 2;` on the line
+/// before), and its code with a later segment. Line coverage attributes a generated line to its
+/// first segment's source line, sampled at the line start, so such a line used to credit the
+/// previous source line with a count taken outside every case range.
+fn blank_first_segments(gen_lines: &[&[u16]], segs: &Segments) -> Vec<bool> {
+    let blank = |c: &u16| *c == 0x20 || *c == 0x09;
+    let mut out = Vec::with_capacity(segs.len());
+    for (g, row) in segs.iter().enumerate() {
+        let text = gen_lines.get(g).copied().unwrap_or_default();
+        let run = match row.first() {
+            Some(first) => {
+                let end = row.get(1).map_or(text.len(), |n| n.0 as usize);
+                text.get(first.0 as usize..end).unwrap_or_default()
+            }
+            None => &[],
+        };
+        out.push(!run.is_empty() && run.iter().all(blank));
+    }
+    out
+}
+
 static META: Mutex<Option<HashMap<PathBuf, Option<Arc<ScriptMeta>>>>> = Mutex::new(None);
 
 pub fn has_meta(file: &Path) -> bool {
@@ -492,6 +517,7 @@ pub fn register_meta(file: &Path, wrapped: &str, orig_source: &str) {
         let orig_u16: Vec<u16> = orig_source.encode_utf16().collect();
         let orig16: Vec<&[u16]> = orig_u16.split(|&c| c == 0x0A).collect();
         let leads = segment_leads(&gen16, &orig16, &segments);
+        let blank_first = blank_first_segments(&gen16, &segments);
         Arc::new(ScriptMeta {
             line_start,
             genmap,
@@ -501,6 +527,7 @@ pub fn register_meta(file: &Path, wrapped: &str, orig_source: &str) {
             header_end,
             code_span,
             leads,
+            blank_first,
         })
     });
     let mut g = META.lock().unwrap();
@@ -705,7 +732,7 @@ pub fn map_script(file: &Path, ranges: &[(usize, usize, i64)], funcs: &[(String,
     let src_line_of = |li: usize| genmap.get(&((li - 1) as u32)).map(|&sl| sl + 1);
 
     // innermost covered range for an offset = the one with the largest start that still contains it.
-    let innermost = |off: usize| -> Option<i64> {
+    let innermost_gen = |off: usize| -> Option<i64> {
         let mut best: Option<(usize, i64)> = None;
         for &(s, e, c) in ranges {
             if s <= off && off < e {
@@ -718,13 +745,24 @@ pub fn map_script(file: &Path, ranges: &[(usize, usize, i64)], funcs: &[(String,
     };
 
     // line coverage
+    let oranges = orig_ranges(&meta, ranges);
     for &off in line_start {
         // the wrapper line and esbuild's interop prologue (mapped to (0, 0), so it would make
         // even a blank or type-only line 1 look executable) are not source lines
         let Some(li) = meta.code_line(off) else {
             continue;
         };
-        let Some(count) = innermost(off) else { continue };
+        // A line whose first segment is only its indentation (a `case`/`default`/`}` line) is
+        // credited to the source token that segment points back to — the end of the previous
+        // line. Take that token's count: the line-start sample lies outside a case range that
+        // ends at that token, so it would read the enclosing count instead.
+        let count = if meta.blank_first.get(li - 1).copied().unwrap_or(false) {
+            let (_, line, col) = meta.segments[li - 1][0];
+            innermost(&oranges, (line, col)).map(|r| r.2)
+        } else {
+            innermost_gen(off)
+        };
+        let Some(count) = count else { continue };
         if let Some(src_line) = src_line_of(li) {
             record(file, src_line, count.max(0) as u64);
         }
