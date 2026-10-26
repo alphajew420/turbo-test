@@ -15,7 +15,7 @@ jobs:
   build:
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    # musl (Alpine) is intentionally NOT built. turbo-test statically links V8 (rusty_v8),
+    # musl (Alpine) is intentionally NOT built. turbo-test statically links V8 (turbo-dom-v8, a rusty_v8 fork),
     # which ships only gnu/darwin prebuilt libs (no *-musl.a). The gnu V8 is deeply
     # glibc-coupled (__libc_stack_end, glibc struct stat/dirent64 layouts), so linking it
     # into a musl binary is ABI-unsound at runtime — investigated 2026-06-17. A correct
@@ -47,6 +47,12 @@ jobs:
 
       - name: Build
         run: cargo build --release --bin turbo-test --target ${{ matrix.target }}
+
+      # Exactly one V8 in the graph: turbo-dom's fork (turbo-dom-v8), shared with
+      # turbo-dom-browser-env; never upstream v8 / v8x / the retired turbo-surf-v8.
+      - name: Duplicate-V8 guard
+        shell: bash
+        run: bash scripts/check-single-v8.sh
 
       - name: Stage binary
         shell: bash
