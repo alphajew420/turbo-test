@@ -1,7 +1,9 @@
 //! Config and mock semantics that follow jest/vitest: a JSON jest config (package.json
 //! `"jest"` block, `jest.config.json`) is read like `jest.config.js`; a factory-less `vi.mock`
 //! stays factory-less whatever code follows it; entry-file mocks intercept on the legacy
-//! TURBO_NO_MR bundle path too; a bare `vi.hoisted` after a declared one is its own statement.
+//! TURBO_NO_MR bundle path too; a bare `vi.hoisted` after a declared one is its own statement;
+//! re-mocking under isolate reuse keeps an already-mocked importer, and a fresh isolate under the
+//! reuse switch registers a doMock as a new module.
 #![cfg(unix)]
 
 mod common;
@@ -182,6 +184,72 @@ test('hoisted values reach the factory', () => {
     );
     for env in [&[][..], &[("TURBO_NO_MR", "1")][..]] {
         let r = turbo_test(&p.dir, &["a.test.js"], env);
+        assert_passes(&r, 1);
+    }
+}
+
+#[test]
+fn remocking_a_dependency_keeps_a_mocked_importer() {
+    // turbo-test#31 item 2 repro: on the reuse path the y re-mock used to evict x's mocked
+    // exports, so the next require('./x.cjs') read `{}`; the fresh retry failed the same way.
+    let p = Project::new("rc-remock-reuse");
+    p.with_esbuild();
+    p.file("package.json", r#"{"name":"r2"}"#);
+    p.file("x.cjs", "module.exports = { v: require('./y.cjs').v };\n");
+    p.file("y.cjs", "module.exports = { v: 'y' };\n");
+    p.file(
+        "a.test.js",
+        r#"test('re-mock dependency keeps mocked importer', () => {
+  expect(require('./x.cjs').v).toBe('y');
+  vi.doMock('./x.cjs', () => ({ v: 'mx' }));
+  expect(require('./x.cjs').v).toBe('mx');
+  vi.doMock('./y.cjs', () => ({ v: 'my' }));
+  expect(require('./x.cjs')).toEqual({ v: 'mx' });
+  expect(require('./y.cjs')).toEqual({ v: 'my' });
+});
+"#,
+    );
+    // a second file in the same reused isolate: x's real importer chain re-mocks normally
+    p.file(
+        "b.test.js",
+        r#"test('a real importer sees a re-mocked dependency', () => {
+  vi.doMock('./y.cjs', () => ({ v: 'my2' }));
+  expect(require('./x.cjs').v).toBe('my2');
+});
+"#,
+    );
+    for env in [
+        &[("TURBO_REUSE_ISOLATE", "1"), ("TURBO_JOBS", "1")][..],
+        &[("TURBO_NO_REUSE", "1")][..],
+    ] {
+        let r = turbo_test(&p.dir, &["a.test.js", "b.test.js"], env);
+        assert_passes(&r, 2);
+    }
+}
+
+#[test]
+fn a_fresh_isolate_under_the_reuse_switch_does_not_patch_mocks_into_real_exports() {
+    // turbo-test#31 item 2, second cause: register_mock_value checked the global reuse switch,
+    // not whether this file runs on the reuse path. `--coverage` runs every file on a fresh
+    // isolate even with TURBO_REUSE_ISOLATE set (as does the fresh-isolate retry); there a
+    // doMock must register a new module (vitest), not copy the mock onto the real exports
+    // object a test already holds.
+    let p = Project::new("rc-remock-fresh");
+    p.with_esbuild();
+    p.file("package.json", r#"{"name":"r2b"}"#);
+    p.file("x.cjs", "module.exports = { v: 'x' };\n");
+    p.file(
+        "a.test.js",
+        r#"test('doMock leaves a held real module alone', () => {
+  const realX = require('./x.cjs');
+  vi.doMock('./x.cjs', () => ({ v: 'mx' }));
+  expect(require('./x.cjs').v).toBe('mx');
+  expect(realX.v).toBe('x');
+});
+"#,
+    );
+    for env in [&[("TURBO_REUSE_ISOLATE", "1")][..], &[][..]] {
+        let r = turbo_test(&p.dir, &["--coverage", "a.test.js"], env);
         assert_passes(&r, 1);
     }
 }

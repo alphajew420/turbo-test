@@ -136,10 +136,22 @@ fn reuse_isolate_enabled() -> bool {
     REUSE_DECISION.get().copied().unwrap_or(false)
 }
 
+/// Whether the CURRENT file runs on the reuse path (the persistent isolate). Under the reuse
+/// switch some files still run on a fresh per-file isolate: the fresh-isolate retry
+/// (FORCE_FRESH) and every file under `--coverage` (run_test_file's dispatch). Mock
+/// registration's reuse-only behaviour (patching a re-mock into the existing exports object,
+/// mock-graph invalidation) must follow the path, not the switch.
+fn on_reuse_path() -> bool {
+    reuse_isolate_enabled() && !FORCE_FRESH.with(|f| f.get()) && !crate::coverage::enabled()
+}
+
 /// Mock-graph invalidation: when `target` is (re-)mocked, evict every app module that
 /// (transitively) require()d it, so each re-imports the new mock instead of the stale version it
 /// captured under a prior mock/real load. node_modules importers are NOT evicted (re-evaluating
 /// them would re-trigger the emotion/MUI singleton accumulation that keeping modules warm avoids).
+/// A MOCKED importer is neither evicted nor walked through: its exports are its mock, which does
+/// not depend on what it imports (evicting them left it "mocked but no exports", read as `{}`),
+/// and its importers already see that mock.
 fn invalidate_importers(target: &Path) {
     REGISTRY.with(|r| {
         let mut reg = r.borrow_mut();
@@ -149,7 +161,8 @@ fn invalidate_importers(target: &Path) {
         while let Some(m) = stack.pop() {
             let importers = reg.import_edges.get(&m).cloned().unwrap_or_default();
             for imp in importers {
-                if imp.to_string_lossy().contains("/node_modules/") {
+                if imp.to_string_lossy().contains("/node_modules/") || reg.mocks.contains_key(&imp)
+                {
                     continue;
                 }
                 if !seen.insert(imp.clone()) {
@@ -2875,8 +2888,9 @@ fn register_mock_value<'s>(
     // would keep seeing the old mock (e.g. the analytics trackEvent the test spies on differs
     // from the one a cached hook calls → "0 calls"). Instead, mutate the existing object in
     // place: copy the new mock's props onto it. Identity is preserved; every importer sees the
-    // update. (Fresh mode reloads every module per file, so this only matters under reuse.)
-    if reuse_isolate_enabled() {
+    // update. (Fresh mode reloads every module per file, so this only matters on the reuse path;
+    // a fresh isolate under the reuse switch registers a new module, as vitest does.)
+    if on_reuse_path() {
         if let Some(existing_g) = REGISTRY.with(|r| r.borrow().cjs_exports.get(abs).cloned()) {
             let existing = v8::Local::new(scope, &existing_g);
             if existing.is_object() && exports_val.is_object() {
@@ -2917,7 +2931,7 @@ fn register_mock_value<'s>(
         reg.path_by_hash.insert(hash, abs.to_path_buf());
         reg.mocks.insert(abs.to_path_buf(), String::new());
     });
-    if reuse_isolate_enabled() {
+    if on_reuse_path() {
         invalidate_importers(abs);
     }
     Some(())
