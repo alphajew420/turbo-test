@@ -1848,6 +1848,31 @@ pub unsafe extern "C" fn napi_define_properties(
     })
 }
 
+unsafe extern "C" {
+    /// The binding behind rusty_v8's `PropertyDescriptor::new_from_get_set` (V8's
+    /// `PropertyDescriptor(get, set)`), which takes either half as an empty (NULL) handle; the
+    /// Rust wrapper only accepts two values.
+    fn v8__PropertyDescriptor__CONSTRUCT__Get_Set(
+        this: *mut v8::PropertyDescriptor,
+        get: *const v8::Value,
+        set: *const v8::Value,
+    );
+}
+
+/// An accessor descriptor with the halves given: a `None` half is absent from the descriptor
+/// (V8's empty handle), so DefineProperty leaves that half of an existing accessor alone.
+fn accessor_descriptor(
+    get: Option<v8::Local<v8::Value>>,
+    set: Option<v8::Local<v8::Value>>,
+) -> v8::PropertyDescriptor {
+    let half = |h: Option<v8::Local<v8::Value>>| h.map_or(std::ptr::null(), |h| &*h as *const _);
+    let mut desc = std::mem::MaybeUninit::<v8::PropertyDescriptor>::uninit();
+    unsafe {
+        v8__PropertyDescriptor__CONSTRUCT__Get_Set(desc.as_mut_ptr(), half(get), half(set));
+        desc.assume_init()
+    }
+}
+
 /// Define `props` on `obj`, as Node's napi_define_properties: an accessor pair or a method
 /// becomes a new function per property (no signature, no name); a data property with all three
 /// attributes takes the CreateDataProperty fast path. A definition V8 refuses is
@@ -1864,16 +1889,14 @@ unsafe fn define_properties(
         let configurable = p.attributes & napi_configurable != 0;
         let writable = p.attributes & napi_writable != 0;
         let (mut desc, refused) = if p.getter.is_some() || p.setter.is_some() {
-            let undefined: v8::Local<v8::Value> = v8::undefined(s).into();
+            // as Node: a missing half is an empty handle, left out of the definition (an existing
+            // accessor keeps that half), not `undefined`
             let mut accessor = |cb: Option<napi_callback>| match cb {
-                Some(cb) => new_function(s, env, cb, p.data).map(Into::into),
-                None => Ok(undefined),
+                Some(cb) => new_function(s, env, cb, p.data).map(|f| Some(f.into())),
+                None => Ok(None),
             };
             let (get, set) = (accessor(p.getter)?, accessor(p.setter)?);
-            (
-                v8::PropertyDescriptor::new_from_get_set(get, set),
-                napi_invalid_arg,
-            )
+            (accessor_descriptor(get, set), napi_invalid_arg)
         } else if let Some(method) = p.method {
             let f = new_function(s, env, method, p.data)?;
             let desc = v8::PropertyDescriptor::new_from_value_writable(f.into(), writable);

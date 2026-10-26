@@ -317,10 +317,28 @@ static napi_value f_define_properties_checks(napi_env env, napi_callback_info in
     return list(env, 7, st);
 }
 
+/* defineAccessorHalf(obj, setterOnly) -> status: napi_define_properties of a configurable
+ * accessor "p" with only a getter (or only a setter); the missing half is left out of the
+ * definition, so an existing accessor keeps it. */
+static napi_value f_define_accessor_half(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2];
+    napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    bool setter_only = false;
+    napi_get_value_bool(env, argv[1], &setter_only);
+    napi_property_descriptor p = {"p", NULL, NULL, NULL, NULL, NULL, napi_configurable, NULL};
+    if (setter_only)
+        p.setter = noop;
+    else
+        p.getter = noop;
+    return num(env, napi_define_properties(env, argv[0], 1, &p));
+}
+
 static const struct {
     const char *name;
     napi_callback cb;
 } FNS[] = {
+    {"defineAccessorHalf", f_define_accessor_half},
     {"defineClassChecks", f_define_class_checks},
     {"newTargetChecks", f_new_target_checks},
     {"hostOnlyChecks", f_host_only_checks},
