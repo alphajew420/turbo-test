@@ -1122,15 +1122,13 @@ fn json_summary(total: &Row, rows: &[Row]) -> String {
             metric(r.brh, r.brf, r.bpct())
         )
     }
-    let mut s = String::from("{\n");
-    s.push_str(&format!("  \"total\": {},\n", block(total)));
-    for (i, r) in rows.iter().enumerate() {
+    // One entry per line, comma-separated (never a trailing comma, even with zero file rows).
+    let mut entries = vec![format!("  \"total\": {}", block(total))];
+    for r in rows {
         let key = r.path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
-        let comma = if i + 1 < rows.len() { "," } else { "" };
-        s.push_str(&format!("  \"{}\": {}{}\n", key, block(r), comma));
+        entries.push(format!("  \"{}\": {}", key, block(r)));
     }
-    s.push_str("}\n");
-    s
+    format!("{{\n{}\n}}\n", entries.join(",\n"))
 }
 
 /// Self-contained HTML overview table (c8/istanbul-style) — browsable `coverage/index.html`.

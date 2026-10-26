@@ -732,6 +732,18 @@ fn json_summary_matches_the_c8_shape() {
 }
 
 #[test]
+fn json_summary_without_file_rows_is_valid_json() {
+    // turbo-test#34 item 5: zero rows used to leave a trailing comma after the total block.
+    let s = json_summary(&row("", 0, 0, 0, 0, 0, 0, 0, 0), &[]);
+    assert_eq!(
+        s,
+        "{\n  \"total\": {\"lines\":{\"total\":0,\"covered\":0,\"skipped\":0,\"pct\":100},\"statements\":{\"total\":0,\"covered\":0,\"skipped\":0,\"pct\":100},\"functions\":{\"total\":0,\"covered\":0,\"skipped\":0,\"pct\":100},\"branches\":{\"total\":0,\"covered\":0,\"skipped\":0,\"pct\":100}}\n}\n"
+    );
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert_eq!(v.as_object().unwrap().len(), 1);
+}
+
+#[test]
 fn html_summary_classifies_and_escapes() {
     let rows = vec![
         row("/p/src/<x>&y.ts", 9, 10, 3, 4, 1, 2, 10, 10), // 90 high, 75 med, 50 low, 100 high
