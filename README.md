@@ -38,67 +38,17 @@ The DOM is on by default for `jsdom`/`happy-dom`/`turbo-dom` environments (and a
 `// @vitest-environment jsdom` pragma); `environment: 'node'` files get clean globals, just like
 vitest. There is **no environment to install or configure** — the Rust DOM ships inside the binary.
 
-## Native DOM lifecycle controls
+## The DOM binding and its Chrome controls
 
-The DOM binding is [turbo-dom-browser-env](https://github.com/miaskiewicz/turbo-dom/tree/main/crates/turbo-dom-browser-env)
+The DOM is [turbo-dom-browser-env](https://github.com/miaskiewicz/turbo-dom/tree/main/crates/turbo-dom-browser-env)
 (the rtdom <-> V8 browser environment, built in the
 [turbo-dom](https://github.com/miaskiewicz/turbo-dom) workspace and linked into the
-binary); its probes, Chrome controls and their regression tests live in that crate's
-`src/`, referred to as `$ENV_SRC` below (e.g. `../turbo-dom/crates/turbo-dom-browser-env/src`).
-
-The binding keeps constructed shadow stylesheet lists during
-same-document adoption and disconnect/reconnect, and clears them during
-cross-document adoption before custom-element adopted callbacks. Retained
-`adoptedStyleSheets` arrays keep their identity. Internal adoption reads private
-records instead of page-overridden DOM getters or array methods.
-
-Embedders call `retire_custom_element_context(context)` when a frame's browsing
-context is retired. This host-only boundary preserves retained registries,
-definitions and existing element identity while stopping automatic construction
-and callbacks from that definition realm, including reactions already queued.
-Ordinary inert documents remain distinct from retired frame contexts.
-Text and DocumentFragment constructors create actual native nodes with Web IDL
-string conversion, subclass prototypes and constructor-realm document ownership.
-The listener-backed EventTarget constructor preserves Node's constructor link.
-
-Independent Chrome155 controls cover these stylesheet transitions, reentrant
-custom-element callbacks, contextual fragment ownership, scoped registries and
-inert templates. Computed font controls additionally cover actual owner-document
-preferences, live inheritance, arithmetic `calc()`, named/manual slots and
-retirement. Supported font units and grammar keywords are ASCII case-insensitive;
-quoted/custom family names and unresolved custom-property names retain their
-original spelling. The host-only `set_computed_font_defaults(context, family, size)`
-accepts a nonempty family and finite positive initial size. macOS `Times` is
-measured against Chrome155; other-platform `Times New Roman` remains a conventional,
-uncertified preference. Metric-dependent `ch`/`ex`, viewport units, `min`/`max`/
-`clamp`, custom-property substitution and other per-element heading/form-control
-UA font defaults, full `font-variant` combinations and unit-cancelling division
-remain unsupported by this bounded resolver. Scalar `calc()` line-height retains
-its inherited factor. Unresolved font text is retained through descendants instead
-of manufacturing numeric values.
-Measured Chrome155 button UA declarations reset its normal Arial 13.3333px font,
-spacing and border widths before author CSS is applied. Universal and inline
-styles, `font:inherit`, `initial` and measured `revert` behavior are covered by
-`$ENV_SRC/computed_button_ua_probe.js` and its source-bound Chrome control. Recollect
-that control with the same command below and
-`--probe $ENV_SRC/computed_button_ua_probe.js`; select the intended Chrome executable with
-`--chrome /absolute/path/to/Chrome`.
-Recollect a lifecycle control with the sibling turbo-surf CDP
-collector and a current Node version that provides WebSocket:
-Computed author declarations retain parsed `!important` priority through shorthand
-expansion and inline overrides. The source-bound
-`$ENV_SRC/computed_border_priority_probe.js` control covers nine border cascade cases;
-the native-layout/client metrics columns are validated by turbo-surf separately.
-
-```bash
-node scripts/dom-lifecycle-chrome-control.mjs \
-  --runner ../turbo-surf/harness/detection/chrome-cdp-trace.mjs \
-  --probe $ENV_SRC/css_adoption_lifecycle_probe.js \
-  --out /tmp/css-adoption-control.json
-```
-
-These are bounded behavior controls; broader XML parsing and complete browser
-lifecycle conformance remain separate work.
+binary). Its probes, the Chrome-control collectors that record their oracles
+(`scripts/*-chrome-control.mjs`, `scripts/typed-om-registry.mjs`,
+`scripts/trusted-types-control/`), the live CSS host notes (`docs/live-css-host.md`)
+and the native DOM lifecycle behaviour they pin live in that crate; see its
+README's "Chrome controls" and "Native DOM lifecycle controls" sections. Fix DOM
+behaviour and recollect controls there, not in this repository.
 
 ## Benchmarks
 
