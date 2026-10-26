@@ -112,14 +112,22 @@ fn walk_skips_only_node_modules_and_git() {
     for d in ["dist", "build", "coverage", ".next", ".turbo", "target"] {
         t.file(&format!("{d}/e.test.ts"), T);
     }
-    for d in SKIP_DIR {
+    for d in ["node_modules", ".git"] {
         t.file(&format!("{d}/e.test.ts"), T);
         t.file(&format!("src/{d}/f.test.ts"), T);
     }
     // a directory whose name looks like a test file is descended, not collected
     t.file("g.test.ts/inner.test.ts", T);
+    // pruned by vitest's default exclude
+    let def: Vec<String> = DEFAULT_EXCLUDE_GLOBS
+        .iter()
+        .map(|g| g.to_string())
+        .collect();
+    let root = t.0.clone();
+    let prune =
+        move |d: &Path| excludes_dir(&def, &d.strip_prefix(&root).unwrap().to_string_lossy());
     let mut out = Vec::new();
-    walk(&t.0, &mut out, &is_test_file);
+    walk(&t.0, &mut out, &is_test_file, &prune);
     out.sort();
     let want: Vec<PathBuf> = [
         ".hidden/c.test.ts",
@@ -138,10 +146,14 @@ fn walk_skips_only_node_modules_and_git() {
     .map(|f| t.0.join(f))
     .collect();
     assert_eq!(out, want);
-    assert_eq!(SKIP_DIR, ["node_modules", ".git"]);
+    assert_eq!(DEFAULT_EXCLUDE_GLOBS, ["**/node_modules/**", "**/.git/**"]);
+    // nothing pruned: those directories are searched too
+    let mut all = Vec::new();
+    walk(&t.0, &mut all, &is_test_file, &|_| false);
+    assert_eq!(all.len(), want.len() + 4);
     // unreadable dir → nothing, no panic
     let mut none = Vec::new();
-    walk(&t.0.join("missing"), &mut none, &is_test_file);
+    walk(&t.0.join("missing"), &mut none, &is_test_file, &|_| false);
     assert!(none.is_empty());
 }
 
@@ -153,8 +165,22 @@ fn walk_ignores_symlinks_and_specials() {
     std::os::unix::fs::symlink(&real, t.0.join("link.test.ts")).unwrap();
     std::os::unix::fs::symlink(t.0.join("real"), t.0.join("linkdir")).unwrap();
     let mut out = Vec::new();
-    walk(&t.0, &mut out, &is_test_file);
+    walk(&t.0, &mut out, &is_test_file, &|_| false);
     assert_eq!(out, vec![real]);
+}
+
+#[test]
+fn excludes_dir_needs_a_glob_covering_the_whole_directory() {
+    // turbo-test#63 item 3: discovery prunes a directory only when an exclude `<prefix>/**`
+    // covers everything under it
+    let ex = |g: &[&str]| -> Vec<String> { g.iter().map(|s| s.to_string()).collect() };
+    let def = ex(&DEFAULT_EXCLUDE_GLOBS);
+    assert!(excludes_dir(&def, "node_modules") && excludes_dir(&def, "a/b/.git"));
+    assert!(!excludes_dir(&def, "src") && !excludes_dir(&def, "node_modules_x"));
+    assert!(excludes_dir(&ex(&["e2e/**"]), "e2e") && !excludes_dir(&ex(&["e2e/**"]), "a/e2e"));
+    // a file glob never prunes
+    assert!(!excludes_dir(&ex(&["**/*.e2e.ts"]), "x"));
+    assert!(!excludes_dir(&[], "node_modules"));
 }
 
 #[test]

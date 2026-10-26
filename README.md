@@ -241,8 +241,9 @@ turbo-test [files...] [--jobs N] [--shard i/n] [--reporter json]
 
 No file args → discovers test files. If a `vitest.config.*` is found, turbo-test honors its
 **`test.include` / `test.exclude`** globs (so e.g. Playwright `*.spec.ts` under `e2e/` are skipped
-exactly like vitest); otherwise it falls back to `**/*.{test,spec}.{ts,tsx,js,jsx,mts,cts}`
-(skipping `node_modules`, `dist`, `build`, etc.). Flags pass through to the native binary. Every
+exactly like vitest); otherwise it uses vitest's defaults, include `**/*.{test,spec}.?(c|m)[jt]s?(x)`
+and exclude `**/node_modules/**, **/.git/**` (a config `exclude` replaces that default, as in
+vitest). With `--root`, files are named relative to the root. Flags pass through to the native binary. Every
 value flag takes either form, `--reporter json` or `--reporter=json`.
 
 ## Programmatic

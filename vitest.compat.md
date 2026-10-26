@@ -190,7 +190,7 @@ assertion never formats its operands.
 | capability | status | Notes |
 |---|---|---|
 | auto-discover nearest `vitest.config.*` / `vite.config.*` | ✅ | walks up from cwd. `-c/--config <path>` forces an exact file (skips the walk-up; its dir becomes the discovery root). |
-| `test.include` / `test.exclude` globs | ✅ | string-scan (no TS eval); drives discovery. Either one alone applies with vitest's default for the other (`**/*.{test,spec}.?(c|m)[jt]s?(x)` / `**/node_modules/**, **/.git/**`). `node_modules` and `.git` directories are never walked, even when a config `exclude` replaces the default. |
+| `test.include` / `test.exclude` globs | ✅ | string-scan (no TS eval); drives discovery. Either one alone applies with vitest's default for the other (`**/*.{test,spec}.?(c|m)[jt]s?(x)` / `**/node_modules/**, **/.git/**`). `node_modules` and `.git` are skipped only by the effective exclude: a config `exclude` replaces vitest's default, so a directory it does not list is searched (discovery prunes a directory a `<prefix>/**` exclude covers). |
 | `coverage.include/exclude/thresholds` | ✅ | string-scan; flags win over config. |
 | `test.environment` | ✅ | string-scan; sets the run default env when `--environment` is absent → `TURBO_ENV`. Per-file pragma still wins. |
 | anything requiring evaluating the config (functions, `defineConfig` logic, env interpolation, plugins, `setupFiles` array beyond first, aliases) | 🟡/❌ | Pure regex scan — dynamic config is invisible. |

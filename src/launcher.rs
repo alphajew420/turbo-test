@@ -24,9 +24,8 @@ use std::process::Command;
 
 use crate::coverage::glob_matches;
 
-/// Directories discovery never descends into: vitest's default exclude (`**/node_modules/**`,
-/// `**/.git/**`).
-const SKIP_DIR: [&str; 2] = ["node_modules", ".git"];
+/// vitest's default `test.exclude` (what applies when a config does not set one).
+const DEFAULT_EXCLUDE_GLOBS: [&str; 2] = ["**/node_modules/**", "**/.git/**"];
 
 /// The config files vitest 4 resolves, in its order (`configFiles` in vitest's constants:
 /// `vitest.config` then `vite.config`, each with `.ts .mts .cts .js .mjs .cjs`). Every config
@@ -89,9 +88,14 @@ fn is_test_file(name: &str) -> bool {
     stem.ends_with(".test") || stem.ends_with(".spec")
 }
 
-/// Recursive discovery walk: collect the files whose name `keep` accepts, outside the SKIP_DIR
-/// directories (symbolic links are not followed).
-fn walk(dir: &Path, out: &mut Vec<PathBuf>, keep: &dyn Fn(&str) -> bool) {
+/// Recursive discovery walk: collect the files whose name `keep` accepts, not descending into the
+/// directories `prune` accepts (symbolic links are not followed).
+fn walk(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    keep: &dyn Fn(&str) -> bool,
+    prune: &dyn Fn(&Path) -> bool,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -100,7 +104,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, keep: &dyn Fn(&str) -> bool) {
         let name = name.to_string_lossy();
         let full = entry.path();
         match entry.file_type() {
-            Ok(ft) if ft.is_dir() && !SKIP_DIR.contains(&name.as_ref()) => walk(&full, out, keep),
+            Ok(ft) if ft.is_dir() && !prune(&full) => walk(&full, out, keep, prune),
             Ok(ft) if ft.is_file() && keep(&name) => out.push(full),
             _ => {}
         }
@@ -212,7 +216,7 @@ struct Patterns {
 }
 
 /// vitest's default `test.include` (what [`is_test_file`] matches) and `test.exclude` (what
-/// [`SKIP_DIR`] skips), as its "No test files found" message prints them.
+/// [`DEFAULT_EXCLUDE_GLOBS`] lists), as its "No test files found" message prints them.
 const DEFAULT_INCLUDE: &str = "**/*.{test,spec}.?(c|m)[jt]s?(x)";
 const DEFAULT_EXCLUDE: &str = "**/node_modules/**, **/.git/**";
 
@@ -1079,36 +1083,51 @@ fn filter_matches(root: &Path, proc_cwd: &Path, f: &str, t: &Path) -> bool {
     test_file.contains(&f.to_lowercase()) || test_file.contains(&relative.to_lowercase())
 }
 
-/// Default discovery: all test files under `cwd`, filtered by config include/exclude when a config
-/// with `test.include` is found. Mirrors cli.js `discover`.
+/// Whether an exclude glob covers every path under directory `rel` (a `<prefix>/**` glob whose
+/// prefix matches it), so discovery need not descend into it.
+fn excludes_dir(exclude: &[String], rel: &str) -> bool {
+    exclude.iter().any(|g| {
+        g.strip_suffix("/**")
+            .is_some_and(|prefix| glob_matches(prefix, rel))
+    })
+}
+
+/// Default discovery: all test files under `cwd` matching the config's `test.include` (else vitest's
+/// default include) and not its `test.exclude` (else vitest's default exclude, which is what skips
+/// `node_modules` and `.git`: a config exclude replaces it, turbo-test#63). Globs match the path
+/// relative to the config's directory (else `cwd`). Mirrors cli.js `discover`.
 fn discover(cwd: &Path, forced_config: Option<&Path>) -> Vec<PathBuf> {
     let mut all = Vec::new();
     let pats = vitest_patterns(cwd, forced_config);
-    let (include, exclude) = match &pats {
-        Some(p) => (p.include.as_deref(), p.exclude.as_deref()),
-        None => (None, None),
+    let base = pats.as_ref().map_or(cwd, |p| p.root.as_path());
+    let include = pats.as_ref().and_then(|p| p.include.as_deref());
+    let exclude: Vec<String> = match pats.as_ref().and_then(|p| p.exclude.clone()) {
+        Some(e) => e,
+        None => DEFAULT_EXCLUDE_GLOBS
+            .iter()
+            .map(|g| g.to_string())
+            .collect(),
     };
+    let rel = |f: &Path| -> String {
+        // base-relative POSIX path (vitest matches globs against this).
+        let r = f.strip_prefix(base).unwrap_or(f);
+        r.components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let prune = |d: &Path| excludes_dir(&exclude, &rel(d));
     match include {
         // a config include is matched against every file
-        Some(_) => walk(cwd, &mut all, &|_| true),
+        Some(_) => walk(cwd, &mut all, &|_| true, &prune),
         // vitest's default include
-        None => walk(cwd, &mut all, &is_test_file),
+        None => walk(cwd, &mut all, &is_test_file, &prune),
     }
-    if let Some(pats) = &pats {
-        let rel = |f: &Path| -> String {
-            // project-root-relative POSIX path (vitest matches globs against this).
-            let r = f.strip_prefix(&pats.root).unwrap_or(f);
-            r.components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/")
-        };
-        all.retain(|f| {
-            let r = rel(f);
-            include.is_none_or(|inc| inc.iter().any(|g| glob_matches(g, &r)))
-                && !exclude.is_some_and(|exc| exc.iter().any(|g| glob_matches(g, &r)))
-        });
-    }
+    all.retain(|f| {
+        let r = rel(f);
+        include.is_none_or(|inc| inc.iter().any(|g| glob_matches(g, &r)))
+            && !exclude.iter().any(|g| glob_matches(g, &r))
+    });
     all.sort();
     all
 }

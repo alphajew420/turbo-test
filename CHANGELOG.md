@@ -107,6 +107,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   default / verbose / dot output, JUnit and TAP (the JSON report keeps absolute names): they were
   relative to the working directory (absolute for a root above it). `--dir` keeps
   working-directory names.
+- `node_modules` and `.git` are skipped only by the effective exclude (turbo-test#63 item 3): a
+  config `test.exclude` replaces vitest's default exclude, so test files there are discovered
+  unless the config lists them; they were never searched. Discovery still prunes any directory a
+  `<prefix>/**` exclude covers.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

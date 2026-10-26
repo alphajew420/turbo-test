@@ -572,7 +572,6 @@ fn root_names_files_relative_to_the_root() {
 }
 
 #[test]
-#[ignore = "turbo-test#63: fails until the fix"]
 fn node_modules_and_git_are_skipped_only_by_the_effective_exclude() {
     // turbo-test#63 item 3: node_modules and .git were never searched, even when a config
     // `test.exclude` replaces vitest's default exclude. vitest 4.1.12 skips only what the
