@@ -972,6 +972,10 @@ pub fn run(opts: Options) -> i32 {
         std::env::set_var("TURBO_TEST_FORBID_ONLY", "1");
     }
     let files = apply_shard(opts.files, opts.shard);
+    // An artifact printed to stdout must be the ONLY thing there: test console output goes to
+    // stderr then (like the summary line below).
+    let artifact_on_stdout = opts.reporter.is_artifact() && opts.output_file.is_none();
+    runner::CONSOLE_TO_STDERR.store(artifact_on_stdout, Ordering::Relaxed);
 
     runner::init_v8(); // builds the framework snapshot once, before workers spawn
 
@@ -1008,7 +1012,7 @@ pub fn run(opts: Options) -> i32 {
     );
     // Keep stdout clean for machine artifacts (json/junit/tap) printed to stdout — send the human
     // summary to stderr so it doesn't corrupt the parsed output.
-    if opts.reporter.is_artifact() && opts.output_file.is_none() {
+    if artifact_on_stdout {
         eprintln!("{summary}");
     } else {
         // Human reporters get the vitest-style footer; the turbo diagnostic line follows it.

@@ -115,6 +115,52 @@ fn json_reporter_keeps_stdout_clean() {
 }
 
 #[test]
+fn test_console_output_never_corrupts_a_stdout_artifact() {
+    // turbo-test#32 item 6: `[js] [log] …` forwarding went to stdout ahead of the JSON/XML/TAP
+    // artifact, so `JSON.parse(stdout)` failed. With an artifact on stdout it goes to stderr.
+    let p = Project::new("rep-console");
+    p.file(
+        "log.test.js",
+        "test('log', () => { console.log('hello-from-test'); console.error('err-from-test') })\n",
+    );
+    for reporter in ["json", "junit", "tap"] {
+        let r = turbo_test(&p.dir, &["--reporter", reporter, "log.test.js"], &[]);
+        assert_eq!(r.code, Some(0), "{reporter}: {}", r.all());
+        assert!(!r.stdout.contains("[js]"), "{reporter}: {}", r.all());
+        assert!(
+            r.stderr.contains("[js] [log] hello-from-test\n")
+                && r.stderr.contains("[js] [error] err-from-test\n"),
+            "{reporter}: {}",
+            r.all()
+        );
+    }
+    let r = turbo_test(&p.dir, &["--reporter", "json", "log.test.js"], &[]);
+    assert_eq!(json_report(&r)["numPassedTests"], 1);
+    // human reporters, and an artifact written to --outputFile (stdout then carries the human
+    // footer), keep the console on stdout as before
+    for args in [
+        &["log.test.js"][..],
+        &["--reporter", "verbose", "log.test.js"],
+        &[
+            "--reporter",
+            "json",
+            "--outputFile",
+            "r.json",
+            "log.test.js",
+        ],
+    ] {
+        let r = turbo_test(&p.dir, args, &[]);
+        assert_eq!(r.code, Some(0), "{args:?}: {}", r.all());
+        assert!(
+            r.stdout.contains("[js] [log] hello-from-test\n"),
+            "{args:?}: {}",
+            r.all()
+        );
+        assert!(!r.stderr.contains("[js]"), "{args:?}: {}", r.all());
+    }
+}
+
+#[test]
 fn junit_reporter() {
     let p = fixture("rep-junit");
     let r = run(&p, &["--reporter", "junit"]);

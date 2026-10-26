@@ -3905,16 +3905,28 @@ fn node_os_type(os: &str) -> &str {
     }
 }
 
+/// Where the test `console.*` forwarding (`[js] [log] …` lines, runtime.js `__emit` → native
+/// `log`) goes: stderr when set. The CLI sets it when a machine artifact (json/junit/tap) owns
+/// stdout, so test output can't corrupt the parsed artifact; human reporters keep it on stdout.
+pub static CONSOLE_TO_STDERR: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// native `log(...parts)`: one `[js] <parts joined by spaces>` line (see [`CONSOLE_TO_STDERR`]).
+fn native_log(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let mut parts = Vec::new();
+    for i in 0..args.length() {
+        parts.push(args.get(i).to_rust_string_lossy(scope));
+    }
+    if CONSOLE_TO_STDERR.load(Ordering::Relaxed) {
+        eprintln!("[js] {}", parts.join(" "));
+    } else {
+        println!("[js] {}", parts.join(" "));
+    }
+}
+
 /// Re-bind native callbacks into a fresh (snapshot-derived) context.
 fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
-    let log = |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
-        let mut parts = Vec::new();
-        for i in 0..args.length() {
-            parts.push(args.get(i).to_rust_string_lossy(scope));
-        }
-        println!("[js] {}", parts.join(" "));
-    };
-    bind_fn(scope, global, "log", log);
+    bind_fn(scope, global, "log", native_log);
     bind_fn(scope, global, "__nativeRequire", native_require);
     bind_fn(scope, global, "__ttRegisterMock", native_register_mock);
     bind_fn(scope, global, "__ttImportActual", native_import_actual);
