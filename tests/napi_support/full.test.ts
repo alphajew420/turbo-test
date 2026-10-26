@@ -683,7 +683,9 @@ describe('references', () => {
 
 describe('stubs', () => {
   test('cleanup hooks, napi_stub, threadsafe functions', () => {
-    // a NULL cleanup hook is napi_invalid_arg, as Node
-    expect(a.stubs()).toEqual([INVALID_ARG, GENERIC_FAILURE, OK, true, OK, OK]);
+    // a NULL cleanup hook, a threadsafe function without a name, calls on the NULL handle
+    // it left: napi_invalid_arg (Node aborts on a NULL threadsafe function)
+    expect(a.stubs()).toEqual([INVALID_ARG, GENERIC_FAILURE, INVALID_ARG, false, INVALID_ARG,
+      INVALID_ARG]);
   });
 });

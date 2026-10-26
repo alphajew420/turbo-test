@@ -271,3 +271,39 @@ fn module_file_names_are_file_urls() {
         "file:///x%20y/%25%23%3F%22%3C%3E%60%7B%7D/%C3%A9.node"
     );
 }
+
+unsafe extern "C" fn execute_nothing(_env: napi_env, _data: *mut c_void) {}
+
+/// The drive loop's view of an isolate's native work: before any addon nothing is queued or
+/// in flight; queued async work keeps the loop alive until its complete has run, and waiting
+/// with no timeout returns once the pool posted it.
+#[test]
+fn native_tasks_keep_the_loop_alive_until_they_run() {
+    with_scope(|s| {
+        assert!(!run_native_task(s));
+        assert!(!keeps_loop_alive(s));
+        assert!(!wait_native_task(s, Some(std::time::Duration::ZERO)));
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        unsafe {
+            let name = to_napi(v8::String::new(s, "unit").unwrap().into());
+            let mut work: *mut async_host::AsyncWork = std::ptr::null_mut();
+            let st = async_host::napi_create_async_work(
+                e,
+                std::ptr::null_mut(),
+                name,
+                Some(execute_nothing),
+                None,
+                std::ptr::null_mut(),
+                &mut work,
+            );
+            assert_eq!(st, napi_ok);
+            assert_eq!(async_host::napi_queue_async_work(e, work), napi_ok);
+            assert!(keeps_loop_alive(s));
+            assert!(wait_native_task(s, None));
+            assert!(run_native_task(s));
+            assert!(!keeps_loop_alive(s));
+            assert_eq!(async_host::napi_delete_async_work(e, work), napi_ok);
+        }
+    });
+}

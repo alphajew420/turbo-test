@@ -166,6 +166,8 @@ pub struct Env {
     shared: std::rc::Rc<Shared>,
     /// Handle scopes opened and not closed (napi_open_handle_scope / _escapable_).
     open_handle_scopes: i32,
+    /// Callback scopes opened and not closed (napi_open_callback_scope).
+    open_callback_scopes: i32,
     /// The finalizer record of napi_set_instance_data's data.
     instance_data: Option<u64>,
     /// The addon's file as a file: URL (node_api_get_module_file_name).
@@ -202,6 +204,7 @@ impl Env {
             module_api_version: DEFAULT_MODULE_API_VERSION,
             shared,
             open_handle_scopes: 0,
+            open_callback_scopes: 0,
             instance_data: None,
             filename: std::ffi::CString::default(),
         }
@@ -380,6 +383,11 @@ pub struct Callback {
 #[derive(Default)]
 pub struct Shared {
     teardown: std::cell::RefCell<Vec<Teardown>>,
+    /// The native callbacks posted for the isolate's JS thread (async work, threadsafe
+    /// functions).
+    native: std::sync::Arc<async_host::NativeLoop>,
+    /// The open threadsafe functions.
+    tsfns: std::cell::RefCell<Vec<*mut async_host::Tsfn>>,
 }
 
 /// One piece of an isolate's teardown work, run newest first (Node runs its environment
@@ -392,33 +400,60 @@ enum Teardown {
     /// napi_add_async_cleanup_hook: the hook is called with its handle, which the addon then
     /// removes (napi_remove_async_cleanup_hook frees it).
     AsyncHook(*mut AsyncCleanupHook),
+    /// An open threadsafe function: closed and finalized.
+    Tsfn(*mut async_host::Tsfn),
 }
 
 /// The isolate slot owning `Shared`; dropping it (isolate disposal) runs the teardown work.
 struct AddonEnvs(std::rc::Rc<Shared>);
 
 impl Drop for AddonEnvs {
+    /// As Node's environment cleanup: the cleanup hooks run newest first (an env's own hook,
+    /// registered when its addon loaded, tears it down: its finalizers run and it is freed);
+    /// a threadsafe function's hook closes it, and once the hooks have run its finalization
+    /// runs (libuv's close callbacks). An env with threadsafe functions open is torn down when
+    /// the last of them is finalized, as Node's env reference count. Repeated while hooks
+    /// register more.
     fn drop(&mut self) {
         let shared = &self.0;
-        // as Node's environment cleanup: no addon's env can run JS any more
+        // no addon's env can run JS any more
         for item in shared.teardown.borrow().iter() {
             if let Teardown::Env(env) = item {
                 unsafe { (**env).tearing_down = true };
             }
         }
-        // (a hook may register more work: it runs next)
         loop {
-            let item = shared.teardown.borrow_mut().pop();
-            let Some(item) = item else { break };
-            unsafe {
-                match item {
-                    Teardown::Env(env) => drop(Box::from_raw(env)),
-                    Teardown::Hook(env, fun, arg) => in_teardown_scope(env, || {
-                        let _ = call_addon(|| fun(arg));
-                    }),
-                    Teardown::AsyncHook(h) => in_teardown_scope((*h).env, || {
-                        let _ = call_addon(|| ((*h).hook)(h, (*h).arg));
-                    }),
+            let mut closing = Vec::new();
+            let mut waiting = Vec::new();
+            loop {
+                let item = shared.teardown.borrow_mut().pop();
+                let Some(item) = item else { break };
+                unsafe {
+                    match item {
+                        Teardown::Env(env) if async_host::holds_env(shared, env) => {
+                            waiting.push(env)
+                        }
+                        Teardown::Env(env) => drop(Box::from_raw(env)),
+                        Teardown::Hook(env, fun, arg) => in_teardown_scope(env, || {
+                            let _ = call_addon(|| fun(arg));
+                        }),
+                        Teardown::AsyncHook(h) => in_teardown_scope((*h).env, || {
+                            let _ = call_addon(|| ((*h).hook)(h, (*h).arg));
+                        }),
+                        Teardown::Tsfn(t) => closing.push(async_host::close_for_teardown(t)),
+                    }
+                }
+            }
+            if closing.is_empty() {
+                break;
+            }
+            for t in closing {
+                unsafe {
+                    let env = async_host::finalize_for_teardown(t);
+                    if waiting.contains(&env) && !async_host::holds_env(shared, env) {
+                        waiting.retain(|&e| e != env);
+                        drop(Box::from_raw(env));
+                    }
                 }
             }
         }
@@ -3954,45 +3989,6 @@ unsafe fn define_properties(
     Ok(())
 }
 
-// threadsafe-function family: napi-rs creates a GC-finalizer tsfn at module init, so
-// create MUST succeed (hand back a dummy handle). The tsfn never actually fires for our
-// synchronous parse use, so call/unref are no-ops.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn napi_create_threadsafe_function(
-    _env: napi_env,
-    _func: napi_value,
-    _async_resource: napi_value,
-    _async_resource_name: napi_value,
-    _max_queue_size: usize,
-    _initial_thread_count: usize,
-    _thread_finalize_data: *mut c_void,
-    _thread_finalize_cb: *mut c_void,
-    _context: *mut c_void,
-    _call_js_cb: *mut c_void,
-    result: *mut *mut c_void,
-) -> napi_status {
-    if !result.is_null() {
-        *result = 1usize as *mut c_void; // non-null dummy handle
-    }
-    napi_ok
-}
-#[no_mangle]
-pub unsafe extern "C" fn napi_call_threadsafe_function(
-    _func: *mut c_void,
-    _data: *mut c_void,
-    _mode: i32,
-) -> napi_status {
-    napi_ok
-}
-#[no_mangle]
-pub unsafe extern "C" fn napi_unref_threadsafe_function(
-    env: napi_env,
-    _func: *mut c_void,
-) -> napi_status {
-    checked(env, || napi_ok)
-}
-
 // ---- versions --------------------------------------------------------------------
 
 /// The highest Node-API version the host implements (Node's NODE_API_SUPPORTED_VERSION_MAX).
@@ -4205,6 +4201,10 @@ pub fn load_addon(
         Ok(v8::Global::new(scope_ref, ret_local))
     }
 }
+
+#[path = "napi_host_async.rs"]
+mod async_host;
+pub use async_host::{keeps_loop_alive, run_native_task, wait_native_task};
 
 #[cfg(all(test, unix))]
 #[path = "napi_host_tests.rs"]

@@ -11,7 +11,7 @@ test('registrations for env teardown', () => {
   expect(c.instanceData()).toBe(0);
   const kept: any = {};
   (globalThis as any).kept = kept;
-  expect(c.setUp(kept)).toEqual([OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, 1]);
+  expect(c.setUp(kept)).toEqual([OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, 1, OK, OK]);
   expect(kept.str).toBe('kept until teardown');
   // the data set last
   expect(c.instanceData()).toBe(6);

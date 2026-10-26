@@ -14,6 +14,7 @@ pub fn c_source(stem: &str) -> &'static str {
     match stem {
         "api" => include_str!("api.c"),
         "apiversion" => include_str!("apiversion.c"),
+        "async" => include_str!("async.c"),
         "cleanup" => include_str!("cleanup.c"),
         "fatal" => include_str!("fatal.c"),
         "full" => include_str!("full.c"),
@@ -38,6 +39,7 @@ pub fn spec(name: &str) -> &'static str {
     match name {
         "api.test.ts" => include_str!("api.test.ts"),
         "apiversion.test.ts" => include_str!("apiversion.test.ts"),
+        "async.test.ts" => include_str!("async.test.ts"),
         "cleanup.test.ts" => include_str!("cleanup.test.ts"),
         "full.test.ts" => include_str!("full.test.ts"),
         "huge.test.ts" => include_str!("huge.test.ts"),
@@ -76,7 +78,12 @@ pub fn compile_addon_as(p: &Project, stem: &str, name: &str, defines: &[&str]) -
     } else {
         cmd.arg("-fPIC");
     }
-    cmd.arg("-Wall").arg("-o").arg(&out).arg(&src);
+    // (-pthread: fixtures that start threads)
+    cmd.arg("-Wall")
+        .arg("-pthread")
+        .arg("-o")
+        .arg(&out)
+        .arg(&src);
     let o = cmd.output().unwrap_or_else(|e| {
         panic!("the napi host tests need a C compiler: could not run `cc` ({e})")
     });

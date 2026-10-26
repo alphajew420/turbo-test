@@ -247,10 +247,11 @@ fn fatal_error_aborts_the_process() {
 }
 
 /// At env teardown, as Node at exit: the env cleanup hooks (napi_add_env_cleanup_hook, a removed
-/// one skipped) and async cleanup hooks run newest first, then the env's finalizers (a wrap, the
-/// instance data's; data replaced by napi_set_instance_data never gets its finalizer), and an
-/// external string still alive gets its finalizer with a NULL env once the env is gone. The
-/// expected lines are Node 26's.
+/// one skipped) and async cleanup hooks run newest first, then an open threadsafe function is
+/// finalized and, the env no longer held, the env's finalizers run (a wrap, the instance
+/// data's; data replaced by napi_set_instance_data never gets its finalizer), and an external
+/// string still alive gets its finalizer with a NULL env once the env is gone. The expected
+/// lines are Node 26's.
 #[test]
 fn cleanup_hooks_and_instance_data_run_at_env_teardown() {
     let p = project("napi-cleanup");
@@ -274,6 +275,7 @@ fn cleanup_hooks_and_instance_data_run_at_env_teardown() {
             "async hook 3",
             "async hook removed 0",
             "hook 1",
+            "threadsafe function finalizer 9",
             "wrap finalizer 7",
             "instance data finalizer 6",
             "external string finalizer, env is NULL: 1",
@@ -336,6 +338,37 @@ fn addons_declare_their_node_api_version() {
             "apiversion 3 teardown: napi_call_function=10",
             "apiversion 10 teardown: napi_call_function=23",
         ],
+        "{}",
+        r.all()
+    );
+}
+
+/// Async Node-API, as Node (the same spec passes against Node 26): async work on a pool of
+/// four threads (complete on the JS thread; queued work can be cancelled, running work cannot),
+/// threadsafe functions called from other threads (blocking calls on a full queue, release /
+/// abort, the default call_js, finalization, napi_closing), napi_make_callback, callback scopes
+/// and napi_get_uv_event_loop. In-flight work and an open, referenced threadsafe function keep
+/// the event loop alive. An exception left by a complete callback is uncaught; one left by a
+/// threadsafe function's call_js (module API version 8) only warns, once.
+#[test]
+fn async_work_and_threadsafe_functions_run_on_the_event_loop() {
+    let p = project("napi-async");
+    compile_addon(&p, "async");
+    p.file("async.test.ts", spec("async.test.ts"));
+    let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
+    let j = json_report(&r);
+    assert_eq!(j["numFailedTests"], 0, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 15, "{}", r.all());
+    assert!(
+        r.stderr.contains("uncaught thrown by a complete callback"),
+        "{}",
+        r.all()
+    );
+    assert_eq!(
+        r.stderr
+            .matches("[DEP0168] DeprecationWarning: Uncaught Node-API callback exception detected")
+            .count(),
+        1,
         "{}",
         r.all()
     );

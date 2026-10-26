@@ -31,10 +31,23 @@ static void string_finalize(napi_env env, void *data, void *hint) {
     say("external string finalizer hint", (long)hint);
 }
 
+static void tsfn_finalize(napi_env env, void *data, void *context) {
+    (void)env;
+    (void)context;
+    say("threadsafe function finalizer", (long)data);
+}
+
 static napi_value num(napi_env env, double d) {
     napi_value v;
     napi_create_double(env, d, &v);
     return v;
+}
+
+static napi_threadsafe_function g_tsfn;
+static void tsfn_call_js(napi_env env, napi_value js_cb, void *context, void *data) {
+    (void)js_cb;
+    (void)context;
+    say(env ? "threadsafe call" : "threadsafe call with a NULL env", (long)data);
 }
 
 /* setUp(obj) -> the statuses of the registrations (the external string is returned through
@@ -60,6 +73,11 @@ static napi_value f_set_up(napi_env env, napi_callback_info info) {
                                                (void *)8, &s, NULL),
         napi_set_named_property(env, obj, "str", s),
         h != NULL,
+        /* an open threadsafe function (unref'd, or the process would never exit): closed and
+         * finalized at teardown */
+        napi_create_threadsafe_function(env, NULL, NULL, s, 0, 1, (void *)9, tsfn_finalize, NULL,
+                                        tsfn_call_js, &g_tsfn),
+        napi_unref_threadsafe_function(env, g_tsfn),
     };
     napi_value arr;
     napi_create_array_with_length(env, sizeof st / sizeof st[0], &arr);

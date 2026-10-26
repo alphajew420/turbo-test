@@ -1115,6 +1115,13 @@ static napi_value f_null_env(napi_env env, napi_callback_info info) {
         napi_add_async_cleanup_hook(NULL, NULL, NULL, NULL),
         napi_adjust_external_memory(NULL, 0, NULL),
         node_api_get_module_file_name(NULL, NULL),
+        napi_cancel_async_work(NULL, NULL),
+        napi_close_callback_scope(NULL, NULL),
+        napi_create_async_work(NULL, NULL, v, NULL, NULL, NULL, NULL),
+        napi_async_init(NULL, NULL, v, NULL),
+        napi_make_callback(NULL, NULL, v, v, 0, NULL, &out),
+        napi_get_uv_event_loop(NULL, NULL),
+        napi_create_threadsafe_function(NULL, NULL, NULL, v, 0, 1, NULL, NULL, NULL, NULL, NULL),
     };
     return nums(env, sizeof st / sizeof st[0], st);
 }

@@ -5535,6 +5535,19 @@ fn drive_tests_bounded(
         if promise.state() != v8::PromiseState::Pending {
             break;
         }
+        // Native addons' callbacks for this thread (async work done, threadsafe-function
+        // calls) run one per turn; while their work is in flight they keep the loop alive, as
+        // libuv's handles do: wait for one, up to the delay of the next timer.
+        if crate::napi_host::run_native_task(scope) {
+            continue;
+        }
+        if crate::napi_host::keeps_loop_alive(scope) {
+            let delay = call_global_number(scope, global, "__ttNextMacroDelay");
+            let timeout = (delay >= 0.0).then(|| std::time::Duration::from_secs_f64(delay / 1000.0));
+            if crate::napi_host::wait_native_task(scope, timeout) {
+                continue;
+            }
+        }
         if !call_global_bool(scope, global, "__stepMacro") {
             break;
         }
@@ -5608,6 +5621,19 @@ fn drive_tests_bounded(
 }
 
 /// Call a no-arg global JS function and coerce its result to bool.
+/// Call the global function `name` with no arguments: its number result (-1 when it is
+/// missing, throws or returns no number).
+fn call_global_number(scope: &mut v8::PinScope, global: v8::Local<v8::Object>, name: &str) -> f64 {
+    let key = v8::String::new(scope, name).unwrap();
+    let recv = v8::undefined(scope).into();
+    global
+        .get(scope, key.into())
+        .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+        .and_then(|f| f.call(scope, recv, &[]))
+        .and_then(|v| v.number_value(scope))
+        .unwrap_or(-1.0)
+}
+
 fn call_global_bool(scope: &mut v8::PinScope, global: v8::Local<v8::Object>, name: &str) -> bool {
     let key = v8::String::new(scope, name).unwrap();
     let Some(f) = global

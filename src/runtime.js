@@ -273,6 +273,14 @@ globalThis.__drainNextTicks = () => __loop.drainNextTicks();
 globalThis.__stepMacro = () => __loop.stepMacro();
 globalThis.__hasNextTicks = () => __loop.nextTicks.length > 0;
 globalThis.__stepMacro = () => __loop.stepMacro();
+// ms until the earliest macrotask (user or internal) is due, -1 when none is queued: how long
+// the Rust drive loop waits for native addon work before firing it
+globalThis.__ttNextMacroDelay = () => {
+  let due = Infinity;
+  for (const t of __loop.macro) due = Math.min(due, t.due);
+  for (const t of __loop.internal) due = Math.min(due, t.due);
+  return due === Infinity ? -1 : Math.max(0, due - __loop.now);
+};
 
 // ---- minimal Web Storage. A real `Storage` class (not an object literal) so the methods live on
 // `Storage.prototype` — tests do `vi.spyOn(Storage.prototype, 'setItem')`, which only intercepts

@@ -243,10 +243,42 @@ extern napi_status napi_check_object_type_tag(napi_env, napi_value, const napi_t
                                               bool *);
 extern napi_status napi_add_finalizer(napi_env, napi_value, void *, napi_finalize, void *,
                                       napi_ref *);
+typedef void *napi_threadsafe_function;
+typedef void (*napi_threadsafe_function_call_js)(napi_env, napi_value, void *, void *);
+#define napi_tsfn_nonblocking 0
+#define napi_tsfn_blocking 1
+#define napi_tsfn_release 0
+#define napi_tsfn_abort 1
 extern napi_status napi_create_threadsafe_function(napi_env, napi_value, napi_value, napi_value,
-                                                   size_t, size_t, void *, void *, void *,
-                                                   void *, void **);
-extern napi_status napi_call_threadsafe_function(void *, void *, int);
-extern napi_status napi_unref_threadsafe_function(napi_env, void *);
+                                                   size_t, size_t, void *, napi_finalize, void *,
+                                                   napi_threadsafe_function_call_js,
+                                                   napi_threadsafe_function *);
+extern napi_status napi_get_threadsafe_function_context(napi_threadsafe_function, void **);
+extern napi_status napi_call_threadsafe_function(napi_threadsafe_function, void *, int);
+extern napi_status napi_acquire_threadsafe_function(napi_threadsafe_function);
+extern napi_status napi_release_threadsafe_function(napi_threadsafe_function, int);
+extern napi_status napi_ref_threadsafe_function(napi_env, napi_threadsafe_function);
+extern napi_status napi_unref_threadsafe_function(napi_env, napi_threadsafe_function);
+typedef void *napi_async_work;
+typedef void (*napi_async_execute_callback)(napi_env, void *);
+typedef void (*napi_async_complete_callback)(napi_env, napi_status, void *);
+extern napi_status napi_create_async_work(napi_env, napi_value, napi_value,
+                                          napi_async_execute_callback,
+                                          napi_async_complete_callback, void *,
+                                          napi_async_work *);
+extern napi_status napi_delete_async_work(napi_env, napi_async_work);
+extern napi_status napi_queue_async_work(napi_env, napi_async_work);
+extern napi_status napi_cancel_async_work(napi_env, napi_async_work);
+typedef void *napi_async_context;
+typedef void *napi_callback_scope;
+extern napi_status napi_async_init(napi_env, napi_value, napi_value, napi_async_context *);
+extern napi_status napi_async_destroy(napi_env, napi_async_context);
+extern napi_status napi_make_callback(napi_env, napi_async_context, napi_value, napi_value,
+                                      size_t, const napi_value *, napi_value *);
+extern napi_status napi_open_callback_scope(napi_env, napi_value, napi_async_context,
+                                            napi_callback_scope *);
+extern napi_status napi_close_callback_scope(napi_env, napi_callback_scope);
+struct uv_loop_s;
+extern napi_status napi_get_uv_event_loop(napi_env, struct uv_loop_s **);
 
 #endif
