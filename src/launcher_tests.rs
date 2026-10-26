@@ -75,6 +75,11 @@ fn test_file_names() {
         "d.test.mts",
         "e.test.cts",
         "x.y.test.ts",
+        // turbo-test#57: vitest's default include, `*.{test,spec}.?(c|m)[jt]s?(x)`
+        "f.test.mjs",
+        "g.test.cjs",
+        "h.spec.mtsx",
+        "i.test.cjsx",
     ] {
         assert!(is_test_file(n), "{n}");
     }
@@ -87,19 +92,26 @@ fn test_file_names() {
         "noext",
         "a_test.ts",
         ".test.ts",
+        "a.test.jsxx",
+        "a.test.xjs",
     ] {
         assert_eq!(is_test_file(n), n == ".test.ts", "{n}");
     }
 }
 
 #[test]
-fn walk_skips_hidden_and_skip_dirs() {
+fn walk_skips_only_node_modules_and_git() {
+    // turbo-test#57: vitest's default exclude is `**/node_modules/**` and `**/.git/**`; hidden
+    // entries and build output directories are discovered (vitest 4.1.12)
     let t = Tmp::new("walk");
     t.file("a.test.ts", T);
     t.file("src/deep/b.spec.js", T);
     t.file("src/helper.ts", "");
     t.file(".hidden/c.test.ts", T);
     t.file("src/.d.test.ts", T);
+    for d in ["dist", "build", "coverage", ".next", ".turbo", "target"] {
+        t.file(&format!("{d}/e.test.ts"), T);
+    }
     for d in SKIP_DIR {
         t.file(&format!("{d}/e.test.ts"), T);
         t.file(&format!("src/{d}/f.test.ts"), T);
@@ -107,19 +119,29 @@ fn walk_skips_hidden_and_skip_dirs() {
     // a directory whose name looks like a test file is descended, not collected
     t.file("g.test.ts/inner.test.ts", T);
     let mut out = Vec::new();
-    walk(&t.0, &mut out);
+    walk(&t.0, &mut out, &is_test_file);
     out.sort();
-    assert_eq!(
-        out,
-        vec![
-            t.0.join("a.test.ts"),
-            t.0.join("g.test.ts/inner.test.ts"),
-            t.0.join("src/deep/b.spec.js")
-        ]
-    );
+    let want: Vec<PathBuf> = [
+        ".hidden/c.test.ts",
+        ".next/e.test.ts",
+        ".turbo/e.test.ts",
+        "a.test.ts",
+        "build/e.test.ts",
+        "coverage/e.test.ts",
+        "dist/e.test.ts",
+        "g.test.ts/inner.test.ts",
+        "src/.d.test.ts",
+        "src/deep/b.spec.js",
+        "target/e.test.ts",
+    ]
+    .iter()
+    .map(|f| t.0.join(f))
+    .collect();
+    assert_eq!(out, want);
+    assert_eq!(SKIP_DIR, ["node_modules", ".git"]);
     // unreadable dir → nothing, no panic
     let mut none = Vec::new();
-    walk(&t.0.join("missing"), &mut none);
+    walk(&t.0.join("missing"), &mut none, &is_test_file);
     assert!(none.is_empty());
 }
 
@@ -131,7 +153,7 @@ fn walk_ignores_symlinks_and_specials() {
     std::os::unix::fs::symlink(&real, t.0.join("link.test.ts")).unwrap();
     std::os::unix::fs::symlink(t.0.join("real"), t.0.join("linkdir")).unwrap();
     let mut out = Vec::new();
-    walk(&t.0, &mut out);
+    walk(&t.0, &mut out, &is_test_file);
     assert_eq!(out, vec![real]);
 }
 
@@ -161,6 +183,37 @@ fn discover_honours_test_include_exclude() {
         discover(&t.0, None),
         vec![t.0.join("lib/c.spec.ts"), t.0.join("src/a.test.ts")]
     );
+}
+
+/// turbo-test#57: a config include is matched against every file, not only default test names.
+#[test]
+fn discover_matches_a_config_include_against_every_file() {
+    let t = Tmp::new("disc-any");
+    t.file(
+        "vitest.config.ts",
+        "export default { test: { include: ['checks/**/*.mjs'] } }",
+    );
+    t.file("checks/one.mjs", T);
+    t.file("checks/deep/two.mjs", T);
+    t.file("checks/three.test.ts", T);
+    assert_eq!(
+        discover(&t.0, None),
+        vec![t.0.join("checks/deep/two.mjs"), t.0.join("checks/one.mjs")]
+    );
+}
+
+#[test]
+fn discover_applies_a_config_exclude_without_include() {
+    // turbo-test#60, as vitest 4.1.12: a config exclude applies with the default include
+    let t = Tmp::new("disc-excl");
+    t.file(
+        "vitest.config.ts",
+        "export default { test: { exclude: ['**/skip/**'] } }",
+    );
+    t.file("a.test.ts", T);
+    t.file("skip/b.test.ts", T);
+    t.file("notatest.ts", T);
+    assert_eq!(discover(&t.0, None), vec![t.0.join("a.test.ts")]);
 }
 
 #[test]
@@ -209,6 +262,28 @@ fn config_precedence_and_upward_search() {
     std::fs::create_dir_all(t2.0.join("vitest.config.ts")).unwrap();
     t2.file("vite.config.mts", "E");
     assert_eq!(find_config(&t2.0, None).unwrap().text, "E");
+}
+
+/// turbo-test#49: every config file vitest 4 resolves, in its order (`vitest.config` then
+/// `vite.config`, each `.ts .mts .cts .js .mjs .cjs`), as vitest 4.1.12.
+#[test]
+fn find_config_resolves_every_vitest_config_name() {
+    for name in crate::launcher::VITEST_CONFIG_FILES {
+        let t = Tmp::new(&format!("cfg-name-{name}"));
+        t.file(name, name);
+        assert_eq!(find_config(&t.0, None).unwrap().text, name);
+    }
+    assert_eq!(crate::launcher::VITEST_CONFIG_FILES.len(), 12);
+    for (first, second) in [
+        ("vitest.config.cjs", "vite.config.ts"),
+        ("vitest.config.cts", "vitest.config.js"),
+        ("vite.config.cts", "vite.config.js"),
+    ] {
+        let t = Tmp::new(&format!("cfg-prec-{first}"));
+        t.file(first, "first");
+        t.file(second, "second");
+        assert_eq!(find_config(&t.0, None).unwrap().text, "first", "{first}");
+    }
 }
 
 #[test]
@@ -384,9 +459,11 @@ fn vitest_patterns_config() {
         "vitest.config.ts",
         "export default { test: { exclude: ['a'] } }",
     );
-    assert!(
-        vitest_patterns(&t.0, None).is_none(),
-        "no include → default discovery"
+    // no include → the default one (None)
+    let p = vitest_patterns(&t.0, None).unwrap();
+    assert_eq!(
+        (p.root, p.include, p.exclude),
+        (t.0.clone(), None, Some(vec!["a".to_string()]))
     );
     t.file(
         "vitest.config.ts",
@@ -395,7 +472,7 @@ fn vitest_patterns_config() {
     let p = vitest_patterns(&t.0, None).unwrap();
     assert_eq!(
         (p.root, p.include, p.exclude),
-        (t.0.clone(), vec!["a/**".to_string()], vec![])
+        (t.0.clone(), Some(vec!["a/**".to_string()]), None)
     );
 }
 
@@ -806,14 +883,11 @@ fn git_changed_sets() {
 fn plan_changed_filters_discovered_files() {
     let t = git_fixture("plan-git");
     let p = run_plan(&t, &["--changed"]);
-    assert_eq!(
-        argv(&p),
-        vec![t.p("a.test.ts"), t.p("c.test.ts"), t.p("d.test.ts")]
-    );
+    assert_eq!(argv(&p), vec!["a.test.ts", "c.test.ts", "d.test.ts"]);
     assert!(p.messages.is_empty());
     // since-ref forms (space + inline)
     let p = run_plan(&t, &["--changed", "no-such-ref"]);
-    assert_eq!(argv(&p), vec![t.p("c.test.ts")]);
+    assert_eq!(argv(&p), vec!["c.test.ts"]);
     let p = run_plan(&t, &["--changed=HEAD", "b.test.ts", "a.test.ts"]);
     assert_eq!(argv(&p), args(&["a.test.ts"]));
     // nothing changed among the candidates → exit 0
@@ -830,7 +904,7 @@ fn plan_changed_outside_a_repo_runs_everything() {
     let t = Tmp::new("plan-nogit");
     t.file("a.test.ts", T);
     let p = run_plan(&t, &["--changed"]);
-    assert_eq!(argv(&p), vec![t.p("a.test.ts")]);
+    assert_eq!(argv(&p), vec!["a.test.ts"]);
     assert_eq!(
         p.messages,
         vec!["turbo-test: --changed: git unavailable / not a repo — running all discovered tests."]
@@ -844,20 +918,56 @@ fn plan_discovers_and_strips_subcommands() {
     let t = Tmp::new("plan-sub");
     t.file("a.test.ts", T);
     t.file("b.spec.ts", T);
-    let all = vec![t.p("a.test.ts"), t.p("b.spec.ts")];
+    let all = vec!["a.test.ts", "b.spec.ts"];
     let subs: [&[&str]; 4] = [&[], &["run"], &["watch"], &["dev"]];
     for sub in subs {
         let p = run_plan(&t, sub);
         assert_eq!(argv(&p), all, "{sub:?}");
         assert!(p.env.is_empty() && p.messages.is_empty());
     }
-    // only a LEADING subcommand is stripped; elsewhere it is a (missing) file arg
+    // only a LEADING subcommand is stripped; elsewhere it is a filter (matching nothing here)
     let p = run_plan(&t, &["a.test.ts", "run"]);
     assert_eq!(argv(&p), vec!["a.test.ts"]);
+    assert!(p.messages.is_empty());
+}
+
+/// vitest 4.1.12's "No test files found" message with the default include / exclude (`filter`:
+/// its `filter: …` line, or empty).
+fn no_test_files(code: i32, filter: &str) -> String {
+    format!(
+        "No test files found, exiting with code {code}\n\n{filter}include: **/*.{{test,spec}}.?(c|m)[jt]s?(x)\nexclude:  **/node_modules/**, **/.git/**"
+    )
+}
+
+/// turbo-test#59, as vitest 4.1.12: discovered files are named relative to the working
+/// directory, as filtered ones are; nothing to run prints vitest's lines (the filters, then
+/// the include and exclude in effect).
+#[test]
+fn discovery_names_and_no_files_message_follow_vitest() {
+    let t = Tmp::new("plan-vitest-names");
+    t.file("src/u.ts", T);
+    let p = run_plan(&t, &[]);
+    assert_eq!(p.outcome, Err(1));
+    assert_eq!(p.messages, vec![no_test_files(1, "")]);
+    let p = run_plan(&t, &["--passWithNoTests"]);
+    assert_eq!(p.outcome, Err(0));
+    assert_eq!(p.messages, vec![no_test_files(0, "")]);
+    let p = run_plan(&t, &["foo", "bar"]);
+    assert_eq!(p.messages, vec![no_test_files(1, "filter: foo, bar\n")]);
+    // a config's include / exclude are the ones printed
+    let cfg = t.file(
+        "vitest.config.ts",
+        "export default { test: { include: ['src/**/*.check.ts', 'x/*.ts'], exclude: ['**/skip/**'] } }",
+    );
+    let p = run_plan(&t, &["foo"]);
     assert_eq!(
         p.messages,
-        vec!["turbo-test: skipping 1 missing file(s): run"]
+        vec!["No test files found, exiting with code 1\n\nfilter: foo\ninclude: src/**/*.check.ts, x/*.ts\nexclude:  **/skip/**"]
     );
+    std::fs::remove_file(cfg).unwrap();
+    t.file("a.test.ts", T);
+    t.file("sub/b.spec.ts", T);
+    assert_eq!(argv(&run_plan(&t, &[])), vec!["a.test.ts", "sub/b.spec.ts"]);
 }
 
 #[test]
@@ -865,47 +975,59 @@ fn plan_no_files_found() {
     let t = Tmp::new("plan-empty");
     let p = run_plan(&t, &[]);
     assert_eq!(p.outcome, Err(1));
-    assert_eq!(
-        p.messages,
-        vec!["turbo-test: no test files found (looked for *.test.* / *.spec.*)."]
-    );
+    assert_eq!(p.messages, vec![no_test_files(1, "")]);
     let p = run_plan(&t, &["--passWithNoTests"]);
     assert_eq!(p.outcome, Err(0));
-    assert_eq!(
-        p.messages,
-        vec!["turbo-test: no test files found — exiting 0 (--passWithNoTests)."]
-    );
+    assert_eq!(p.messages, vec![no_test_files(0, "")]);
     // with files, --passWithNoTests reaches the runtime: a file with no tests then passes
     // (turbo-test#32 item 7, vitest semantics)
     let f = t.file("a.test.ts", T).display().to_string();
     let p = run_plan(&t, &["--passWithNoTests", &f]);
-    assert_eq!(argv(&p), vec![f]);
+    assert_eq!(argv(&p), vec!["a.test.ts"]);
     assert_eq!(p.env, vec![("TURBO_PASS_WITH_NO_TESTS", "1".to_string())]);
 }
 
+/// turbo-test#58: positional arguments are vitest filters on the discovered files: a file whose
+/// root-relative path contains one (case-insensitively; an absolute one as a prefix; a relative
+/// one also from the process cwd) runs; none matching is "No test files found" (vitest 4.1.12).
 #[test]
-fn plan_prunes_missing_files() {
-    let t = Tmp::new("plan-missing");
+fn plan_filters_like_vitest() {
+    let t = Tmp::new("plan-filters");
     t.file("sub/a.test.ts", T);
-    // relative args resolve against the process cwd; "" args are dropped
+    t.file("sub/deep/b.test.ts", T);
+    t.file("other/data.test.ts", T);
+    t.file("notincluded.ts", T);
+    // "" args are dropped; filters that match nothing add nothing
     let p = run_plan(
         &t,
         &["sub/a.test.ts", "", "gone.test.ts", "/nope/x.test.ts"],
     );
     assert_eq!(argv(&p), vec!["sub/a.test.ts"]);
+    assert!(p.messages.is_empty());
+    // a substring, case-insensitively
     assert_eq!(
-        p.messages,
-        vec!["turbo-test: skipping 2 missing file(s): gone.test.ts, /nope/x.test.ts"]
+        argv(&run_plan(&t, &["A.TEST"])),
+        vec!["other/data.test.ts", "sub/a.test.ts"]
     );
-    let p = run_plan(&t, &["gone.test.ts"]);
+    assert_eq!(argv(&run_plan(&t, &["deep"])), vec!["sub/deep/b.test.ts"]);
+    // a directory, with or without its trailing slash or a leading ./
+    let sub = vec!["sub/a.test.ts", "sub/deep/b.test.ts"];
+    for f in ["sub", "./sub/", "sub/"] {
+        assert_eq!(argv(&run_plan(&t, &[f])), sub, "{f}");
+    }
+    // an absolute directory
+    let abs = t.p("sub");
+    assert_eq!(argv(&run_plan(&t, &[&abs])), sub);
+    for none in [&["gone.test.ts"][..], &["notincluded.ts"]] {
+        let p = run_plan(&t, none);
+        assert_eq!(p.outcome, Err(1));
+        assert_eq!(
+            p.messages,
+            vec![no_test_files(1, &format!("filter: {}\n", none[0]))]
+        );
+    }
+    let p = run_plan(&t, &["gone.test.ts", "--passWithNoTests"]);
     assert_eq!(p.outcome, Err(0));
-    assert_eq!(
-        p.messages,
-        vec![
-            "turbo-test: skipping 1 missing file(s): gone.test.ts",
-            "turbo-test: no existing test files to run."
-        ]
-    );
 }
 
 #[test]
@@ -944,7 +1066,7 @@ fn plan_forwards_runner_flags() {
             "-t",
             "adds",
             "--no-file-parallelism",
-            &fs
+            "a.test.ts"
         ])
     );
     assert!(p.messages.is_empty(), "{:?}", p.messages);
@@ -960,7 +1082,7 @@ fn plan_forwards_runner_flags() {
         "--shard",
     ] {
         let p = run_plan(&t, &[&fs, flag]);
-        assert_eq!(argv(&p), vec![fs.clone()], "{flag}");
+        assert_eq!(argv(&p), vec!["a.test.ts".to_string()], "{flag}");
         assert_eq!(
             p.messages,
             vec![format!("turbo-test: ignoring '{flag}': missing value")],
@@ -968,7 +1090,7 @@ fn plan_forwards_runner_flags() {
         );
     }
     let p = run_plan(&t, &["--bail", "--retry", "1", "-t", "-x", &fs]);
-    assert_eq!(argv(&p), args(&["--retry", "1", "-x", &fs]));
+    assert_eq!(argv(&p), args(&["--retry", "1", "-x", "a.test.ts"]));
     assert_eq!(
         p.messages,
         vec![
@@ -978,12 +1100,12 @@ fn plan_forwards_runner_flags() {
     );
     // a value-less `--coverage-*` value flag still implies --coverage (as in the runner)
     let p = run_plan(&t, &[&fs, "--coverage-dir"]);
-    assert_eq!(argv(&p), args(&["--coverage", &fs]));
+    assert_eq!(argv(&p), args(&["--coverage", "a.test.ts"]));
     assert_eq!(p.messages.len(), 1);
     // inline value forms are forwarded as one token
     assert_eq!(
         argv(&run_plan(&t, &["--reporter=tap", &fs])),
-        args(&["--reporter=tap", &fs])
+        args(&["--reporter=tap", "a.test.ts"])
     );
 }
 
@@ -1028,10 +1150,16 @@ fn plan_drops_noop_vitest_flags() {
             &f,
         ],
     );
-    assert_eq!(argv(&p), vec![f.clone()]);
+    assert_eq!(argv(&p), vec!["a.test.ts".to_string()]);
     // a value-less no-op flag doesn't eat the following test file
-    assert_eq!(argv(&run_plan(&t, &["--run", &f])), vec![f.clone()]);
-    assert_eq!(argv(&run_plan(&t, &["--pool", "--run", &f])), vec![f]);
+    assert_eq!(
+        argv(&run_plan(&t, &["--run", &f])),
+        vec!["a.test.ts".to_string()]
+    );
+    assert_eq!(
+        argv(&run_plan(&t, &["--pool", "--run", &f])),
+        vec!["a.test.ts".to_string()]
+    );
 }
 
 #[test]
@@ -1042,7 +1170,7 @@ fn plan_isolate_environment_and_root_flags() {
         "proj/vitest.config.ts",
         "export default { test: { environment: 'jsdom', testTimeout: 1234 } }",
     );
-    let a = t.p("proj/a.test.ts");
+    let a = "proj/a.test.ts";
     let p = run_plan(&t, &["--no-isolate", "--root", "proj"]);
     assert_eq!(
         p.env,
@@ -1051,7 +1179,7 @@ fn plan_isolate_environment_and_root_flags() {
             ("TURBO_ENV", "jsdom".to_string())
         ]
     );
-    assert_eq!(argv(&p), args(&["--testTimeout", "1234", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout", "1234", a]));
     // flag beats config; --dir / inline forms
     let p = run_plan(
         &t,
@@ -1071,30 +1199,30 @@ fn plan_isolate_environment_and_root_flags() {
             ("TURBO_ENV", "happy-dom".to_string())
         ]
     );
-    assert_eq!(argv(&p), args(&["--testTimeout", "9", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout", "9", a]));
     let p = run_plan(
         &t,
         &["--environment=node", "--root", "proj", "--testTimeout=5"],
     );
     assert_eq!(env_of(&p, "TURBO_ENV"), Some("node"));
-    assert_eq!(argv(&p), args(&["--testTimeout=5", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout=5", a]));
     // --environment with no value (next token is a flag) falls back to the config
     let p = run_plan(&t, &["--environment", "--root", "proj"]);
     assert_eq!(env_of(&p, "TURBO_ENV"), Some("jsdom"));
     // an absolute --root; last of --root/--dir wins
     let p = run_plan(&t, &["--root", "nowhere", "--dir", &t.p("proj")]);
-    assert_eq!(argv(&p), args(&["--testTimeout", "1234", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout", "1234", a]));
     // a --root without a config: no env, no timeout injection
     t.file("plain/b.test.ts", T);
     let p = run_plan(&t, &["--root", "plain"]);
     assert!(p.env.is_empty());
-    assert_eq!(argv(&p), vec![t.p("plain/b.test.ts")]);
+    assert_eq!(argv(&p), vec!["plain/b.test.ts"]);
     // `--root ""` is an empty discovery root (nothing found), like the original
     assert_eq!(run_plan(&t, &["--root="]).outcome, Err(1));
     // a value-less trailing --testTimeout is dropped (turbo-test#32 item 3), so it no longer
     // counts as passed: the config's value is injected
     let p = run_plan(&t, &["--root", "proj", "--testTimeout"]);
-    assert_eq!(argv(&p), args(&["--testTimeout", "1234", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout", "1234", a]));
 }
 
 #[test]
@@ -1110,10 +1238,7 @@ fn plan_forced_config() {
     t.file("cfg/c.spec.ts", T);
     // the forced config's dir is the include root (its include drops c.spec.ts)
     let p = run_plan(&t, &["-c", "cfg/my.config.ts"]);
-    assert_eq!(
-        argv(&p),
-        vec![t.p("cfg/a.test.ts"), t.p("cfg/sub/b.test.ts")]
-    );
+    assert_eq!(argv(&p), vec!["cfg/a.test.ts", "cfg/sub/b.test.ts"]);
     assert_eq!(env_of(&p, "TURBO_ENV"), Some("jsdom"));
     assert_eq!(
         env_of(&p, "TURBO_ALIAS").unwrap(),
@@ -1129,11 +1254,7 @@ fn plan_forced_config() {
     let p = run_plan(&t, &["--config", "missing.ts"]);
     assert_eq!(
         argv(&p),
-        vec![
-            t.p("cfg/a.test.ts"),
-            t.p("cfg/c.spec.ts"),
-            t.p("cfg/sub/b.test.ts")
-        ]
+        vec!["cfg/a.test.ts", "cfg/c.spec.ts", "cfg/sub/b.test.ts"]
     );
     assert!(p.env.is_empty());
     // -c with no value
@@ -1165,7 +1286,7 @@ fn plan_coverage_injection() {
         "export default { test: { coverage: { include: ['src/**'], exclude: ['src/gen/**', 'x.ts'], thresholds: { lines: 90, branches: 80 } } } }",
     );
     // no coverage flag → nothing injected
-    assert_eq!(argv(&run_plan(&t, &[&f])), vec![f.clone()]);
+    assert_eq!(argv(&run_plan(&t, &[&f])), vec!["a.test.ts".to_string()]);
     let p = run_plan(&t, &["--coverage", &f]);
     assert_eq!(
         argv(&p),
@@ -1177,7 +1298,7 @@ fn plan_coverage_injection() {
             "src/**",
             "--coverage-exclude",
             "src/gen/**,x.ts",
-            &f
+            "a.test.ts"
         ])
     );
     // explicit flags win (space, inline and the singular alias)
@@ -1200,7 +1321,7 @@ fn plan_coverage_injection() {
             "--coverage-include=lib/**",
             "--coverage-exclude",
             "y",
-            &f
+            "a.test.ts"
         ])
     );
     let p = run_plan(
@@ -1217,31 +1338,32 @@ fn plan_coverage_injection() {
             "src/**",
             "--coverage-exclude",
             "src/gen/**,x.ts",
-            &f
+            "a.test.ts"
         ])
     );
     // a config without a coverage block injects nothing
     t.file("vitest.config.ts", "export default { test: {} }");
     assert_eq!(
         argv(&run_plan(&t, &["--coverage", &f])),
-        args(&["--coverage", &f])
+        args(&["--coverage", "a.test.ts"])
     );
     // no config at all
     std::fs::remove_file(t.0.join("vitest.config.ts")).unwrap();
     assert_eq!(
         argv(&run_plan(&t, &["--coverage", &f])),
-        args(&["--coverage", &f])
+        args(&["--coverage", "a.test.ts"])
     );
 }
 
 #[test]
 fn prepare_returns_argv_for_runnable_input() {
-    // absolute file args make prepare() independent of the test process's cwd; nothing in this
-    // input sets env vars, prints or exits
+    // `--root` and an absolute file arg make prepare() independent of the test process's cwd;
+    // nothing in this input sets env vars, prints or exits
     let t = Tmp::new("prepare");
     let f = t.file("a.test.ts", T).display().to_string();
+    let root = t.p("");
     assert_eq!(
-        prepare(args(&["run", "--reporter", "dot", &f])),
+        prepare(args(&["run", "--reporter", "dot", "--root", &root, &f])),
         args(&["--reporter", "dot", &f])
     );
 }

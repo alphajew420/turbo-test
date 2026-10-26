@@ -39,9 +39,10 @@ globalThis.process = {
   // version for a gnu build, '' for a musl build.
   report: { getReport: () => ({ header: { glibcVersionRuntime: globalThis.__ttGlibc || undefined } }) },
   version: 'v24.0.0',
-  versions: { node: '24.0.0', v8: '12.0.0', modules: '127' },
+  // napi: the Node-API version the native host implements (src/napi_host.rs NAPI_VERSION)
+  versions: { node: '24.0.0', v8: '12.0.0', modules: '127', napi: '10' },
   argv: ['node', 'turbo-test'],
-  cwd: () => globalThis.__cwd || '/',
+  cwd: () => globalThis.__ttProcessCwd || globalThis.__cwd || '/',
   nextTick: (fn, ...a) => __loop.nextTicks.push(() => fn(...a)),
   hrtime: Object.assign(() => [0, 0], { bigint: () => 0n }),
   exit: () => {},
@@ -65,6 +66,9 @@ globalThis.process = {
 function __reportUncaught(e) {
   try { globalThis.console.error('uncaught', (e && e.message) || e); } catch {}
 }
+// the native host (napi_fatal_exception, an exception left by an async native callback)
+// reports through the same path
+globalThis.__reportUncaught = __reportUncaught;
 const __loop = {
   macro: [],       // {id, due, cb, interval, gen}
   // Internal one-shot timers (test-timeout enforcement). Kept SEPARATE from `macro` so they are
@@ -269,6 +273,14 @@ globalThis.__drainNextTicks = () => __loop.drainNextTicks();
 globalThis.__stepMacro = () => __loop.stepMacro();
 globalThis.__hasNextTicks = () => __loop.nextTicks.length > 0;
 globalThis.__stepMacro = () => __loop.stepMacro();
+// ms until the earliest macrotask (user or internal) is due, -1 when none is queued: how long
+// the Rust drive loop waits for native addon work before firing it
+globalThis.__ttNextMacroDelay = () => {
+  let due = Infinity;
+  for (const t of __loop.macro) due = Math.min(due, t.due);
+  for (const t of __loop.internal) due = Math.min(due, t.due);
+  return due === Infinity ? -1 : Math.max(0, due - __loop.now);
+};
 
 // ---- minimal Web Storage. A real `Storage` class (not an object literal) so the methods live on
 // `Storage.prototype` — tests do `vi.spyOn(Storage.prototype, 'setItem')`, which only intercepts
@@ -646,7 +658,20 @@ if (typeof globalThis.FormData === 'undefined') {
   globalThis.FormData = class FormData { constructor() { this._ = []; } append(k, v) { this._.push([k, v]); } get(k) { const e = this._.find((x) => x[0] === k); return e ? e[1] : null; } getAll(k) { return this._.filter((x) => x[0] === k).map((x) => x[1]); } has(k) { return this._.some((x) => x[0] === k); } forEach(f) { this._.forEach(([k, v]) => f(v, k)); } };
 }
 if (typeof globalThis.structuredClone === 'undefined') {
-  globalThis.structuredClone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+  // V8's structured clone (src/structured_clone.rs), with Node's argument checks: the ArrayBuffers
+  // of `transfer` move to the clone
+  globalThis.structuredClone = function structuredClone(value, options) {
+    if (arguments.length === 0) throw new TypeError('The "The value argument must be specified" argument must be specified');
+    let transfer = [];
+    const t = options == null ? undefined : options.transfer;
+    if (t !== undefined) {
+      if (t === null || (typeof t !== 'object' && typeof t !== 'function') || typeof t[Symbol.iterator] !== 'function') {
+        throw new TypeError("Failed to execute 'structuredClone': transfer in Options cannot be converted to sequence.");
+      }
+      transfer = [...t];
+    }
+    return globalThis.__ttStructuredClone(value, transfer);
+  };
 }
 if (typeof globalThis.global === 'undefined') globalThis.global = globalThis;
 // Tell React it's in a test act() environment: concurrent work defers to the act queue instead
@@ -1117,7 +1142,7 @@ globalThis.__fileURLToPath = (u) => String(u).replace(/^file:\/\//, '');
 globalThis.__dirnameOf = (p) => { const s = String(p).replace(/\/+$/, ''); const i = s.lastIndexOf('/'); return i <= 0 ? '/' : s.slice(0, i); };
 const __os = {
   platform: () => globalThis.__ttPlatform || 'darwin', arch: () => globalThis.__ttArch || 'arm64', type: () => globalThis.__ttOsType || 'Darwin', release: () => '23.0.0',
-  version: () => 'Darwin Kernel', EOL: '\n', tmpdir: () => '/tmp', homedir: () => '/', hostname: () => 'localhost',
+  version: () => 'Darwin Kernel', EOL: '\n', tmpdir: () => globalThis.__ttTmpdir || '/tmp', homedir: () => globalThis.__ttHomedir || '/', hostname: () => 'localhost',
   cpus: () => [{ model: 'cpu', speed: 1, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }],
   totalmem: () => 16 * 1024 * 1024 * 1024, freemem: () => 8 * 1024 * 1024 * 1024, uptime: () => 0,
   loadavg: () => [0, 0, 0], endianness: () => 'LE', networkInterfaces: () => ({}),
@@ -1154,7 +1179,9 @@ const __fs = {
   unlinkSync: (p) => globalThis.__fs_rmSync(String(p)),
   statSync: (p) => { const isDir = globalThis.__fs_existsSync(String(p)) && globalThis.__fs_readdirSync(String(p)).length >= 0 && !globalThis.__fs_existsSync(String(p) + '/.'); return { isFile: () => true, isDirectory: () => false, size: 0, mtimeMs: 0 }; },
   readdirSync: (p) => globalThis.__fs_readdirSync(String(p)),
+  symlinkSync: (target, p) => globalThis.__fs_symlinkSync(String(target), String(p)),
   promises: {
+    symlink: (target, p) => { try { __fs.symlinkSync(target, p); return Promise.resolve(); } catch (e) { return Promise.reject(e); } },
     readFile: (p, enc) => Promise.resolve(globalThis.__fs_readFileSync(String(p), enc ? 'utf8' : '')),
     writeFile: (p, data) => { globalThis.__fs_writeFileSync(String(p), data == null ? '' : String(data)); return Promise.resolve(); },
     appendFile: (p, data) => { try { __fs.appendFileSync(p, data); return Promise.resolve(); } catch (e) { return Promise.reject(e); } },
@@ -1760,12 +1787,60 @@ globalThis.__nodeBuiltins = {
 // ---- loader helpers (used by the CJS wrapper) ----
 globalThis.__keys = (o) =>
   o && (typeof o === 'object' || typeof o === 'function') ? Object.keys(o) : [];
+// Node's MODULE_NOT_FOUND error for `spec`: the message lists the require stack (the requiring
+// module, the modules loading it, the test file)
+globalThis.__ttModuleNotFound = (spec, importer) => {
+  const stack = [];
+  const add = (p) => { if (p && !stack.includes(p)) stack.push(p); };
+  add(importer);
+  for (const p of globalThis.__ttRequireStack()) add(p);
+  add(globalThis.__ttFile);
+  const e = new Error(`Cannot find module '${spec}'` + (stack.length ? `\nRequire stack:\n- ${stack.join('\n- ')}` : ''));
+  e.code = 'MODULE_NOT_FOUND';
+  e.requireStack = stack;
+  return e;
+};
+// require.cache, shared by every require (Node's Module._cache): a module loaded from a file,
+// by its path; deleting one makes the next require() load it again
+const __requireCacheEntries = new Map();
+function __requireCacheEntry(path) {
+  if (globalThis.__ttCache('get', path) === undefined) { __requireCacheEntries.delete(path); return undefined; }
+  let e = __requireCacheEntries.get(path);
+  if (!e) {
+    e = { id: path, filename: path, loaded: true, children: [], paths: [] };
+    Object.defineProperty(e, 'exports', {
+      get: () => globalThis.__ttCache('get', path),
+      set: (v) => globalThis.__ttCache('set', path, v),
+      enumerable: true,
+      configurable: true,
+    });
+    __requireCacheEntries.set(path, e);
+  }
+  return e;
+}
+const __requireCache = new Proxy({}, {
+  get: (_t, k) => (typeof k === 'string' ? __requireCacheEntry(k) : undefined),
+  has: (_t, k) => typeof k === 'string' && __requireCacheEntry(k) !== undefined,
+  set: (_t, k, v) => { if (typeof k === 'string') globalThis.__ttCache('set', k, v && v.exports); return true; },
+  deleteProperty: (_t, k) => {
+    if (typeof k === 'string') { globalThis.__ttCache('delete', k); __requireCacheEntries.delete(k); }
+    return true;
+  },
+  ownKeys: () => globalThis.__ttCache('keys'),
+  getOwnPropertyDescriptor: (_t, k) => {
+    const e = typeof k === 'string' ? __requireCacheEntry(k) : undefined;
+    return e && { value: e, writable: true, enumerable: true, configurable: true };
+  },
+});
 globalThis.__mkRequire = (dir, isEsm, importer) => {
   const req = (spec) => globalThis.__nativeRequire(dir, spec, isEsm, importer);
-  // node libs call require.resolve(); we don't expose a resolver to JS, so echo the spec back
-  // (good enough — callers use it to locate a file, and a missing one stubs gracefully).
-  req.resolve = (spec) => String(spec);
-  req.cache = {};
+  // as Node: the resolved path (a builtin stays its name); MODULE_NOT_FOUND when nothing resolves
+  req.resolve = (spec) => {
+    const r = globalThis.__ttRequireResolve(dir, String(spec), isEsm === undefined ? true : !!isEsm);
+    if (r === undefined) throw globalThis.__ttModuleNotFound(String(spec), importer);
+    return r;
+  };
+  req.cache = __requireCache;
   req.extensions = {};
   req.main = undefined;
   return req;
@@ -1919,16 +1994,19 @@ function __snapBody(serialized) { return `\n${serialized}\n`; }
 
 // ---- expect ----
 function makeExpect(actual, negated = false) {
+  // `msg` is a thunk: the failure message (and the formatting of the operands in it) is built
+  // only when the assertion fails, as vitest does — formatting can throw (a native class
+  // prototype whose members check their receiver) and must not fail a passing assertion.
   const ok = (pass, msg) => {
-    if (negated ? pass : !pass) throw new Error(msg);
+    if (negated ? pass : !pass) throw new Error(msg());
   };
   const api = {
     get not() { return makeExpect(actual, !negated); },
-    toBeTypeOf(t) { ok(typeof actual === t, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be typeof ${t}, got ${typeof actual}`); },
-    toSatisfy(fn) { ok(!!fn(actual), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to satisfy predicate`); },
+    toBeTypeOf(t) { ok(typeof actual === t, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be typeof ${t}, got ${typeof actual}`); },
+    toSatisfy(fn) { ok(!!fn(actual), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to satisfy predicate`); },
     toHaveBeenCalledExactlyOnceWith(...a) {
       const calls = actual.mock && actual.mock.calls;
-      ok(calls && calls.length === 1 && deepEqual(calls[0], a), `expected spy called exactly once with ${fmt(a)}`);
+      ok(calls && calls.length === 1 && deepEqual(calls[0], a), () => `expected spy called exactly once with ${fmt(a)}`);
     },
     // async matchers: `await expect(promise).resolves.toX(...)`, `.rejects.toX(...)`, and
     // `.resolves.not.toX(...)` / `.rejects.not.toX(...)` (the `.not` returns a negated proxy).
@@ -1952,28 +2030,28 @@ function makeExpect(actual, negated = false) {
       } });
       return mk(negated);
     },
-    toBe(e) { ok(Object.is(actual, e), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be ${fmt(e)}`); },
-    toEqual(e) { ok(deepEqual(actual, e), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to equal ${fmt(e)}`); },
-    toStrictEqual(e) { ok(deepEqual(actual, e, true), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to strictly equal ${fmt(e)}`); },
-    toBeTruthy() { ok(!!actual, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be truthy`); },
-    toBeFalsy() { ok(!actual, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be falsy`); },
-    toBeNull() { ok(actual === null, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be null`); },
-    toBeUndefined() { ok(actual === undefined, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be undefined`); },
-    toBeDefined() { ok(actual !== undefined, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be defined`); },
-    toBeNaN() { ok(Number.isNaN(actual), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be NaN`); },
-    toBeGreaterThan(n) { ok(actual > n, `expected ${fmt(actual)} > ${fmt(n)}`); },
-    toBeGreaterThanOrEqual(n) { ok(actual >= n, `expected ${fmt(actual)} >= ${fmt(n)}`); },
-    toBeLessThan(n) { ok(actual < n, `expected ${fmt(actual)} < ${fmt(n)}`); },
-    toBeLessThanOrEqual(n) { ok(actual <= n, `expected ${fmt(actual)} <= ${fmt(n)}`); },
-    toBeCloseTo(n, d = 2) { ok(Math.abs(actual - n) < Math.pow(10, -d) / 2, `expected ${fmt(actual)} close to ${fmt(n)}`); },
-    toContain(x) { ok(actual != null && actual.includes && actual.includes(x), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain ${fmt(x)}`); },
-    toContainEqual(x) { ok(Array.isArray(actual) && actual.some((a) => deepEqual(a, x)), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain equal ${fmt(x)}`); },
-    toBeInstanceOf(ctor) { ok(actual instanceof ctor, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be instance of ${ctor && ctor.name}`); },
+    toBe(e) { ok(Object.is(actual, e), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be ${fmt(e)}`); },
+    toEqual(e) { ok(deepEqual(actual, e), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to equal ${fmt(e)}`); },
+    toStrictEqual(e) { ok(deepEqual(actual, e, true), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to strictly equal ${fmt(e)}`); },
+    toBeTruthy() { ok(!!actual, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be truthy`); },
+    toBeFalsy() { ok(!actual, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be falsy`); },
+    toBeNull() { ok(actual === null, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be null`); },
+    toBeUndefined() { ok(actual === undefined, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be undefined`); },
+    toBeDefined() { ok(actual !== undefined, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be defined`); },
+    toBeNaN() { ok(Number.isNaN(actual), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be NaN`); },
+    toBeGreaterThan(n) { ok(actual > n, () => `expected ${fmt(actual)} > ${fmt(n)}`); },
+    toBeGreaterThanOrEqual(n) { ok(actual >= n, () => `expected ${fmt(actual)} >= ${fmt(n)}`); },
+    toBeLessThan(n) { ok(actual < n, () => `expected ${fmt(actual)} < ${fmt(n)}`); },
+    toBeLessThanOrEqual(n) { ok(actual <= n, () => `expected ${fmt(actual)} <= ${fmt(n)}`); },
+    toBeCloseTo(n, d = 2) { ok(Math.abs(actual - n) < Math.pow(10, -d) / 2, () => `expected ${fmt(actual)} close to ${fmt(n)}`); },
+    toContain(x) { ok(actual != null && actual.includes && actual.includes(x), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain ${fmt(x)}`); },
+    toContainEqual(x) { ok(Array.isArray(actual) && actual.some((a) => deepEqual(a, x)), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain equal ${fmt(x)}`); },
+    toBeInstanceOf(ctor) { ok(actual instanceof ctor, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be instance of ${ctor && ctor.name}`); },
     toMatchObject(obj) {
       const sub = (a, e) => (e instanceof Asymmetric) ? e.matches(a)
         : e == null || typeof e !== 'object' ? deepEqual(a, e)
         : a != null && typeof a === 'object' && Object.keys(e).every((k) => sub(a[k], e[k]));
-      ok(sub(actual, obj), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match object ${fmt(obj)}`);
+      ok(sub(actual, obj), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match object ${fmt(obj)}`);
     },
     toThrowError(e) { return api.toThrow(e); },
     // File snapshot: serialize `actual`, key by `<full test name> <counter>` under
@@ -1992,7 +2070,7 @@ function makeExpect(actual, negated = false) {
         globalThis.__fs_writeFileSync(sf.path, __serializeSnapFile(map));
         return;
       }
-      ok(map[key] === body, `snapshot mismatch for "${key}"\n- Snapshot\n+ Received\n- ${map[key].trim()}\n+ ${body.trim()}`);
+      ok(map[key] === body, () => `snapshot mismatch for "${key}"\n- Snapshot\n+ Received\n- ${map[key].trim()}\n+ ${body.trim()}`);
     },
     // Inline snapshot: compares against the provided string arg (whitespace-normalized, matching
     // vitest's trimming). AUTO-WRITE back into the source on first run / -u is UNSUPPORTED — pass
@@ -2002,7 +2080,7 @@ function makeExpect(actual, negated = false) {
       const body = __serialize(actual);
       if (expected === undefined) return; // no auto-write; treat as accepted (documented gap)
       const norm = (s) => String(s).replace(/^\n/, '').replace(/\n\s*$/, '').split('\n').map((l) => l.trim()).join('\n');
-      ok(norm(body) === norm(expected), `inline snapshot mismatch\n- ${norm(expected)}\n+ ${norm(body)}`);
+      ok(norm(body) === norm(expected), () => `inline snapshot mismatch\n- ${norm(expected)}\n+ ${norm(body)}`);
     },
     toThrowErrorMatchingSnapshot(_hint) {
       let msg;
@@ -2017,7 +2095,7 @@ function makeExpect(actual, negated = false) {
       makeExpect(msg).toMatchInlineSnapshot(expected);
     },
     toStrictEqual_alias() {},
-    toHaveLength(n) { ok(actual != null && actual.length === n, `expected length ${actual && actual.length} ${negated ? 'not ' : ''}to be ${n}`); },
+    toHaveLength(n) { ok(actual != null && actual.length === n, () => `expected length ${actual && actual.length} ${negated ? 'not ' : ''}to be ${n}`); },
     toHaveProperty(path, value) {
       let cur = actual, present;
       // A literal key (incl. one containing dots, e.g. a CSS selector) takes precedence over
@@ -2032,44 +2110,44 @@ function makeExpect(actual, negated = false) {
         }
       }
       const pass = arguments.length < 2 ? present : (present && deepEqual(cur, value));
-      ok(pass, `expected ${fmt(actual)} ${negated ? 'not ' : ''}to have property ${fmt(path)}${arguments.length < 2 ? '' : ' = ' + fmt(value)}`);
+      ok(pass, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to have property ${fmt(path)}${arguments.length < 2 ? '' : ' = ' + fmt(value)}`);
     },
-    toMatch(re) { const r = re instanceof RegExp ? re : new RegExp(re); ok(r.test(actual), `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match ${r}`); },
+    toMatch(re) { const r = re instanceof RegExp ? re : new RegExp(re); ok(r.test(actual), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match ${r}`); },
     toThrow(expected) {
       let threw = false, err;
       // expect(fn).toThrow() calls the fn; expect(promise).rejects.toThrow() passes the already-
       // rejected error as `actual` (not callable) — treat it as the thrown value directly.
       if (typeof actual === 'function') { try { actual(); } catch (e) { threw = true; err = e; } }
       else if (actual instanceof Error) { threw = true; err = actual; }
-      if (!expected) { ok(threw, `expected function ${negated ? 'not ' : ''}to throw`); return; }
+      if (!expected) { ok(threw, () => `expected function ${negated ? 'not ' : ''}to throw`); return; }
       const msg = err && (err.message || String(err)) || '';
       let matches;
       if (expected instanceof RegExp) matches = expected.test(msg);
       else if (typeof expected === 'function') matches = err instanceof expected; // toThrow(ErrorClass)
       else if (expected && typeof expected === 'object') matches = err && (expected.message == null || String(err.message || '').includes(expected.message)); // toThrow({message})
       else matches = msg.includes(expected);
-      ok(threw && matches, `expected to throw matching ${fmt(expected)}, got ${fmt(msg)}`);
+      ok(threw && matches, () => `expected to throw matching ${fmt(expected)}, got ${fmt(msg)}`);
     },
-    toHaveBeenCalled() { ok(actual.mock && actual.mock.calls.length > 0, `expected spy ${negated ? 'not ' : ''}to have been called`); },
-    toHaveBeenCalledTimes(n) { ok(actual.mock && actual.mock.calls.length === n, `expected spy called ${n}x, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
+    toHaveBeenCalled() { ok(actual.mock && actual.mock.calls.length > 0, () => `expected spy ${negated ? 'not ' : ''}to have been called`); },
+    toHaveBeenCalledTimes(n) { ok(actual.mock && actual.mock.calls.length === n, () => `expected spy called ${n}x, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
     toHaveBeenCalledWith(...a) {
       const found = actual.mock && actual.mock.calls.some((c) => deepEqual(c, a));
-      const got = actual.mock ? `; received ${actual.mock.calls.length} call(s): ${fmt(actual.mock.calls)}` : '; not a spy';
-      ok(found, `expected spy ${negated ? 'not ' : ''}to have been called with ${fmt(a)}${negated ? '' : got}`);
+      const got = () => actual.mock ? `; received ${actual.mock.calls.length} call(s): ${fmt(actual.mock.calls)}` : '; not a spy';
+      ok(found, () => `expected spy ${negated ? 'not ' : ''}to have been called with ${fmt(a)}${negated ? '' : got()}`);
     },
-    toHaveBeenCalledOnce() { ok(actual.mock && actual.mock.calls.length === 1, `expected spy called once, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
+    toHaveBeenCalledOnce() { ok(actual.mock && actual.mock.calls.length === 1, () => `expected spy called once, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
     toHaveBeenLastCalledWith(...a) {
       const calls = actual.mock && actual.mock.calls;
       const last = calls && calls.length ? calls[calls.length - 1] : undefined;
-      ok(last && deepEqual(last, a), `expected spy last called with ${fmt(a)}, got ${fmt(last)}`);
+      ok(last && deepEqual(last, a), () => `expected spy last called with ${fmt(a)}, got ${fmt(last)}`);
     },
     toHaveBeenNthCalledWith(n, ...a) {
       const calls = actual.mock && actual.mock.calls;
       const c = calls && calls[n - 1];
-      ok(c && deepEqual(c, a), `expected spy call #${n} with ${fmt(a)}, got ${fmt(c)}`);
+      ok(c && deepEqual(c, a), () => `expected spy call #${n} with ${fmt(a)}, got ${fmt(c)}`);
     },
-    toHaveReturned() { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return'), `expected spy to have returned`); },
-    toHaveReturnedWith(v) { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return' && deepEqual(r.value, v)), `expected spy to have returned ${fmt(v)}`); },
+    toHaveReturned() { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return'), () => `expected spy to have returned`); },
+    toHaveReturnedWith(v) { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return' && deepEqual(r.value, v)), () => `expected spy to have returned ${fmt(v)}`); },
   };
   // custom matchers registered via expect.extend (e.g. @testing-library/jest-dom)
   for (const name of Object.keys(__customMatchers)) {

@@ -24,20 +24,26 @@ use std::process::Command;
 
 use crate::coverage::glob_matches;
 
-/// Directories never descended into during default discovery (mirrors cli.js `SKIP_DIR`).
-const SKIP_DIR: [&str; 8] =
-    ["node_modules", ".git", "dist", "build", "coverage", ".next", ".turbo", "target"];
+/// Directories discovery never descends into: vitest's default exclude (`**/node_modules/**`,
+/// `**/.git/**`).
+const SKIP_DIR: [&str; 2] = ["node_modules", ".git"];
 
-/// vitest/vite config filenames, in cli.js precedence order.
-const CONFIG_NAMES: [&str; 8] = [
+/// The config files vitest 4 resolves, in its order (`configFiles` in vitest's constants:
+/// `vitest.config` then `vite.config`, each with `.ts .mts .cts .js .mjs .cjs`). Every config
+/// lookup (discovery, setupFiles, isolate, the project kind) uses this list.
+pub const VITEST_CONFIG_FILES: [&str; 12] = [
     "vitest.config.ts",
     "vitest.config.mts",
+    "vitest.config.cts",
     "vitest.config.js",
     "vitest.config.mjs",
+    "vitest.config.cjs",
     "vite.config.ts",
     "vite.config.mts",
+    "vite.config.cts",
     "vite.config.js",
     "vite.config.mjs",
+    "vite.config.cjs",
 ];
 
 /// Runner flags that take a following value (so a file arg isn't mistaken for the value, and the
@@ -67,40 +73,35 @@ pub(crate) const VALUE_FLAGS: [&str; 21] = [
     "--coverage-exclude",
 ];
 
-/// `name` is a vitest-style test file: `*.{test,spec}.{ts,tsx,js,jsx,mts,cts}` (cli.js TEST_RE).
+/// `name` is a test file by vitest's default include: `*.{test,spec}.?(c|m)[jt]s?(x)`.
 fn is_test_file(name: &str) -> bool {
     // strip the final extension, require it to be one of the known ones, then require the
     // remaining stem to end with `.test` or `.spec`.
-    let exts = ["ts", "tsx", "js", "jsx", "mts", "cts"];
-    let Some((stem, ext)) = name.rsplit_once('.') else { return false };
+    let exts = [
+        "js", "ts", "jsx", "tsx", "cjs", "cts", "mjs", "mts", "cjsx", "ctsx", "mjsx", "mtsx",
+    ];
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
     if !exts.contains(&ext) {
         return false;
     }
     stem.ends_with(".test") || stem.ends_with(".spec")
 }
 
-/// Recursive default discovery walk (cli.js `walk`): collect test files, skipping hidden entries
-/// and the SKIP_DIR set.
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+/// Recursive discovery walk: collect the files whose name `keep` accepts, outside the SKIP_DIR
+/// directories (symbolic links are not followed).
+fn walk(dir: &Path, out: &mut Vec<PathBuf>, keep: &dyn Fn(&str) -> bool) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.') {
-            continue;
-        }
         let full = entry.path();
         match entry.file_type() {
-            Ok(ft) if ft.is_dir() => {
-                if !SKIP_DIR.contains(&name.as_ref()) {
-                    walk(&full, out);
-                }
-            }
-            Ok(ft) if ft.is_file() => {
-                if is_test_file(&name) {
-                    out.push(full);
-                }
-            }
+            Ok(ft) if ft.is_dir() && !SKIP_DIR.contains(&name.as_ref()) => walk(&full, out, keep),
+            Ok(ft) if ft.is_file() && keep(&name) => out.push(full),
             _ => {}
         }
     }
@@ -148,7 +149,7 @@ fn extract_quoted(s: &str) -> Vec<String> {
     while i < bytes.len() {
         let c = bytes[i];
         if c == b'\'' || c == b'"' || c == b'`' {
-            if let Some(end_rel) = s[i + 1..].find(|ch| ch == '\'' || ch == '"' || ch == '`') {
+            if let Some(end_rel) = s[i + 1..].find(['\'', '"', '`']) {
                 let val = &s[i + 1..i + 1 + end_rel];
                 if !val.is_empty() {
                     out.push(val.to_string());
@@ -181,11 +182,14 @@ fn find_config(start_dir: &Path, forced: Option<&Path>) -> Option<Config> {
     }
     let mut dir = start_dir.to_path_buf();
     loop {
-        for n in CONFIG_NAMES {
+        for n in VITEST_CONFIG_FILES {
             let p = dir.join(n);
             if p.is_file() {
                 if let Ok(text) = std::fs::read_to_string(&p) {
-                    return Some(Config { dir: dir.clone(), text });
+                    return Some(Config {
+                        dir: dir.clone(),
+                        text,
+                    });
                 }
                 return None;
             }
@@ -197,15 +201,20 @@ fn find_config(start_dir: &Path, forced: Option<&Path>) -> Option<Config> {
     }
 }
 
-/// Test-level include/exclude globs + their root, from a discovered config. `None` when there's no
-/// `test.include` (→ caller falls back to default discovery). Mirrors cli.js `patternsFromText`:
-/// the FIRST `include`/`exclude` arrays in the file are the test-level ones (they precede any
-/// `coverage.*` block in the config object).
+/// Test-level include/exclude globs + their root, from a discovered config (`None` without a
+/// config). Either list is `None` when the config does not set it: vitest's default applies
+/// ([`DEFAULT_INCLUDE`] / [`DEFAULT_EXCLUDE`]). The FIRST `include`/`exclude` arrays in the file
+/// are the test-level ones (they precede any `coverage.*` block in the config object).
 struct Patterns {
     root: PathBuf,
-    include: Vec<String>,
-    exclude: Vec<String>,
+    include: Option<Vec<String>>,
+    exclude: Option<Vec<String>>,
 }
+
+/// vitest's default `test.include` (what [`is_test_file`] matches) and `test.exclude` (what
+/// [`SKIP_DIR`] skips), as its "No test files found" message prints them.
+const DEFAULT_INCLUDE: &str = "**/*.{test,spec}.?(c|m)[jt]s?(x)";
+const DEFAULT_EXCLUDE: &str = "**/node_modules/**, **/.git/**";
 
 fn vitest_patterns(start_dir: &Path, forced: Option<&Path>) -> Option<Patterns> {
     let cfg = find_config(start_dir, forced)?;
@@ -218,9 +227,13 @@ fn vitest_patterns(start_dir: &Path, forced: Option<&Path>) -> Option<Patterns> 
         Some(ci) => &cfg.text[..ci],
         None => cfg.text.as_str(),
     };
-    let include = scan_string_array(scan_text, "include")?; // no test.include → default discovery
-    let exclude = scan_string_array(scan_text, "exclude").unwrap_or_default();
-    Some(Patterns { root: cfg.dir, include, exclude })
+    let include = scan_string_array(scan_text, "include");
+    let exclude = scan_string_array(scan_text, "exclude");
+    Some(Patterns {
+        root: cfg.dir,
+        include,
+        exclude,
+    })
 }
 
 /// Read `test.environment` (node|jsdom|happy-dom) from config text. Mirrors cli.js
@@ -263,7 +276,11 @@ fn vitest_coverage(start_dir: &Path, forced: Option<&Path>) -> Option<CoverageCf
     // slice from the `coverage:` key so include/exclude/thresholds resolve to the coverage block,
     // not the test-level ones (test.* precedes coverage.* in the config object).
     let Some(ci) = find_coverage_block(text) else {
-        return Some(CoverageCfg { include: vec![], exclude: vec![], thresholds: None });
+        return Some(CoverageCfg {
+            include: vec![],
+            exclude: vec![],
+            thresholds: None,
+        });
     };
     let slice = &text[ci..];
     let include = scan_string_array(slice, "include").unwrap_or_default();
@@ -277,8 +294,16 @@ fn vitest_coverage(start_dir: &Path, forced: Option<&Path>) -> Option<CoverageCf
             parts.push(format!("{k}={v}"));
         }
     }
-    let thresholds = if parts.is_empty() { None } else { Some(parts.join(",")) };
-    Some(CoverageCfg { include, exclude, thresholds })
+    let thresholds = if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(","))
+    };
+    Some(CoverageCfg {
+        include,
+        exclude,
+        thresholds,
+    })
 }
 
 /// Byte offset of the `coverage` key whose value is an object (`coverage\s*:\s*\{`).
@@ -329,11 +354,10 @@ fn scan_number(text: &str, key: &str) -> Option<String> {
     while let Some(rel) = text[from..].find(key) {
         let at = from + rel;
         // guard: preceding char must not be '.', '_', alphanumeric (i.e. not part of a longer word)
-        let ok_prev = at == 0
-            || {
-                let p = b[at - 1];
-                p != b'.' && p != b'_' && !p.is_ascii_alphanumeric()
-            };
+        let ok_prev = at == 0 || {
+            let p = b[at - 1];
+            p != b'.' && p != b'_' && !p.is_ascii_alphanumeric()
+        };
         let after = at + key.len();
         if ok_prev {
             let i = skip_ws(b, after);
@@ -600,7 +624,17 @@ fn strip_comments(s: &str) -> String {
 
 /// Keywords after which a `/` opens a regex literal, not division (`return /re/`, `typeof x || /re/`).
 const REGEX_KEYWORDS: [&str; 12] = [
-    "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "do", "else", "yield",
+    "return",
+    "typeof",
+    "instanceof",
+    "in",
+    "of",
+    "new",
+    "delete",
+    "void",
+    "do",
+    "else",
+    "yield",
     "await",
 ];
 
@@ -620,8 +654,26 @@ fn keyword_before_slash(cur: &str, cur_member: bool, last: &str, last_member: bo
 fn is_regex_context(prev: char) -> bool {
     matches!(
         prev,
-        '\0' | '(' | '{' | '[' | ',' | ';' | ':' | '=' | '!' | '&' | '|' | '?' | '+' | '-' | '*'
-            | '/' | '%' | '^' | '<' | '>' | '~'
+        '\0' | '('
+            | '{'
+            | '['
+            | ','
+            | ';'
+            | ':'
+            | '='
+            | '!'
+            | '&'
+            | '|'
+            | '?'
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '^'
+            | '<'
+            | '>'
+            | '~'
     )
 }
 
@@ -734,7 +786,9 @@ fn parse_alias_inner(inner: &str, dir: &Path) -> Vec<(String, String)> {
     }
     // Object form: `key: value` entries.
     for entry in split_top_level(inner) {
-        let Some(colon) = top_level_colon(&entry) else { continue };
+        let Some(colon) = top_level_colon(&entry) else {
+            continue;
+        };
         let key_raw = entry[..colon].trim();
         let val = &entry[colon + 1..];
         // key is either quoted or a bare identifier; a `[computed]` or regex key is skipped.
@@ -778,7 +832,10 @@ fn alias_target(dir: &Path, val: &str) -> Option<String> {
     let first = parts.next()?;
     // Test markers against CODE (strings blanked) so a literal merely CONTAINING `__dirname` etc.
     // isn't mistaken for a path expression.
-    let mut base = if PATH_MARKERS.iter().any(|m| blank_quoted(&first).contains(m)) {
+    let mut base = if PATH_MARKERS
+        .iter()
+        .any(|m| blank_quoted(&first).contains(m))
+    {
         let quoted = extract_quoted(&first);
         // a bare config-dir base (`__dirname + '/z'`) is the dir itself: joining no segments
         let bare_dir = matches!(first.as_str(), "__dirname" | "import.meta.dirname");
@@ -984,33 +1041,61 @@ fn top_level_comma(s: &str) -> Option<usize> {
     None
 }
 
-/// Default discovery: all test files under `cwd`, filtered by config include/exclude when a config
-/// with `test.include` is found. Mirrors cli.js `discover`.
-fn discover(cwd: &Path, forced_config: Option<&Path>) -> Vec<PathBuf> {
-    let mut all = Vec::new();
-    walk(cwd, &mut all);
-    let Some(pats) = vitest_patterns(cwd, forced_config) else {
-        all.sort();
-        return all;
-    };
-    let rel = |f: &Path| -> String {
-        // project-root-relative POSIX path (vitest matches globs against this).
-        let r = f.strip_prefix(&pats.root).unwrap_or(f);
+/// Whether test file `t` (absolute) passes the positional filter `f`, as vitest's filterFiles:
+/// an absolute filter that is a prefix of the path, or the root-relative path containing the
+/// filter, or the filter made root-relative (from the process's cwd; a trailing slash kept),
+/// case-insensitively.
+fn filter_matches(root: &Path, proc_cwd: &Path, f: &str, t: &Path) -> bool {
+    let rel = |p: &Path| -> String {
+        let r = p.strip_prefix(root).unwrap_or(p);
         r.components()
             .map(|c| c.as_os_str().to_string_lossy())
             .collect::<Vec<_>>()
             .join("/")
     };
-    let mut kept: Vec<PathBuf> = all
-        .into_iter()
-        .filter(|f| {
+    let test_file = rel(t).to_lowercase();
+    if Path::new(f).is_absolute() && t.to_string_lossy().starts_with(f) {
+        return true;
+    }
+    let mut relative = rel(&absolute_in(proc_cwd, Path::new(f)));
+    if f.ends_with('/') {
+        relative.push('/');
+    }
+    test_file.contains(&f.to_lowercase()) || test_file.contains(&relative.to_lowercase())
+}
+
+/// Default discovery: all test files under `cwd`, filtered by config include/exclude when a config
+/// with `test.include` is found. Mirrors cli.js `discover`.
+fn discover(cwd: &Path, forced_config: Option<&Path>) -> Vec<PathBuf> {
+    let mut all = Vec::new();
+    let pats = vitest_patterns(cwd, forced_config);
+    let (include, exclude) = match &pats {
+        Some(p) => (p.include.as_deref(), p.exclude.as_deref()),
+        None => (None, None),
+    };
+    match include {
+        // a config include is matched against every file
+        Some(_) => walk(cwd, &mut all, &|_| true),
+        // vitest's default include
+        None => walk(cwd, &mut all, &is_test_file),
+    }
+    if let Some(pats) = &pats {
+        let rel = |f: &Path| -> String {
+            // project-root-relative POSIX path (vitest matches globs against this).
+            let r = f.strip_prefix(&pats.root).unwrap_or(f);
+            r.components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        all.retain(|f| {
             let r = rel(f);
-            pats.include.iter().any(|g| glob_matches(g, &r))
-                && !pats.exclude.iter().any(|g| glob_matches(g, &r))
-        })
-        .collect();
-    kept.sort();
-    kept
+            include.is_none_or(|inc| inc.iter().any(|g| glob_matches(g, &r)))
+                && !exclude.is_some_and(|exc| exc.iter().any(|g| glob_matches(g, &r)))
+        });
+    }
+    all.sort();
+    all
 }
 
 /// `--changed [since]`: absolute paths git reports changed vs `since` (default working-tree vs
@@ -1018,7 +1103,11 @@ fn discover(cwd: &Path, forced_config: Option<&Path>) -> Vec<PathBuf> {
 /// (caller then runs everything). Mirrors cli.js `gitChanged`.
 fn git_changed(since: &str, cwd: &Path) -> Option<HashSet<PathBuf>> {
     let run = |args: &[&str]| -> Option<Vec<String>> {
-        let out = Command::new("git").args(args).current_dir(cwd).output().ok()?;
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .ok()?;
         if !out.status.success() {
             return None;
         }
@@ -1033,7 +1122,11 @@ fn git_changed(since: &str, cwd: &Path) -> Option<HashSet<PathBuf>> {
     let root_lines = run(&["rev-parse", "--show-toplevel"])?;
     let repo_root = PathBuf::from(root_lines.first()?);
     let mut set = HashSet::new();
-    let diff_ref: Vec<&str> = if !since.is_empty() && since != "true" { vec![since] } else { vec![] };
+    let diff_ref: Vec<&str> = if !since.is_empty() && since != "true" {
+        vec![since]
+    } else {
+        vec![]
+    };
     let mut cmds: Vec<Vec<&str>> = vec![
         {
             let mut v = vec!["diff", "--name-only"];
@@ -1077,13 +1170,19 @@ fn flag_takes_value(a: &str) -> bool {
 /// Whether the forwarded-flag list already carries `needle` (bare or `needle=…` inline form) — so
 /// a user-passed coverage flag wins over the config-injected default.
 fn has_flag(forward: &[String], needle: &str) -> bool {
-    forward.iter().any(|f| f == needle || f.starts_with(&format!("{needle}=")))
+    forward
+        .iter()
+        .any(|f| f == needle || f.starts_with(&format!("{needle}=")))
 }
 
 /// `p` made absolute against `cwd` (the process cwd) — what `std::path::absolute(p)` yields when
 /// `cwd` is the current directory, falling back to `p` itself when that fails (an empty path).
 fn absolute_in(cwd: &Path, p: &Path) -> PathBuf {
-    let joined = if p.as_os_str().is_empty() || p.is_absolute() { p.to_path_buf() } else { cwd.join(p) };
+    let joined = if p.as_os_str().is_empty() || p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    };
     std::path::absolute(&joined).unwrap_or_else(|_| p.to_path_buf())
 }
 
@@ -1123,7 +1222,11 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
     let mut messages: Vec<String> = Vec::new();
     // Accept-and-strip a leading vitest subcommand (`run`/`watch`/`dev`) — turbo-test is always a
     // single run; letting it reach the runner would look like a phantom test-file path.
-    if raw.first().map(|s| matches!(s.as_str(), "run" | "watch" | "dev")).unwrap_or(false) {
+    if raw
+        .first()
+        .map(|s| matches!(s.as_str(), "run" | "watch" | "dev"))
+        .unwrap_or(false)
+    {
         raw.remove(0);
     }
 
@@ -1142,16 +1245,15 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
     while i < raw.len() {
         let a = raw[i].clone();
         // `--key=value` inline form for launcher value-flags.
-        let (key, inline_val): (&str, Option<String>) =
-            if a.starts_with("--") {
-                if let Some(eq) = a.find('=') {
-                    (&a[..eq], Some(a[eq + 1..].to_string()))
-                } else {
-                    (a.as_str(), None)
-                }
+        let (key, inline_val): (&str, Option<String>) = if a.starts_with("--") {
+            if let Some(eq) = a.find('=') {
+                (&a[..eq], Some(a[eq + 1..].to_string()))
             } else {
                 (a.as_str(), None)
-            };
+            }
+        } else {
+            (a.as_str(), None)
+        };
         // take the value for a launcher value-flag: inline `=v`, else the next non-flag token.
         let mut take_val = || -> Option<String> {
             if let Some(v) = inline_val.clone() {
@@ -1220,9 +1322,20 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
             }
             // Boolean / no-effect vitest flags — dropped (NO value consumed, so a following test
             // file isn't eaten).
-            "--run" | "--watch" | "-w" | "--no-watch" | "--logHeapUsage" | "--hideSkippedTests"
-            | "--disableConsoleIntercept" | "--dom" | "--segfaultRetry" | "--printConsoleTrace"
-            | "--color" | "--no-color" | "--inspect" | "--inspect-brk" => {
+            "--run"
+            | "--watch"
+            | "-w"
+            | "--no-watch"
+            | "--logHeapUsage"
+            | "--hideSkippedTests"
+            | "--disableConsoleIntercept"
+            | "--dom"
+            | "--segfaultRetry"
+            | "--printConsoleTrace"
+            | "--color"
+            | "--no-color"
+            | "--inspect"
+            | "--inspect-brk" => {
                 i += 1;
                 continue;
             }
@@ -1233,7 +1346,10 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         // the flag and, when the next token is its value (a non-flag), that too — otherwise the
         // orphaned value token would be mistaken for a test-file path and hard-fail the run. Covers
         // both the `=`-inline and space forms.
-        if key.starts_with("--sequence") || key.starts_with("--browser") || key.starts_with("--inspect") {
+        if key.starts_with("--sequence")
+            || key.starts_with("--browser")
+            || key.starts_with("--inspect")
+        {
             let _ = take_val();
             i += 1;
             continue;
@@ -1259,8 +1375,8 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         } else if a.starts_with('-') {
             forward.push(a.clone());
         } else if !a.is_empty() {
-            // skip empty args (e.g. a stray "" from a shell wrapper) — they'd be treated as a
-            // missing file and abort the whole run.
+            // skip empty args (e.g. a stray "" from a shell wrapper) — as a filter one would
+            // match every test file.
             files.push(a.clone());
         }
         i += 1;
@@ -1271,7 +1387,10 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         Some(r) => absolute_in(proc_cwd, Path::new(r)),
         None => proc_cwd.to_path_buf(),
     };
-    let forced = opts.config.as_ref().map(|f| absolute_in(proc_cwd, Path::new(f)));
+    let forced = opts
+        .config
+        .as_ref()
+        .map(|f| absolute_in(proc_cwd, Path::new(f)));
 
     // `--passWithNoTests` also covers a test file that collects no test at all (vitest: no
     // "No test suite found in file" error) → the runtime reads it per file.
@@ -1288,9 +1407,10 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
 
     // `--environment` → TURBO_ENV (falls back to config `test.environment`). A per-file pragma
     // overrides this at runtime (runner.rs).
-    let environment = opts.environment.clone().or_else(|| {
-        find_config(&cwd, forced.as_deref()).and_then(|c| config_environment(&c.text))
-    });
+    let environment = opts
+        .environment
+        .clone()
+        .or_else(|| find_config(&cwd, forced.as_deref()).and_then(|c| config_environment(&c.text)));
     if let Some(e) = environment {
         env.push(("TURBO_ENV", e));
     }
@@ -1313,7 +1433,9 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
     if coverage_on {
         if let Some(cov) = vitest_coverage(&cwd, forced.as_deref()) {
             if let Some(thr) = &cov.thresholds {
-                if !has_flag(&forward, "--coverage-thresholds") && !has_flag(&forward, "--coverage-threshold") {
+                if !has_flag(&forward, "--coverage-thresholds")
+                    && !has_flag(&forward, "--coverage-threshold")
+                {
                     forward.push("--coverage-thresholds".to_string());
                     forward.push(thr.clone());
                 }
@@ -1342,21 +1464,41 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         }
     }
 
-    // Resolve the test file set.
-    let mut test_files: Vec<PathBuf> = if files.is_empty() {
-        let discovered = discover(&cwd, forced.as_deref());
-        if discovered.is_empty() {
-            if opts.pass_with_no_tests {
-                messages.push("turbo-test: no test files found — exiting 0 (--passWithNoTests).".to_string());
-                return Plan { env, messages, outcome: Err(0) };
-            }
-            messages.push("turbo-test: no test files found (looked for *.test.* / *.spec.*).".to_string());
-            return Plan { env, messages, outcome: Err(1) };
+    // Resolve the test file set: the discovered files, named relative to the process cwd as
+    // vitest's (root-relative) names. Positional arguments are filters, as vitest's: the
+    // discovered files whose root-relative path contains one (directories and file paths alike).
+    let mut test_files: Vec<PathBuf> = discover(&cwd, forced.as_deref())
+        .into_iter()
+        .filter(|t| files.is_empty() || files.iter().any(|f| filter_matches(&cwd, proc_cwd, f, t)))
+        .map(|t| t.strip_prefix(proc_cwd).map(Path::to_path_buf).unwrap_or(t))
+        .collect();
+    if test_files.is_empty() {
+        // vitest: exit 1 (0 with --passWithNoTests), the filters, include and exclude
+        let code = i32::from(!opts.pass_with_no_tests);
+        let mut msg = format!("No test files found, exiting with code {code}\n\n");
+        if !files.is_empty() {
+            msg.push_str(&format!("filter: {}\n", files.join(", ")));
         }
-        discovered
-    } else {
-        files.iter().map(PathBuf::from).collect()
-    };
+        let pats = vitest_patterns(&cwd, forced.as_deref());
+        let list = |l: Option<&Vec<String>>, default: &str| {
+            l.map_or(default.to_string(), |l| l.join(", "))
+        };
+        let include = list(
+            pats.as_ref().and_then(|p| p.include.as_ref()),
+            DEFAULT_INCLUDE,
+        );
+        let exclude = list(
+            pats.as_ref().and_then(|p| p.exclude.as_ref()),
+            DEFAULT_EXCLUDE,
+        );
+        msg.push_str(&format!("include: {include}\nexclude:  {exclude}"));
+        messages.push(msg);
+        return Plan {
+            env,
+            messages,
+            outcome: Err(code),
+        };
+    }
 
     // `--changed [since]`: keep only discovered test files git reports changed. Direct changed-file
     // filter (no import graph). Nothing changed → running zero tests is expected → exit 0.
@@ -1372,30 +1514,27 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
                     changed.contains(&abs)
                 });
                 if test_files.is_empty() {
-                    messages.push(format!("turbo-test: --changed: no changed test files (of {before}) — exiting 0."));
-                    return Plan { env, messages, outcome: Err(0) };
+                    messages.push(format!(
+                        "turbo-test: --changed: no changed test files (of {before}) — exiting 0."
+                    ));
+                    return Plan {
+                        env,
+                        messages,
+                        outcome: Err(0),
+                    };
                 }
             }
         }
     }
 
-    // Drop file args that no longer exist (stale paths would reach the runner as hard load-errors
-    // and flip the exit code). Warn, don't fail.
-    let missing: Vec<&PathBuf> = test_files.iter().filter(|f| !proc_cwd.join(f).exists()).collect();
-    if !missing.is_empty() {
-        let names: Vec<String> = missing.iter().map(|f| f.display().to_string()).collect();
-        messages.push(format!("turbo-test: skipping {} missing file(s): {}", missing.len(), names.join(", ")));
-        test_files.retain(|f| proc_cwd.join(f).exists());
-    }
-    if test_files.is_empty() {
-        messages.push("turbo-test: no existing test files to run.".to_string());
-        return Plan { env, messages, outcome: Err(0) }; // nothing to run is not a failure
-    }
-
     // Effective argv for the runner loop: forwarded flags, then resolved files.
     let mut out = forward;
     out.extend(test_files.into_iter().map(|f| f.display().to_string()));
-    Plan { env, messages, outcome: Ok(out) }
+    Plan {
+        env,
+        messages,
+        outcome: Ok(out),
+    }
 }
 
 #[cfg(all(test, unix))]

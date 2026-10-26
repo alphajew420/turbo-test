@@ -38,7 +38,7 @@ subcommand layer** — `argv[0]` that isn't a flag is treated as a test-file pat
 ### Supported today
 | flag | turbo-test | Notes |
 |---|---|---|
-| `<file glob…>` positional | ✅ | Falls back to vitest-style discovery + config `include`/`exclude` when none given (`cli.js`). |
+| `<filter…>` positional | ✅ | Filters, as vitest's: a discovered test file (vitest-style discovery + config `include`/`exclude`) runs when its root-relative path contains one of the arguments, case-insensitively (a file path, a directory, or any substring: `b` runs `a/b/y.test.ts`; an absolute path matches as a prefix). An argument that matches nothing is no warning; when nothing matches at all (or nothing is discovered): vitest's `No test files found, exiting with code 1` (0 with `--passWithNoTests`) on stderr, with its `filter:` / `include:` / `exclude:` lines. A file outside `include` does not run even when named. Files run in discovery order, named relative to the working directory (the JSON report names them by absolute path, as vitest's). With no argument, every discovered file runs. |
 | `-j, --jobs N` | ✅ | turbo-test's worker count. ≈ vitest `--maxWorkers` (no separate min). Also `TURBO_JOBS` env. |
 | `--shard i/n` | ✅ | Deterministic index partition. Matches vitest's `--shard`. |
 | `--reporter <r>` | 🟡 | **Only `json` is honored** (terse vitest-ish JSON). Any other value → default text reporter. See §3. |
@@ -110,7 +110,7 @@ for unmodeled flags. Covered by `test/cli-compat.test.mjs`.
 | capability | status | Notes |
 |---|---|---|
 | default text (`PASS/FAIL file (n passed, n failed)` + summary line) | ✅ | turbo-test's own format, not byte-identical to vitest's. `--reporter default` selects it. |
-| `--reporter json` | 🟡 | Emits `{numTotalTests,numPassedTests,…,testResults[]}` (file-level, not per-assertion). To **stdout** (summary line AND test `console.*` output moved to stderr to keep stdout clean — same for junit/tap printed to stdout) or to `--outputFile`. `testResults[]` is per-FILE counts, not per-test `assertionResults[]` like vitest. **Where:** `src/cli.rs` `render_json`. |
+| `--reporter json` | 🟡 | Emits `{numTotalTests,numPassedTests,…,testResults[]}` (file-level, not per-assertion). To **stdout** (summary line AND test `console.*` output moved to stderr to keep stdout clean — same for junit/tap printed to stdout) or to `--outputFile`. `testResults[]` is per-FILE counts (each `name` the absolute path, as vitest's), not per-test `assertionResults[]` like vitest. **Where:** `src/cli.rs` `render_json`. |
 | `--reporter junit` + `--outputFile` | ✅ | JUnit XML: `<testsuites tests= failures= errors=>` → one `<testsuite>` per file → one `<testcase name="describe > it" classname=file time=>` per test, with `<failure message=…/>` on failures. Names/messages XML-escaped. A file that fails to LOAD emits one synthetic `<testcase>` with `<error>`. Skipped tests omitted from `<testcase>` list. **Where:** `src/cli.rs` `render_junit`; per-test list from `TestReport.tests` (`runner.rs`) ← `summary.tests[]` (`runtime.js runSuite`). **Gap:** no `<system-out>`/`<properties>`; `time` is wall-clock `Date.now()` (ms-granular, can read `0.000` for sub-ms tests; affected by `vi.setSystemTime`). |
 | `--reporter tap` | ✅ | TAP v13: `TAP version 13`, flat `1..N` plan over all tests, `ok N - name` / `not ok N - name`, `# SKIP` directive, YAML `message:` diagnostic block on failure. A file that fails to LOAD is one `not ok N - <file>` point with the load error as its `message:` (like JUnit's synthetic `<error>` case). **Where:** `Reporter::Tap`. **Gap:** flat (no nested subtests); message newlines flattened to spaces. |
 | `--reporter verbose` | ✅ | Per-file PASS/FAIL line + one `✓/✗/- name (Nms)` line per test. To stdout. **Where:** `Reporter::Verbose`. |
@@ -155,12 +155,16 @@ Mostly strong. Notable gaps:
 Tests run in bare V8, so Node's builtins are runtime shims (`src/runtime.js` `__nodeBuiltins`).
 `import x from 'node:x'`, `import { a } from 'x'` and `require('x')` all get the same object on both
 loader paths (ESM graph and module runner); `node:` prefixes are accepted. Every listed builtin
-has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve.
+has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve. An `import()`
+that does not resolve rejects as vitest's does: `Cannot find module '/sub/x.js' imported from
+<importer>` (a relative specifier named root-relative, as vite resolves it), `Cannot find package
+'x' imported from <importer>` (code `ERR_MODULE_NOT_FOUND`), or `No such built-in module: node:x`
+(`ERR_UNKNOWN_BUILTIN_MODULE`).
 
 | builtin | provided |
 |---|---|
 | `buffer` | `Buffer` (the runtime's global `Buffer`), `atob`, `btoa`, `Blob`, `File`. |
-| `fs`, `fs/promises` | Native-backed `existsSync`/`readFileSync`/`writeFileSync`/`appendFileSync` (a real `O_APPEND` append)/`mkdirSync`/`rmSync`/`readdirSync`; `promises` (= `fs/promises`): `readFile`, `writeFile`, `appendFile`, `mkdir`, `rm`, `readdir`; `constants` (the platform-independent ones: `F_OK`/`R_OK`/`W_OK`/`X_OK`, `O_RDONLY`/`O_WRONLY`/`O_RDWR`, `S_IF*`, `COPYFILE_*`). `statSync` is a stub (always a file). No callback-style API, no streams. |
+| `fs`, `fs/promises` | Native-backed `existsSync`/`readFileSync`/`writeFileSync`/`appendFileSync` (a real `O_APPEND` append)/`mkdirSync`/`rmSync`/`readdirSync`/`symlinkSync` (Node's errors); `promises` (= `fs/promises`): `readFile`, `writeFile`, `appendFile`, `mkdir`, `rm`, `readdir`, `symlink`; `constants` (the platform-independent ones: `F_OK`/`R_OK`/`W_OK`/`X_OK`, `O_RDONLY`/`O_WRONLY`/`O_RDWR`, `S_IF*`, `COPYFILE_*`). `statSync` is a stub (always a file). No callback-style API, no streams. |
 | `process` | `globalThis.process`. |
 | `timers`, `timers/promises` | The global timers (fake timers drive the same functions); `timers.promises` = `timers/promises`: `setTimeout`, `setImmediate`, `setInterval` (async iterator), `scheduler.wait`/`scheduler.yield`, all honouring `{ signal }` (`AbortError`, code `ABORT_ERR`). |
 | `assert`, `assert/strict` | Node's API: `ok`, `equal`/`notEqual`, `strictEqual`/`notStrictEqual`, `deepEqual`/`deepStrictEqual` (+ `not…`; Map/Set/Date/RegExp/Error/typed arrays/boxed primitives/prototypes/cycles), `throws`/`doesNotThrow`, `rejects`/`doesNotReject` (class / RegExp / validation function / object matchers), `match`/`doesNotMatch`, `ifError`, `fail`, `AssertionError` (`code: 'ERR_ASSERTION'`, `actual`/`expected`/`operator`). `assert/strict` = `assert.strict` (the `equal`/`deepEqual` family is strict). Generated messages are shorter than Node's diffs. |
@@ -172,6 +176,12 @@ has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve
 | `constants` | Node's merge of `os.constants` (`errno`, `priority`, `signals`), `fs.constants` and `crypto.constants`. `os.constants.signals`/`errno` carry the POSIX numbers Linux and macOS share (empty on Windows). |
 | `path`, `os`, `url`, `util`, `events`, `stream`, `crypto`, `module`, `child_process`, `perf_hooks`, `http`, `https`, `http2`, `net`, `tls`, `zlib`, `dns`, `dns/promises`, `tty`, `dgram`, `readline`, `v8`, `diagnostics_channel`, `async_hooks` | Load-time surfaces (enough for libraries to import and construct); see `src/runtime.js`. No real networking, processes or compression. |
 
+Native addons (`.node`) load through turbo-test's own Node-API host, which implements every
+Node-API function up to version 10 with Node 26's semantics; see
+[docs/node-api.md](docs/node-api.md) for the inventory and the few host differences.
+Matchers build their failure message only when the assertion fails, as vitest does: a passing
+assertion never formats its operands.
+
 ---
 
 ## 5. Config-file reading (`cli.js`)
@@ -179,11 +189,12 @@ has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve
 | capability | status | Notes |
 |---|---|---|
 | auto-discover nearest `vitest.config.*` / `vite.config.*` | ✅ | walks up from cwd. `-c/--config <path>` forces an exact file (skips the walk-up; its dir becomes the discovery root). |
-| `test.include` / `test.exclude` globs | ✅ | string-scan (no TS eval); drives discovery. |
+| `test.include` / `test.exclude` globs | ✅ | string-scan (no TS eval); drives discovery. Either one alone applies with vitest's default for the other (`**/*.{test,spec}.?(c|m)[jt]s?(x)` / `**/node_modules/**, **/.git/**`). `node_modules` and `.git` directories are never walked, even when a config `exclude` replaces the default. |
 | `coverage.include/exclude/thresholds` | ✅ | string-scan; flags win over config. |
 | `test.environment` | ✅ | string-scan; sets the run default env when `--environment` is absent → `TURBO_ENV`. Per-file pragma still wins. |
 | anything requiring evaluating the config (functions, `defineConfig` logic, env interpolation, plugins, `setupFiles` array beyond first, aliases) | 🟡/❌ | Pure regex scan — dynamic config is invisible. |
-| `test.globals`, `test.testTimeout`, `test.retry`, `test.bail`, `test.pool`, `test.setupFiles`, `test.reporters` | ❌ | Not read from config. (`test.isolate:false` IS autodetected separately in `runner.rs`.) |
+| `test.setupFiles` | ✅ | read by the runner (`runner.rs`) from the nearest config, every name vitest resolves in its order (`vitest.config` then `vite.config`, each `.ts .mts .cts .js .mjs .cjs`); a jest config's `setupFiles` / `setupFilesAfterEnv` otherwise. |
+| `test.globals`, `test.testTimeout`, `test.retry`, `test.bail`, `test.pool`, `test.reporters` | ❌ | Not read from config. (`test.isolate:false` IS autodetected separately in `runner.rs`.) |
 
 ---
 

@@ -198,7 +198,7 @@ describe('native require', () => {
     expect(h()).toBe('hi'); expect(h.extra).toBe(3);
     expect(def).toBe('dflt'); expect(named).toBe('n');
   });
-  it('unresolvable', () => { expect(() => require('./src/nope')).toThrow('cannot resolve ./src/nope'); });
+  it('unresolvable', () => { expect(() => require('./src/nope')).toThrow("Cannot find module './src/nope'"); });
   it('raw natives: default ESM conditions, ignored registrations', () => {
     expect(globalThis.__nativeRequire(here, './src/other').o).toBe('real-o');
     globalThis.__ttRegisterMock(here, './src/other', undefined);
@@ -343,7 +343,7 @@ fn e2e_entries_stub_broken_node_modules_unless_disabled() {
     assert_eq!(strict.code, Some(1), "{}", strict.all());
     for msg in [
         "stubs a failing package: pkg boom",
-        "stubs unresolvable requires from node_modules: cannot resolve ./nope-sibling",
+        "stubs unresolvable requires from node_modules: Cannot find module './nope-sibling'",
         "stubs an addon: native addon ",
     ] {
         assert!(strict.stdout.contains(msg), "{msg}\n{}", strict.all());

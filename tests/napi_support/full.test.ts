@@ -454,7 +454,7 @@ describe('arraybuffers, typed arrays, buffers', () => {
     expect(a.status()).toBe(GENERIC_FAILURE);
   });
 
-  test('napi_create_external_arraybuffer copies the external bytes', () => {
+  test('napi_create_external_arraybuffer is over the external bytes', () => {
     expect([...new Uint8Array(a.extAb(3))]).toEqual([120, 121, 122]);
     expect(a.extAb(0).byteLength).toBe(0);
     expect(a.status()).toBe(OK);
@@ -502,19 +502,15 @@ describe('arraybuffers, typed arrays, buffers', () => {
   });
 });
 
-describe('unsupported entrypoints throw catchable errors', () => {
-  test('napi_new_instance', () => {
-    expect(() => a.newInstance(class {})).toThrow(
-      'turbo-test: N-API napi_new_instance is not implemented (native addon called an unsupported entrypoint)',
-    );
-    expect(a.status()).toBe(PENDING_EXCEPTION);
-    let caught: unknown;
-    try {
-      a.newInstance(class {});
-    } catch (e) {
-      caught = e;
+describe('napi_new_instance', () => {
+  test('constructs an instance of a class', () => {
+    class C {
+      made = true;
     }
-    expect(caught).toBeInstanceOf(Error);
+    const o = a.newInstance(C);
+    expect(o).toBeInstanceOf(C);
+    expect(o.made).toBe(true);
+    expect(a.status()).toBe(OK);
   });
 });
 
@@ -657,15 +653,19 @@ describe('references', () => {
     expect(a.status()).toBe(OK);
     expect(id).toBeGreaterThan(0);
     expect(a.deref(id)).toBe(target);
-    const id2 = a.ref('second');
+    const second = { id: 2 };
+    const id2 = a.ref(second);
     expect(id2).not.toBe(id);
-    expect(a.deref(id2)).toBe('second');
+    expect(a.deref(id2)).toBe(second);
+    // as Node (module API version 8): a primitive cannot be referenced
+    expect(a.ref('third')).toBe(0);
+    expect(a.status()).toBe(INVALID_ARG);
     expect(a.refUnref(id)).toBe(OK);
     expect(a.deref(id)).toBe(target);
     expect(a.delRef(id)).toBe(OK);
     expect(a.deref(id)).toBe(undefined);
     expect(a.status()).toBe(OK);
-    expect(a.deref(id2)).toBe('second');
+    expect(a.deref(id2)).toBe(second);
   });
 
   test('unknown references', () => {
@@ -683,6 +683,9 @@ describe('references', () => {
 
 describe('stubs', () => {
   test('cleanup hooks, napi_stub, threadsafe functions', () => {
-    expect(a.stubs()).toEqual([OK, GENERIC_FAILURE, OK, true, OK, OK]);
+    // a NULL cleanup hook, a threadsafe function without a name, calls on the NULL handle
+    // it left: napi_invalid_arg (Node aborts on a NULL threadsafe function)
+    expect(a.stubs()).toEqual([INVALID_ARG, GENERIC_FAILURE, INVALID_ARG, false, INVALID_ARG,
+      INVALID_ARG]);
   });
 });

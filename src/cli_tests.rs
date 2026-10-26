@@ -448,10 +448,10 @@ fn durations_roundtrip_and_malformed_lines() {
 
 #[test]
 fn schedule_slowest_first_ties_keep_order() {
-    let files: Vec<PathBuf> = ["a", "b", "c", "d"].iter().map(PathBuf::from).collect();
+    let files: Vec<PathBuf> = ["/a", "/b", "/c", "/d"].iter().map(PathBuf::from).collect();
     let mut hist = HashMap::new();
-    hist.insert("b".to_string(), 50.0);
-    hist.insert("d".to_string(), 900.0);
+    hist.insert("/b".to_string(), 50.0);
+    hist.insert("/d".to_string(), 900.0);
     hist.insert("zz".to_string(), 10_000.0);
     assert_eq!(schedule_order(&files, &hist), vec![3, 1, 0, 2]);
     assert_eq!(schedule_order(&files, &HashMap::new()), vec![0, 1, 2, 3]);
@@ -469,24 +469,46 @@ fn non_finite_history_entries_are_ignored() {
     assert_eq!(hist["d"], 7.0);
     // Even a NaN that reaches the scheduler directly sorts deterministically, never panics:
     // NaN ranks above every finite duration (total order), finite entries stay slowest-first.
-    let files: Vec<PathBuf> = ["a", "b", "c"].iter().map(PathBuf::from).collect();
+    let files: Vec<PathBuf> = ["/a", "/b", "/c"].iter().map(PathBuf::from).collect();
     let mut raw = HashMap::new();
-    raw.insert("a".to_string(), 3.0);
-    raw.insert("b".to_string(), f64::NAN);
-    raw.insert("c".to_string(), 9.0);
+    raw.insert("/a".to_string(), 3.0);
+    raw.insert("/b".to_string(), f64::NAN);
+    raw.insert("/c".to_string(), 9.0);
     assert_eq!(schedule_order(&files, &raw), vec![1, 2, 0]);
 }
 
 #[test]
 fn history_updates_only_files_that_ran() {
-    let files: Vec<PathBuf> = ["a", "b"].iter().map(PathBuf::from).collect();
+    let files: Vec<PathBuf> = ["/a", "/b"].iter().map(PathBuf::from).collect();
     let mut hist = HashMap::new();
-    hist.insert("a".to_string(), 1.0);
+    hist.insert("/a".to_string(), 1.0);
     hist.insert("old".to_string(), 2.0);
     let res = vec![file_result(1, &files[1], Ok(report(1, 0)), 42.0)];
     let h = update_history(hist, &files, &res);
     assert_eq!(h.len(), 3);
-    assert_eq!((h["a"], h["b"], h["old"]), (1.0, 42.0, 2.0));
+    assert_eq!((h["/a"], h["/b"], h["old"]), (1.0, 42.0, 2.0));
+}
+
+/// turbo-test#59: the launcher names files relative to the working directory; the JSON report
+/// still names them by absolute path (vitest's `filepath`) and the duration history (shared by
+/// runs from any directory) is keyed by it.
+#[test]
+fn json_names_and_history_keys_are_absolute() {
+    let cwd = std::env::current_dir().unwrap();
+    let abs = cwd.join("rel/a.test.ts").display().to_string();
+    let files = vec![
+        PathBuf::from("rel/a.test.ts"),
+        PathBuf::from("rel/b.test.ts"),
+    ];
+    let res = vec![file_result(0, &files[0], Ok(report(1, 0)), 42.0)];
+    let v: serde_json::Value =
+        serde_json::from_str(&render_json(&files, &res, &tally(&res))).unwrap();
+    assert_eq!(v["testResults"][0]["name"], abs.as_str());
+    let h = update_history(HashMap::new(), &files, &res);
+    assert_eq!(h.keys().collect::<Vec<_>>(), vec![&abs]);
+    let mut hist = HashMap::new();
+    hist.insert(cwd.join("rel/b.test.ts").display().to_string(), 5.0);
+    assert_eq!(schedule_order(&files, &hist), vec![1, 0]);
 }
 
 // ---- retry decisions ----------------------------------------------------------------------

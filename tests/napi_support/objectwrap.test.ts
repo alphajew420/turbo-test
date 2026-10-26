@@ -182,4 +182,25 @@ describe('napi_define_properties', () => {
     // ToObject of undefined throws: napi_object_expected, and the TypeError reaches the caller
     expect(() => w.defineProperties(undefined)).toThrow(TypeError);
   });
+
+  test('an accessor with one half leaves the other half of an existing accessor alone', () => {
+    const get = () => 1;
+    const set = (_v: unknown) => {};
+    for (const setterOnly of [false, true]) {
+      const o: any = {};
+      Object.defineProperty(o, 'p', { get, set, configurable: true });
+      expect(w.defineAccessorHalf(o, setterOnly)).toBe(OK);
+      const d = Object.getOwnPropertyDescriptor(o, 'p')!;
+      // the half given is a new function, the other half is the existing one
+      expect(setterOnly ? d.get === get : d.set === set).toBe(true);
+      expect(setterOnly ? d.set === set : d.get === get).toBe(false);
+      expect(typeof (setterOnly ? d.set : d.get)).toBe('function');
+      expect([d.enumerable, d.configurable]).toEqual([false, true]);
+      // on a new property the missing half is undefined
+      const n: any = {};
+      expect(w.defineAccessorHalf(n, setterOnly)).toBe(OK);
+      const nd = Object.getOwnPropertyDescriptor(n, 'p')!;
+      expect(setterOnly ? nd.get : nd.set).toBe(undefined);
+    }
+  });
 });

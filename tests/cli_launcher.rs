@@ -1,5 +1,5 @@
-//! The launcher front-end through the real binary: terminal exits and their messages, missing
-//! file pruning, subcommand stripping, `--environment` / config environment, config aliases,
+//! The launcher front-end through the real binary: terminal exits and their messages, positional
+//! filters, subcommand stripping, `--environment` / config environment, config aliases,
 //! a forced `-c` config, `--root`, and `--changed` against a real git repository (plus the
 //! git-unavailable fallback).
 #![cfg(unix)]
@@ -15,47 +15,55 @@ fn tt(p: &Project, args: &[&str]) -> Run {
 
 const PASS: &str = "test('p', () => { expect(1).toBe(1) })\n";
 
+/// vitest 4.1.12's "No test files found" lines with the default include / exclude (`filter`:
+/// its `filter: …` line, or empty).
+fn no_test_files(code: i32, filter: &str) -> String {
+    format!(
+        "No test files found, exiting with code {code}\n\n{filter}include: **/*.{{test,spec}}.?(c|m)[jt]s?(x)\nexclude:  **/node_modules/**, **/.git/**\n"
+    )
+}
+
 #[test]
 fn no_test_files_exit_codes() {
     let p = Project::new("launch-empty");
     p.file("src/util.ts", "export const x = 1\n");
     let r = tt(&p, &[]);
     assert_eq!(r.code, Some(1), "{}", r.all());
-    assert_eq!(
-        r.stderr,
-        "turbo-test: no test files found (looked for *.test.* / *.spec.*).\n"
-    );
+    // vitest 4.1.12's message (turbo-test#59)
+    assert_eq!(r.stderr, no_test_files(1, ""));
     assert_eq!(r.stdout, "");
     let r = tt(&p, &["run", "--passWithNoTests"]);
     assert_eq!(r.code, Some(0), "{}", r.all());
-    assert_eq!(
-        r.stderr,
-        "turbo-test: no test files found — exiting 0 (--passWithNoTests).\n"
-    );
+    assert_eq!(r.stderr, no_test_files(0, ""));
 }
 
 #[test]
-fn missing_files_are_pruned() {
-    let p = Project::new("launch-missing");
+fn positional_arguments_are_filters() {
+    // turbo-test#58, as vitest 4.1.12: every positional argument filters the discovered test
+    // files (a root-relative path containing it, case-insensitively); one matching nothing is
+    // no warning, all matching nothing is "No test files found" with exit 1
+    let p = Project::new("launch-filters");
     p.file("a.test.ts", PASS);
-    let r = tt(&p, &["a.test.ts", "gone.test.ts", ""]);
+    p.file("a/x.test.ts", PASS);
+    p.file("a/b/y.test.ts", PASS);
+    let r = tt(&p, &["a.test.ts", "gone.test.ts"]);
     assert_eq!(r.code, Some(0), "{}", r.all());
-    assert!(
-        r.stderr
-            .starts_with("turbo-test: skipping 1 missing file(s): gone.test.ts\n"),
-        "{}",
-        r.all()
-    );
+    assert_eq!(r.stderr, "", "{}", r.all());
     assert!(
         r.stdout.contains("PASS  a.test.ts  (1 passed, 0 failed)"),
         "{}",
         r.all()
     );
-    let r = tt(&p, &["gone.test.ts", "also-gone.test.ts"]);
+    assert!(!r.stdout.contains("x.test.ts"), "{}", r.all());
+    let r = tt(&p, &["X.TEST"]);
     assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(r.stdout.contains("PASS  a/x.test.ts"), "{}", r.all());
+    assert!(!r.stdout.contains("y.test.ts"), "{}", r.all());
+    let r = tt(&p, &["gone.test.ts", "also-gone.test.ts"]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
     assert_eq!(
         r.stderr,
-        "turbo-test: skipping 2 missing file(s): gone.test.ts, also-gone.test.ts\nturbo-test: no existing test files to run.\n"
+        no_test_files(1, "filter: gone.test.ts, also-gone.test.ts\n")
     );
 }
 
@@ -413,4 +421,77 @@ fn coverage_flags_and_config_thresholds() {
         ],
     );
     assert_eq!(r.code, Some(0), "{}", r.all());
+}
+
+/// turbo-test#45: a directory argument is a filter, as vitest's: every test file under it that
+/// discovery would run, with the results of the same files passed one by one; a nested
+/// directory works; a directory without test files is vitest's "No test files found, exiting
+/// with code 1" (0 with --passWithNoTests). Checked against vitest 4.1.12.
+#[test]
+fn a_directory_argument_runs_the_test_files_under_it() {
+    let p = Project::new("launch-dir-arg");
+    let fail = "test('f', () => { expect(1).toBe(2) })\n";
+    p.file("suite/a.test.ts", PASS);
+    p.file("suite/b.spec.js", fail);
+    p.file("suite/nested/c.test.ts", PASS);
+    p.file("suite/nested/deeper/d.test.ts", PASS);
+    p.file("suite/nested/helper.ts", "export const h = 1\n");
+    p.file("elsewhere/e.test.ts", PASS);
+    p.file("empty/sub/helper.ts", "export const h = 1\n");
+    let root = format!("{}/", p.dir.display());
+    let results = |args: &[&str]| {
+        let mut a = vec!["--reporter", "json"];
+        a.extend(args);
+        let r = tt(&p, &a);
+        let j = json_report(&r);
+        let mut files: Vec<(String, String)> = j["testResults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                // the JSON report names files by absolute path, as vitest's
+                let name = t["name"].as_str().unwrap();
+                let rel = name.strip_prefix(&root).unwrap_or(name);
+                (rel.to_string(), t["status"].as_str().unwrap().to_string())
+            })
+            .collect();
+        files.sort();
+        (r.code, files)
+    };
+    let explicit = results(&[
+        "suite/a.test.ts",
+        "suite/b.spec.js",
+        "suite/nested/c.test.ts",
+        "suite/nested/deeper/d.test.ts",
+    ]);
+    assert_eq!(explicit.1.len(), 4);
+    assert_eq!(results(&["suite"]), explicit);
+    assert_eq!(results(&["./suite/"]), explicit);
+    let nested = results(&["suite/nested"]);
+    assert_eq!(
+        nested,
+        (
+            Some(0),
+            vec![
+                ("suite/nested/c.test.ts".to_string(), "passed".to_string()),
+                (
+                    "suite/nested/deeper/d.test.ts".to_string(),
+                    "passed".to_string()
+                ),
+            ]
+        )
+    );
+    // a directory and a file together
+    assert_eq!(results(&["suite/nested", "elsewhere/e.test.ts"]).1.len(), 3);
+    let r = tt(&p, &["empty"]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert_eq!(r.stderr, no_test_files(1, "filter: empty\n"));
+    let r = tt(&p, &["empty", "--passWithNoTests"]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(
+        r.stderr
+            .starts_with("No test files found, exiting with code 0\n"),
+        "{}",
+        r.all()
+    );
 }

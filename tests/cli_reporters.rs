@@ -41,9 +41,9 @@ fn default_text_reporter_and_unknown_fallback() {
     let p = fixture("rep-default");
     let lines = format!(
         "FAIL  {}  (1 passed, 1 failed)\n        ✗ breaks: expected \"x\" to be \"y\"\nPASS  {}  (1 passed, 0 failed)\nERROR {}  (module errored: Error: top <boom>)\n",
-        path(&p, "a.test.ts"),
-        path(&p, "b.test.ts"),
-        path(&p, "c.test.ts")
+        String::from("a.test.ts"),
+        String::from("b.test.ts"),
+        String::from("c.test.ts")
     );
     for args in [
         &[][..],
@@ -73,17 +73,17 @@ fn dot_and_verbose_reporters() {
     let r = run(&p, &["--reporter", "verbose"]);
     let out = &r.stdout;
     let a = out
-        .find(&format!("FAIL  {}", path(&p, "a.test.ts")))
+        .find(&format!("FAIL  {}", String::from("a.test.ts")))
         .expect(out);
     let adds = out.find("\n   ✓ adds <&> (").expect(out);
     let later = out.find("\n   - later (").expect(out);
     let breaks = out.find("\n   ✗ breaks (").expect(out);
     let b = out
-        .find(&format!("PASS  {}", path(&p, "b.test.ts")))
+        .find(&format!("PASS  {}", String::from("b.test.ts")))
         .expect(out);
     let ok = out.find("\n   ✓ ok (").expect(out);
     let c = out
-        .find(&format!("ERROR {}", path(&p, "c.test.ts")))
+        .find(&format!("ERROR {}", String::from("c.test.ts")))
         .expect(out);
     assert!(
         a < adds && adds < later && later < breaks && breaks < b && b < ok && ok < c,
@@ -173,8 +173,9 @@ fn file_without_tests_fails_the_run() {
     let r = turbo_test(&p.dir, &["empty.spec.js", "a.test.js"], &[]);
     assert_eq!(r.code, Some(1), "{}", r.all());
     assert!(
-        r.stdout
-            .contains(&format!("ERROR empty.spec.js  ({msg})\nPASS  a.test.js")),
+        r.stdout.contains(&format!(
+            "PASS  a.test.js  (1 passed, 0 failed)\nERROR empty.spec.js  ({msg})"
+        )),
         "{}",
         r.all()
     );
@@ -187,13 +188,14 @@ fn file_without_tests_fails_the_run() {
     assert_eq!(r.code, Some(1), "{}", r.all());
     let j = json_report(&r);
     assert_eq!(j["success"], false);
-    assert_eq!(j["testResults"][0]["status"], "error");
-    assert_eq!(j["testResults"][1]["status"], "passed");
+    // the files run in discovery order (positional arguments are filters, turbo-test#58)
+    assert_eq!(j["testResults"][0]["status"], "passed");
+    assert_eq!(j["testResults"][1]["status"], "error");
     let r = turbo_test(&p.dir, &["--reporter", "junit", &e], &[]);
     assert_eq!(r.code, Some(1), "{}", r.all());
     assert!(
         r.stdout.contains(&format!(
-            "<testcase name=\"{e}\" classname=\"{e}\">\n      <error message=\"{msg}\"/>"
+            "<testcase name=\"empty.spec.js\" classname=\"empty.spec.js\">\n      <error message=\"{msg}\"/>"
         )),
         "{}",
         r.all()
@@ -202,7 +204,9 @@ fn file_without_tests_fails_the_run() {
     assert_eq!(r.code, Some(1), "{}", r.all());
     assert_eq!(
         r.stdout,
-        format!("TAP version 13\n1..1\nnot ok 1 - {e}\n  ---\n  message: {msg}\n  ...\n\n"),
+        format!(
+            "TAP version 13\n1..1\nnot ok 1 - empty.spec.js\n  ---\n  message: {msg}\n  ...\n\n"
+        ),
         "{}",
         r.all()
     );
@@ -288,9 +292,9 @@ fn junit_reporter() {
     let r = run(&p, &["--reporter", "junit"]);
     let x = &r.stdout;
     let (a, b, c) = (
-        path(&p, "a.test.ts"),
-        path(&p, "b.test.ts"),
-        path(&p, "c.test.ts"),
+        String::from("a.test.ts"),
+        String::from("b.test.ts"),
+        String::from("c.test.ts"),
     );
     assert!(x.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites name=\"turbo-test\" tests=\"3\" failures=\"1\" errors=\"1\">\n"), "{x}");
     assert!(
@@ -340,7 +344,7 @@ fn tap_reporter() {
         r.stdout,
         format!(
             "TAP version 13\n1..5\nok 1 - adds <&>\nok 2 - later # SKIP\nnot ok 3 - breaks\n  ---\n  message: expected \"x\" to be \"y\"\n  ...\nok 4 - ok\nnot ok 5 - {}\n  ---\n  message: module errored: Error: top <boom>\n  ...\n\n",
-            path(&p, "c.test.ts")
+            String::from("c.test.ts")
         ),
         "{}",
         r.all()
@@ -414,14 +418,14 @@ fn output_file_artifacts() {
     assert!(
         txt.starts_with(&format!(
             "FAIL  {}  (1 passed, 1 failed)\n        ✗ breaks",
-            path(&p, "a.test.ts")
+            String::from("a.test.ts")
         )),
         "{txt}"
     );
     assert!(
         txt.ends_with(&format!(
             "ERROR {}  (module errored: Error: top <boom>)\n",
-            path(&p, "c.test.ts")
+            String::from("c.test.ts")
         )),
         "{txt}"
     );

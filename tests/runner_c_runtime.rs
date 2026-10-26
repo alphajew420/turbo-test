@@ -1,7 +1,7 @@
 //! Runtime semantics that follow Node/vitest: the `URL` polyfill resolves relative references
 //! like Node's WHATWG `URL`; an entry file's hoisted mock factory runs once; without esbuild the
 //! entry prepass replays `vi.hoisted` values and awaits async factories; a setup file that throws
-//! fails every test file using it.
+//! fails every test file using it; a passing matcher never formats its operands.
 #![cfg(unix)]
 
 mod common;
@@ -299,4 +299,284 @@ fn a_setup_file_that_fails_to_link_fails_the_test_file() {
         "{}",
         r.all()
     );
+}
+
+/// turbo-test#43 item 2: a passing matcher never formats its operands (vitest builds the
+/// failure message lazily); an operand whose JSON/string conversion throws — like a native
+/// class prototype whose members check their receiver — fails only a failing assertion. The
+/// spec passes under vitest 4.1.12 (matchers that vitest itself formats or deep-compares on a
+/// pass, such as toContain and toHaveBeenCalledWith, are left out).
+const LAZY_MESSAGE_TEST: &str = r#"import { test, expect, vi } from 'vitest';
+const bad = () => { throw new TypeError('Illegal invocation'); };
+const h = { toString: bad, valueOf: bad, toJSON: bad, [Symbol.toPrimitive]: bad };
+Object.defineProperty(h, 'x', { get: bad, enumerable: true });
+const spy = vi.fn();
+spy(h);
+const cases = {
+  toBe: () => expect(h).toBe(h),
+  toBeTruthy: () => expect(h).toBeTruthy(),
+  notToBeFalsy: () => expect(h).not.toBeFalsy(),
+  notToBeNull: () => expect(h).not.toBeNull(),
+  notToBeUndefined: () => expect(h).not.toBeUndefined(),
+  toBeDefined: () => expect(h).toBeDefined(),
+  toBeTypeOf: () => expect(h).toBeTypeOf('object'),
+  toSatisfy: () => expect(h).toSatisfy(() => true),
+  toBeInstanceOf: () => expect(h).toBeInstanceOf(Object),
+  toHaveProperty: () => expect(h).toHaveProperty('toString'),
+  toHaveBeenLastCalledWith: () => expect(spy).toHaveBeenLastCalledWith(h),
+  toHaveBeenNthCalledWith: () => expect(spy).toHaveBeenNthCalledWith(1, h),
+  toHaveReturnedWith: () => expect(spy).toHaveReturnedWith(undefined),
+  toHaveBeenCalled: () => expect(spy).toHaveBeenCalled(),
+  toEqual: () => expect(h).toEqual(h),
+  toStrictEqual: () => expect(h).toStrictEqual(h),
+  toMatchObject: () => expect(h).toMatchObject({}),
+};
+for (const [name, fn] of Object.entries(cases)) test(name, fn);
+test('a failing matcher still formats its message', () => {
+  expect(() => expect(1).toBe(2)).toThrow('expected 1 to be 2');
+  expect(() => expect([1]).toHaveLength(2)).toThrow('expected');
+  expect(() => expect(h).toBe(1)).toThrow('Illegal invocation');
+});
+"#;
+
+#[test]
+fn passing_matchers_do_not_format_their_operands() {
+    let p = Project::new("rc-lazy-msg");
+    p.file("lazy.test.ts", LAZY_MESSAGE_TEST);
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_passes(&r, 18);
+}
+
+/// turbo-test#46: structuredClone is the HTML structured clone (V8's serializer, as Node's):
+/// types, cycles and shared references survive, `transfer` moves ArrayBuffers (the originals
+/// are detached), SharedArrayBuffers are shared, and what cannot be cloned or transferred
+/// throws Node's DataCloneError. The spec passes under vitest 4.1.12.
+const STRUCTURED_CLONE_TEST: &str = r#"import { test, expect } from 'vitest';
+
+// expected values: vitest 4.1.12 (Node 26.11's structuredClone)
+const err = (f: () => unknown) => {
+  try { f(); } catch (e: any) { return [e.constructor.name, e.name, e.message]; }
+  return 'no throw';
+};
+
+test('values keep their types; cycles and shared references survive', () => {
+  const o: any = { d: new Date(5), m: new Map([[1, new Set(['a'])]]), r: /x/gi, big: 10n, u: undefined, n: null };
+  o.self = o;
+  o.twice = [o.d, o.d];
+  const c = structuredClone(o);
+  expect(c).not.toBe(o);
+  expect(c.self).toBe(c);
+  expect(c.d).toBeInstanceOf(Date);
+  expect(c.d.getTime()).toBe(5);
+  expect(c.twice[0]).toBe(c.twice[1]);
+  expect(c.m.get(1).has('a')).toBe(true);
+  expect([c.r.source, c.r.flags, c.big, 'u' in c, c.n]).toEqual(['x', 'gi', 10n, true, null]);
+  const e = structuredClone(new RangeError('boom'));
+  expect([e instanceof RangeError, e.message]).toEqual([true, 'boom']);
+  const u8 = new Uint8Array([1, 2, 3]);
+  const cu = structuredClone(u8);
+  expect([cu instanceof Uint8Array, [...cu], cu.buffer === u8.buffer]).toEqual([true, [1, 2, 3], false]);
+});
+
+test('transfer moves ArrayBuffers; SharedArrayBuffers are shared', () => {
+  const b = new ArrayBuffer(4);
+  new Uint8Array(b)[0] = 9;
+  const c = structuredClone(b, { transfer: [b] });
+  expect([b.byteLength, c.byteLength, new Uint8Array(c)[0]]).toEqual([0, 4, 9]);
+  const u = new Uint8Array([1, 2, 3]);
+  const r = structuredClone({ u }, { transfer: [u.buffer] });
+  expect([u.byteLength, [...r.u]]).toEqual([0, [1, 2, 3]]);
+  const s = new SharedArrayBuffer(4);
+  new Uint8Array(structuredClone(s))[0] = 7;
+  expect(new Uint8Array(s)[0]).toBe(7);
+  expect(structuredClone(1, { transfer: undefined })).toBe(1);
+  expect(structuredClone(2, null as any)).toBe(2);
+});
+
+test('what cannot be cloned or transferred throws as Node', () => {
+  const ab = new ArrayBuffer(2);
+  expect(err(() => structuredClone(1, { transfer: [{} as any] }))).toEqual(['DOMException', 'DataCloneError', 'Found invalid value in transferList.']);
+  expect(err(() => structuredClone(1, { transfer: [ab, ab] }))).toEqual(['DOMException', 'DataCloneError', 'Transfer list contains duplicate ArrayBuffer']);
+  expect(err(() => structuredClone(() => 1))).toEqual(['DOMException', 'DataCloneError', '() => 1 could not be cloned.']);
+  expect(err(() => structuredClone(Symbol()))).toEqual(['DOMException', 'DataCloneError', 'Symbol() could not be cloned.']);
+  expect(err(() => (structuredClone as any)())).toEqual(['TypeError', 'TypeError', 'The "The value argument must be specified" argument must be specified']);
+  expect(err(() => structuredClone(1, { transfer: 5 as any }))).toEqual(['TypeError', 'TypeError', "Failed to execute 'structuredClone': transfer in Options cannot be converted to sequence."]);
+  expect(err(() => structuredClone(1, { transfer: [new SharedArrayBuffer(1) as any] }))).toEqual(['DOMException', 'DataCloneError', 'Found invalid value in transferList.']);
+  const mem = new WebAssembly.Memory({ initial: 1 });
+  expect(err(() => structuredClone(1, { transfer: [mem.buffer] }))).toEqual(['DOMException', 'DataCloneError', 'Cannot transfer object of unsupported type.']);
+  const d = new ArrayBuffer(1);
+  structuredClone(d, { transfer: [d] });
+  expect(err(() => structuredClone(d, { transfer: [d] }))).toEqual(['DOMException', 'DataCloneError', 'Cannot transfer object of unsupported type.']);
+  expect(err(() => structuredClone(d))).toEqual(['DOMException', 'DataCloneError', 'An ArrayBuffer is detached and could not be cloned.']);
+});
+"#;
+
+#[test]
+fn structured_clone_follows_node() {
+    for env in ["node", "jsdom"] {
+        let p = Project::new("rc-structured-clone");
+        p.file("sc.test.ts", STRUCTURED_CLONE_TEST);
+        let r = turbo_test(&p.dir, &["--environment", env], &[]);
+        assert_passes(&r, 3);
+    }
+}
+
+/// turbo-test#48: fs.symlinkSync and fs.promises.symlink create symbolic links; a failure is
+/// Node's error (code, syscall, message). The spec passes under vitest 4.1.12.
+const SYMLINK_TEST: &str = r#"import { test, expect } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+
+// expected values: vitest 4.1.12 (Node 26.11)
+test('fs.symlinkSync / fs.promises.symlink create symbolic links', async () => {
+  const dir = `${new URL(".", import.meta.url).pathname}sym-${Date.now()}`;
+  fs.mkdirSync(dir);
+  fs.writeFileSync(`${dir}/target.txt`, 'through the link');
+  expect(fs.symlinkSync(`${dir}/target.txt`, `${dir}/link.txt`)).toBe(undefined);
+  expect(fs.readFileSync(`${dir}/link.txt`, 'utf8')).toBe('through the link');
+  let err: any;
+  try { fs.symlinkSync(`${dir}/target.txt`, `${dir}/link.txt`); } catch (e) { err = e; }
+  expect([err.code, err.syscall, err.message]).toEqual([
+    'EEXIST', 'symlink', `EEXIST: file already exists, symlink '${dir}/target.txt' -> '${dir}/link.txt'`,
+  ]);
+  await fs.promises.symlink('target.txt', `${dir}/relative.txt`);
+  expect(fs.readFileSync(`${dir}/relative.txt`, 'utf8')).toBe('through the link');
+  let err2: any;
+  await fs.promises.symlink('x', `${dir}/missing/link`).catch((e) => { err2 = e; });
+  expect(err2.code).toBe('ENOENT');
+  fs.rmSync(dir, { recursive: true });
+  void os;
+});
+"#;
+
+#[test]
+fn fs_symlink_creates_links() {
+    let p = Project::new("rc-symlink");
+    p.with_esbuild();
+    p.file("sym.test.ts", SYMLINK_TEST);
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_passes(&r, 1);
+}
+
+/// turbo-test#54: process.cwd() is the process's working directory (vitest 4.1.12: the
+/// directory it was started in, also below the project root), not the package root.
+#[test]
+fn process_cwd_is_the_working_directory() {
+    let p = Project::new("rc-cwd");
+    p.file("package.json", "{}");
+    p.file(
+        "sub/cwd.test.ts",
+        "import { test } from 'vitest';\ntest('cwd', () => { console.log('CWD=' + process.cwd()); });\n",
+    );
+    let sub = p.dir.join("sub");
+    let r = turbo_test(&sub, &[], &[]);
+    assert_passes(&r, 1);
+    let want = format!("CWD={}", sub.canonicalize().unwrap().display());
+    let got = r.all();
+    assert!(
+        got.contains(&want) || got.contains(&format!("CWD={}", sub.display())),
+        "{want}\n{got}"
+    );
+}
+
+/// turbo-test#55: os.tmpdir() / os.homedir() are the environment's, as vitest 4.1.12 (Node):
+/// TMPDIR without its trailing slash, HOME.
+#[test]
+fn os_tmpdir_and_homedir_follow_the_environment() {
+    let p = Project::new("rc-os-dirs");
+    p.file(
+        "os.test.ts",
+        "import { test, expect } from 'vitest';\nimport * as os from 'os';\n\
+         test('dirs', () => {\n  expect(os.tmpdir()).toBe('/tt/tmp/dir');\n  expect(os.homedir()).toBe('/tt/home');\n});\n",
+    );
+    let r = turbo_test(
+        &p.dir,
+        &[],
+        &[("TMPDIR", "/tt/tmp/dir/"), ("HOME", "/tt/home")],
+    );
+    assert_passes(&r, 1);
+}
+
+/// turbo-test#56: require.resolve gives the resolved path (a builtin its name), and require /
+/// require.resolve of a module that cannot be found throw Node's MODULE_NOT_FOUND with the
+/// require stack. The spec passes under vitest 4.1.12.
+const REQUIRE_RESOLVE_TEST: &str = r#"import { test, expect } from 'vitest';
+import * as fs from 'fs';
+
+// expected values: vitest 4.1.12 (Node's require)
+const dir = new URL('.', import.meta.url).pathname;
+const here = dir + 'resolve.test.ts';
+fs.writeFileSync(dir + 'res-m.js', 'module.exports = 1;');
+fs.writeFileSync(dir + 'res-inner.js', "module.exports = () => require('./res-missing');");
+
+test('require.resolve gives the resolved path; a builtin stays its name', () => {
+  expect(require.resolve('./res-m.js')).toBe(dir + 'res-m.js');
+  expect(require.resolve('./res-m')).toBe(dir + 'res-m.js');
+  expect([require.resolve('fs'), require.resolve('node:path')]).toEqual(['fs', 'node:path']);
+});
+
+test('a module that cannot be found is MODULE_NOT_FOUND, with the require stack', () => {
+  const caught = (f: () => unknown) => { try { f(); } catch (e: any) { return [e.code, e.message]; } return 'no throw'; };
+  const want = ['MODULE_NOT_FOUND', `Cannot find module './res-nope'\nRequire stack:\n- ${here}`];
+  expect(caught(() => require.resolve('./res-nope'))).toEqual(want);
+  expect(caught(() => require('./res-nope'))).toEqual(want);
+  expect(caught(() => require('./res-inner.js')())).toEqual([
+    'MODULE_NOT_FOUND', `Cannot find module './res-missing'\nRequire stack:\n- ${dir}res-inner.js\n- ${here}`,
+  ]);
+});
+"#;
+
+#[test]
+fn require_resolve_follows_node() {
+    let p = Project::new("rc-require-resolve");
+    p.with_esbuild();
+    p.file("resolve.test.ts", REQUIRE_RESOLVE_TEST);
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_passes(&r, 2);
+}
+
+/// turbo-test#47: require.cache is the shared module cache (Node's Module._cache): entries by
+/// path, and deleting one makes the next require() load the module again. The spec passes under
+/// vitest 4.1.12.
+const REQUIRE_CACHE_TEST: &str = r#"import { test, expect } from 'vitest';
+import * as fs from 'fs';
+
+// expected values: vitest 4.1.12 (Node's require.cache)
+const dir = new URL('.', import.meta.url).pathname;
+fs.writeFileSync(dir + 'cache-inj.js', "module.exports = 'real';");
+fs.writeFileSync(dir + 'cache-m.js', 'globalThis.__cacheRuns = (globalThis.__cacheRuns || 0) + 1; module.exports = { run: globalThis.__cacheRuns };');
+
+test('require.cache holds the loaded module; deleting it loads the module again', () => {
+  const a = require('./cache-m.js');
+  const key = require.resolve('./cache-m.js');
+  const entry = require.cache[key]!;
+  expect([entry.exports === a, entry.id, entry.filename, entry.loaded]).toEqual([true, key, key, true]);
+  expect(require.cache[key]).toBe(entry);
+  expect(key in require.cache).toBe(true);
+  expect(Object.keys(require.cache)).toContain(key);
+  expect(require('./cache-m.js')).toBe(a);
+  expect(delete require.cache[key]).toBe(true);
+  expect([key in require.cache, require.cache[key]]).toEqual([false, undefined]);
+  const b = require('./cache-m.js');
+  expect(b).not.toBe(a);
+  expect(b.run).toBe(a.run + 1);
+  expect(require.cache[key]!.exports).toBe(b);
+});
+
+test('a module put into require.cache is what require() gives', () => {
+  const key = require.resolve('./cache-inj.js');
+  require.cache[key] = { exports: 'injected' } as any;
+  expect(require('./cache-inj.js')).toBe('injected');
+  require.cache[key]!.exports = 'replaced';
+  expect(require('./cache-inj.js')).toBe('replaced');
+});
+"#;
+
+#[test]
+fn require_cache_deletion_loads_the_module_again() {
+    let p = Project::new("rc-require-cache");
+    p.with_esbuild();
+    p.file("cache.test.ts", REQUIRE_CACHE_TEST);
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_passes(&r, 2);
 }

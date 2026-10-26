@@ -65,7 +65,11 @@ impl<'a> Visit<'a> for Collector {
             Some(a) => arms.push(a.span().start),
             None => arms.push(s.span.end), // implicit else (position only; taken derived)
         }
-        self.out.push(RawBranch { decision: s.span.start, arms, implicit_else });
+        self.out.push(RawBranch {
+            decision: s.span.start,
+            arms,
+            implicit_else,
+        });
         walk::walk_if_statement(self, s);
     }
 
@@ -91,7 +95,11 @@ impl<'a> Visit<'a> for Collector {
     fn visit_switch_statement(&mut self, s: &SwitchStatement<'a>) {
         let arms: Vec<u32> = s.cases.iter().map(|c| c.span.start).collect();
         if !arms.is_empty() {
-            self.out.push(RawBranch { decision: s.span.start, arms, implicit_else: false });
+            self.out.push(RawBranch {
+                decision: s.span.start,
+                arms,
+                implicit_else: false,
+            });
         }
         walk::walk_switch_statement(self, s);
     }
@@ -105,7 +113,10 @@ pub fn extract_all(file: &Path, source: &str) -> (Vec<RawBranch>, Vec<u32>) {
     let st = SourceType::from_path(file).unwrap_or_default();
     let allocator = Allocator::default();
     let ret = Parser::new(&allocator, source, st).parse();
-    let mut c = Collector { out: Vec::new(), stmts: Vec::new() };
+    let mut c = Collector {
+        out: Vec::new(),
+        stmts: Vec::new(),
+    };
     c.visit_program(&ret.program);
     (c.out, c.stmts)
 }

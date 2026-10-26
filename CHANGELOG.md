@@ -5,6 +5,73 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+### Fixed
+- Config discovery (turbo-test#43 item 1): `setupFiles` are read from every config file vitest
+  resolves, in its order (`vitest.config` then `vite.config`, each `.ts .mts .cts .js .mjs
+  .cjs`); `vitest.config.{cts,mjs,cjs}` and `vite.config.{mts,cts,js,mjs,cjs}` were ignored and
+  `vite.config.ts` beat `vitest.config.js`.
+- Matchers build their failure message only when the assertion fails (turbo-test#43 item 2):
+  a passing `toBe` no longer throws when formatting an operand throws (a native class
+  prototype whose members check their receiver: "Illegal invocation").
+- Node-API references keep a count (turbo-test#43 item 3): `napi_create_reference` honours
+  `initial_refcount`, `napi_reference_ref` / `napi_reference_unref` move it, and a reference at
+  0 is weak, as in Node.
+- `napi_define_properties` leaves a missing accessor half out of the definition (turbo-test#43
+  item 4), so redefining an existing accessor with one half keeps the other.
+- Node-API (turbo-test#44): every function of Node 26's `js_native_api.h` and `node_api.h` up to
+  NAPI_VERSION 10 is implemented with Node's semantics — the error family and
+  `napi_get_last_error_info` (every call records its status; a NULL env is
+  `napi_invalid_arg`), numbers / bigints / dates, Latin-1 / UTF-16 / external strings and
+  property keys, symbols, coercions, the property family, comparisons and type checks,
+  arraybuffers / typed arrays / dataviews, external buffers over the addon's memory (no
+  longer copied, their finalizer runs), promises, externals, `napi_new_instance` (it threw "not
+  implemented"), `napi_run_script`, handle scopes, instance data, cleanup hooks (run at env
+  teardown in Node's order), `napi_module_register`, `node_api_get_module_file_name`, the
+  versions (`process.versions.napi` is `'10'`) and the declared module API version, async work
+  on a four-thread pool, threadsafe functions, async contexts / `napi_make_callback` / callback
+  scopes. Their completions and calls run on the JS thread between macrotasks, and in-flight
+  work keeps the event loop alive. An addon importing a function the host does not provide now
+  fails its `require()` with an error naming it instead of crashing the whole run (SIGSEGV), and
+  load errors carry the loader's message. The inventory (function, version, tests, host
+  differences) is [docs/node-api.md](docs/node-api.md).
+- Node-API core entrypoints check a NULL result / value argument as Node (`napi_invalid_arg`)
+  instead of crashing or returning `napi_ok` (turbo-test#50); `napi_create_typedarray` accepts
+  a SharedArrayBuffer (turbo-test#51); the buffer creators hand back `Buffer`s, not plain
+  `Uint8Array`s (turbo-test#52); an exception a finalizer leaves pending is reported as
+  uncaught from the event loop, as in Node, instead of being dropped (turbo-test#53).
+- `structuredClone` is V8's structured clone with `{ transfer }` (transferred buffers are
+  detached) and Node's errors (turbo-test#46).
+- `require.cache` is the shared module cache: deleting an entry makes the next `require()` load
+  the module again, a set entry is served as is (turbo-test#47). `require.resolve()` resolves
+  (it returned its argument) and a missing module is Node's `MODULE_NOT_FOUND` with the require
+  stack (turbo-test#56).
+- `fs.symlinkSync` / `fs.promises.symlink` exist (turbo-test#48); `process.cwd()` is the process's
+  working directory, not the nearest package.json directory (turbo-test#54); `os.tmpdir()` /
+  `os.homedir()` follow the environment as Node's (turbo-test#55).
+- An unresolved `import()` rejects as vitest's: `Cannot find module '/sub/x.js' imported from
+  <importer>` / `Cannot find package 'x' …` (`ERR_MODULE_NOT_FOUND`), `No such built-in module`
+  (turbo-test#61).
+- Launcher, as vitest 4.1.12: every config lookup uses vitest's config names and order
+  (turbo-test#49); default discovery matches `.mjs`/`.cjs`/`.mts`/`.cts` test files and skips
+  only `node_modules` and `.git` (hidden, `dist`, `build`, `coverage`, `target`… are searched,
+  turbo-test#57); a config `exclude` applies without a config `include` (turbo-test#60);
+  positional arguments are filters on the discovered files (a directory, a file path or any
+  substring of the root-relative path, case-insensitively — a directory argument failed with
+  "graph load failed", turbo-test#45 / turbo-test#58); discovered files are named relative to the
+  working directory (the JSON report keeps absolute names, as vitest's; the duration history
+  is keyed by absolute path) and nothing to run prints vitest's `No test files found, exiting
+  with code N` with its filter / include / exclude lines (turbo-test#59). A missing file
+  argument is no longer dropped with a warning: like any filter, it matches nothing.
+
+### CI
+- `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain
+  1.98.0). The 28 clippy findings are fixed and the crate is rustfmt-clean (turbo-test#62).
+
+### Tests
+- Node-API fixtures `api.c`, `async.c`, `cleanup.c`, `apiversion.c`, `refs.c`, `selfreg.c`,
+  `fatal.c` and `unknown.c` with their specs; every spec also passes against Node 26.11 with the
+  same compiled addon (but its host-only cases).
+
 ## [0.6.0] - 2026-10-26 — turbo-dom consolidation
 
 The browser binding and the V8 fork moved into the

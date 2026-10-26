@@ -2,7 +2,6 @@
 //! Consumer check: a copy of turbo-dom's crates/turbo-dom-v8/tests/weak_teardown.rs,
 //! run against the turbo-dom-v8 this crate resolves.
 use std::{cell::Cell, rc::Rc};
-use v8;
 struct WeakSlot {
     handle: v8::Weak<v8::Function>,
     live_drops: Rc<Cell<usize>>,

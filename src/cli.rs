@@ -372,17 +372,21 @@ pub fn save_durations(path: &Path, m: &HashMap<String, f64>) {
 pub fn schedule_order(files: &[PathBuf], hist: &HashMap<String, f64>) -> Vec<usize> {
     let mut order: Vec<usize> = (0..files.len()).collect();
     order.sort_by(|&a, &b| {
-        let da = hist
-            .get(&files[a].to_string_lossy().to_string())
-            .copied()
-            .unwrap_or(0.0);
-        let db = hist
-            .get(&files[b].to_string_lossy().to_string())
-            .copied()
-            .unwrap_or(0.0);
+        let da = hist.get(&history_key(&files[a])).copied().unwrap_or(0.0);
+        let db = hist.get(&history_key(&files[b])).copied().unwrap_or(0.0);
         db.total_cmp(&da)
     });
     order
+}
+
+/// A file's absolute path: its duration-history key and its JSON report name (the launcher names
+/// files relative to the working directory; the history is shared by runs from any directory).
+/// Only an empty path has none: it is empty.
+fn history_key(f: &Path) -> String {
+    std::path::absolute(f)
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string()
 }
 
 /// The history to persist after a run: the old one with every file that ran updated.
@@ -392,7 +396,7 @@ pub fn update_history(
     res: &[FileResult],
 ) -> HashMap<String, f64> {
     for r in res {
-        hist.insert(files[r.idx].to_string_lossy().to_string(), r.dur_ms);
+        hist.insert(history_key(&files[r.idx]), r.dur_ms);
     }
     hist
 }
@@ -696,7 +700,8 @@ pub fn xml_esc(s: &str) -> String {
     o
 }
 
-/// Vitest-compatible-ish JSON summary (numTotalTests/numPassedTests/...), per-file results.
+/// Vitest-compatible-ish JSON summary (numTotalTests/numPassedTests/...), per-file results named
+/// by absolute path, as vitest's.
 pub fn render_json(files: &[PathBuf], res: &[FileResult], t: &Totals) -> String {
     let total: u32 = res.iter().map(|r| r.passed + r.failed).sum();
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
@@ -712,7 +717,7 @@ pub fn render_json(files: &[PathBuf], res: &[FileResult], t: &Totals) -> String 
         .map(|r| {
             format!(
                 "{{\"name\":\"{}\",\"status\":\"{}\",\"numPassingTests\":{},\"numFailingTests\":{}}}",
-                esc(&files[r.idx].to_string_lossy()),
+                esc(&history_key(&files[r.idx])),
                 if r.load_error {
                     "error"
                 } else if r.failed == 0 {

@@ -24,17 +24,7 @@ fn with_scope(f: impl FnOnce(&mut v8::PinScope)) {
 
 /// An env whose napi calls run in `scope`.
 fn env_for(scope: &mut v8::PinScope) -> Box<Env> {
-    Box::new(Env {
-        isolate: unsafe { scope.as_raw_isolate_ptr() },
-        scope: scope as *mut v8::PinScope as *mut c_void,
-        context: v8::Global::new(scope, scope.get_current_context()),
-        last_exception: None,
-        fns: Vec::new(),
-        refs: Vec::new(),
-        finalizers: Default::default(),
-        next_finalizer: 0,
-        tearing_down: false,
-    })
+    Box::new(Env::new(scope))
 }
 
 #[test]
@@ -139,7 +129,7 @@ fn trampoline_dispatches_through_the_callback_record() {
                 &mut *env,
                 std::ptr::null(),
                 0,
-                record_call,
+                Some(record_call),
                 std::ptr::null_mut(),
                 &mut f,
             )
@@ -185,5 +175,163 @@ fn js_call_parks_exceptions_but_not_a_termination() {
         assert_eq!(st, napi_pending_exception);
         let parked = env.last_exception.take().unwrap();
         assert_eq!(v8::Local::new(s, &parked).int32_value(s), Some(7));
+    });
+}
+
+/// napi_reference_ref / napi_reference_unref of a NULL, unknown or deleted reference are
+/// napi_invalid_arg (Node checks NULL; an unknown handle is undefined behaviour there).
+#[test]
+fn ref_and_unref_of_a_dead_reference_are_invalid_arg() {
+    with_scope(|s| {
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        let mut count = 7u32;
+        unsafe {
+            for r in [std::ptr::null_mut(), 99usize as napi_ref] {
+                assert_eq!(napi_reference_ref(e, r, &mut count), napi_invalid_arg);
+                assert_eq!(napi_reference_unref(e, r, &mut count), napi_invalid_arg);
+            }
+            let obj = to_napi(v8::Object::new(s).into());
+            let mut r: napi_ref = std::ptr::null_mut();
+            assert_eq!(napi_create_reference(e, obj, 1, &mut r), napi_ok);
+            assert_eq!(napi_delete_reference(e, r), napi_ok);
+            assert_eq!(napi_reference_ref(e, r, &mut count), napi_invalid_arg);
+            assert_eq!(napi_reference_unref(e, r, &mut count), napi_invalid_arg);
+        }
+        assert_eq!(count, 7);
+        // a counted reference whose value a finalizer cleared: ref / unref leave it at 0, as
+        // Node's Reference::Ref / Unref of an empty persistent
+        let mut cleared = Ref {
+            count: 1,
+            value: RefValue::Empty,
+        };
+        assert_eq!(cleared.dec(s), 0);
+        assert_eq!(cleared.inc(s), 0);
+        assert_eq!(cleared.count, 1);
+    });
+}
+
+/// A closure of `catching` reporting that V8 gave nothing: napi_pending_exception when it
+/// threw, napi_generic_failure otherwise (Node's RETURN_STATUS_IF_FALSE_WITH_PREAMBLE); the
+/// status is recorded as the last error.
+#[test]
+fn v8_giving_nothing_is_pending_exception_or_generic_failure() {
+    with_scope(|s| {
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        unsafe {
+            assert_eq!(catching(e, |_| Err(V8_GAVE_NOTHING)), napi_generic_failure);
+            assert_eq!(env.last_error.error_code, napi_generic_failure);
+            let st = catching(e, |s| {
+                let msg = v8::String::new(s, "thrown").unwrap();
+                let exc = v8::Exception::error(s, msg);
+                s.throw_exception(exc);
+                Err(V8_GAVE_NOTHING)
+            });
+            assert_eq!(st, napi_pending_exception);
+            assert!(env.last_exception.take().is_some());
+        }
+    });
+}
+
+/// A dlopen failure names an import the process does not provide (the loaders' three message
+/// forms); any other failure keeps the loader's message.
+#[test]
+fn dlopen_errors_name_the_missing_import() {
+    let mac = "dlopen(/p/a.node, 0x0006): symbol not found in flat namespace '_napi_bogus'";
+    assert_eq!(missing_symbol(mac), Some("napi_bogus"));
+    assert_eq!(
+        dlopen_error(mac),
+        format!("it imports napi_bogus, which turbo-test's Node-API host does not provide (dlopen {mac})")
+    );
+    let glibc = "/p/a.node: undefined symbol: node_api_bogus";
+    assert_eq!(missing_symbol(glibc), Some("node_api_bogus"));
+    let musl = "Error relocating /p/a.node: uv_bogus: symbol not found";
+    assert_eq!(missing_symbol(musl), Some("uv_bogus"));
+    assert_eq!(
+        dlopen_error(musl),
+        format!("it imports uv_bogus, which nothing loaded provides (dlopen {musl})")
+    );
+    let other = "dlopen(/p/a.node, 0x0006): slice is not valid mach-o file";
+    assert_eq!(missing_symbol(other), None);
+    assert_eq!(dlopen_error(other), format!("dlopen {other}"));
+    assert_eq!(
+        missing_symbol("symbol not found in flat namespace '_x"),
+        Some("x")
+    );
+}
+
+/// node_api_get_module_file_name's file: URL escapes `%` and the URL path percent-encode set
+/// (as Node's url::FromFilePath).
+#[test]
+fn module_file_names_are_file_urls() {
+    assert_eq!(file_url(Path::new("/a/b.node")), "file:///a/b.node");
+    assert_eq!(
+        file_url(Path::new("/x y/%#?\"<>`{}/é.node")),
+        "file:///x%20y/%25%23%3F%22%3C%3E%60%7B%7D/%C3%A9.node"
+    );
+}
+
+unsafe extern "C" fn execute_nothing(_env: napi_env, _data: *mut c_void) {}
+
+/// The drive loop's view of an isolate's native work: before any addon nothing is queued or
+/// in flight; queued async work keeps the loop alive until its complete has run, and waiting
+/// with no timeout returns once the pool posted it.
+#[test]
+fn native_tasks_keep_the_loop_alive_until_they_run() {
+    with_scope(|s| {
+        assert!(!run_native_task(s));
+        assert!(!keeps_loop_alive(s));
+        assert!(!wait_native_task(s, Some(std::time::Duration::ZERO)));
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        unsafe {
+            let name = to_napi(v8::String::new(s, "unit").unwrap().into());
+            let mut work: *mut async_host::AsyncWork = std::ptr::null_mut();
+            let st = async_host::napi_create_async_work(
+                e,
+                std::ptr::null_mut(),
+                name,
+                Some(execute_nothing),
+                None,
+                std::ptr::null_mut(),
+                &mut work,
+            );
+            assert_eq!(st, napi_ok);
+            assert_eq!(async_host::napi_queue_async_work(e, work), napi_ok);
+            assert!(keeps_loop_alive(s));
+            assert!(wait_native_task(s, None));
+            assert!(run_native_task(s));
+            assert!(!keeps_loop_alive(s));
+            assert_eq!(async_host::napi_delete_async_work(e, work), napi_ok);
+        }
+    });
+}
+
+/// The host-only answers where Node crashes or aborts the process: a NULL deferred, and the
+/// same env cleanup hook (function and argument) registered twice.
+#[test]
+fn null_deferred_and_duplicate_cleanup_hook_are_invalid_arg() {
+    unsafe extern "C" fn hook(_: *mut c_void) {}
+    with_scope(|s| {
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        let arg = std::ptr::dangling_mut::<c_void>();
+        unsafe {
+            let v = to_napi(v8::undefined(s).into());
+            let null = std::ptr::null_mut();
+            assert_eq!(napi_resolve_deferred(e, null, v), napi_invalid_arg);
+            assert_eq!(napi_reject_deferred(e, null, v), napi_invalid_arg);
+            assert_eq!(napi_add_env_cleanup_hook(e, Some(hook), arg), napi_ok);
+            assert_eq!(
+                napi_add_env_cleanup_hook(e, Some(hook), arg),
+                napi_invalid_arg
+            );
+            // another argument is another hook
+            assert_eq!(napi_add_env_cleanup_hook(e, Some(hook), null), napi_ok);
+            assert_eq!(napi_remove_env_cleanup_hook(e, Some(hook), arg), napi_ok);
+            assert_eq!(napi_remove_env_cleanup_hook(e, Some(hook), null), napi_ok);
+            assert!(teardown_of(e).borrow().is_empty());
+        }
     });
 }

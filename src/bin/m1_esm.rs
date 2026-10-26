@@ -100,15 +100,11 @@ fn load_graph<'s>(
     let requests = module.get_module_requests();
     let dir = abs_path.parent().unwrap().to_path_buf();
     for i in 0..requests.length() {
-        let req = v8::Local::<v8::ModuleRequest>::try_from(requests.get(scope, i).unwrap()).unwrap();
+        let req =
+            v8::Local::<v8::ModuleRequest>::try_from(requests.get(scope, i).unwrap()).unwrap();
         let spec = req.get_specifier().to_rust_string_lossy(scope);
-        if let Some(dep) = resolve_spec(&spec, &dir) {
-            if load_graph(scope, &dep).is_none() {
-                return None;
-            }
-        } else {
-            return None;
-        }
+        let dep = resolve_spec(&spec, &dir)?;
+        load_graph(scope, &dep)?;
     }
 
     Some(module)
@@ -157,13 +153,16 @@ fn module_origin<'s>(
 /// Minimal `log(...)` binding so fixtures can emit, proving real execution.
 fn install_log(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     let key = v8::String::new(scope, "log").unwrap();
-    let tmpl = v8::FunctionTemplate::new(scope, |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
-        let mut parts = Vec::new();
-        for i in 0..args.length() {
-            parts.push(args.get(i).to_rust_string_lossy(scope));
-        }
-        println!("[js] {}", parts.join(" "));
-    });
+    let tmpl = v8::FunctionTemplate::new(
+        scope,
+        |scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+            let mut parts = Vec::new();
+            for i in 0..args.length() {
+                parts.push(args.get(i).to_rust_string_lossy(scope));
+            }
+            println!("[js] {}", parts.join(" "));
+        },
+    );
     let func = tmpl.get_function(scope).unwrap();
     global.set(scope, key.into(), func.into());
 }
@@ -230,7 +229,14 @@ fn main() {
         let expected = "9";
         println!("\nglobalThis.__result = {got}  (expected {expected})");
         let pass = got == expected;
-        println!("{}", if pass { "==> M1.1 ESM PASS" } else { "==> M1.1 ESM FAIL" });
+        println!(
+            "{}",
+            if pass {
+                "==> M1.1 ESM PASS"
+            } else {
+                "==> M1.1 ESM FAIL"
+            }
+        );
         exit_code = if pass { 0 } else { 1 };
 
         // clear registry while isolate still alive (Global drop needs it)
