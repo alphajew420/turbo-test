@@ -31,6 +31,17 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   trees from it without rewriting it. New CI job `npm-lockfile` runs `npm ci` under
   npm 10 and npm 11 so the lock cannot regress.
 
+### Security
+- esbuild runtime dependency `^0.21.0` (locked 0.21.5) -> `^0.28.2` (turbo-test#36):
+  esbuild <= 0.24.2 is affected by GHSA-67mh-4wv8-2f99 (its `serve` dev server lets any
+  website read responses). turbo-test only spawns esbuild for transforms and bundles and
+  never starts that server, but consumers' `npm audit` flagged the dependency. The
+  helpers esbuild emits that the runner patches (`__defProp`, `__toESM`) are unchanged in
+  0.28; every Rust test, `npm test` and fixtures/compat give the same results. The lock is
+  regenerated with npm 11; npm 10.9 and npm 11.20 `npm ci` install byte-identical trees
+  without rewriting it. `test/deps-advisories.test.mjs` keeps the declared, locked and
+  installed esbuild outside the affected range.
+
 ### Tests
 - Line-coverage gate for the Rust crate: 6.09% (361/5926) -> 99.87% of production
   lines, enforced at `fail-under = 99` by the new CI `coverage` job (cargo-tarpaulin,
