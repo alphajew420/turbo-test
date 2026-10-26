@@ -6,6 +6,7 @@ const a = require('./full.node');
 // napi_status codes as src/napi_host.rs defines them.
 const OK = 0;
 const INVALID_ARG = 1;
+const STRING_EXPECTED = 3;
 const GENERIC_FAILURE = 9;
 const PENDING_EXCEPTION = 10;
 
@@ -61,6 +62,28 @@ describe('values', () => {
     expect(a.strInfo('hello world')).toEqual([11, 'hello world', 'hel', 3, 'hello w', OK]);
     expect(a.strInfo('héllo')).toEqual([6, 'héllo', 'hé', 3, 'héllo', OK]);
     expect(a.strInfo('')).toEqual([0, '', '', 0, '', OK]);
+  });
+
+  test('napi_get_value_string_utf8 copies whole characters and never writes past bufsize', () => {
+    const FILL = 0xaa; // untouched buffer byte
+    // [status, copied, buffer bytes 0..=bufsize]
+    expect(a.strCut('aé', 3)).toEqual([OK, 1, 97, 0, FILL, FILL]);
+    expect(a.strCut('a€', 4)).toEqual([OK, 1, 97, 0, FILL, FILL, FILL]);
+    expect(a.strCut('a€', 5)).toEqual([OK, 4, 97, 0xe2, 0x82, 0xac, 0, FILL]);
+    expect(a.strCut('😀', 4)).toEqual([OK, 0, 0, FILL, FILL, FILL, FILL]);
+    expect(a.strCut('😀', 5)).toEqual([OK, 4, 0xf0, 0x9f, 0x98, 0x80, 0, FILL]);
+    // a lone surrogate is written as U+FFFD (and counted as its 3 bytes)
+    expect(a.strCut('\ud800', 4)).toEqual([OK, 3, 0xef, 0xbf, 0xbd, 0, FILL]);
+    expect(a.strStatus('a\ud800b')).toEqual([OK, 5]);
+    // bufsize 0 with a buffer: nothing is written, 0 bytes copied
+    expect(a.strCut('abc', 0)).toEqual([OK, 0, FILL]);
+  });
+
+  test('napi_get_value_string_utf8 of a non-string is napi_string_expected', () => {
+    expect(a.strStatus('abc')).toEqual([OK, 3]);
+    for (const v of [5, null, undefined, {}, Symbol('s'), new String('boxed')]) {
+      expect(a.strStatus(v)).toEqual([STRING_EXPECTED, 999]);
+    }
   });
 
   test('napi_coerce_to_string', () => {

@@ -123,6 +123,31 @@ static napi_value f_strinfo(napi_env env, napi_callback_info info) {
     return list(env, 6, it);
 }
 
+/* strStatus(v): a length query -> [status, length (999 when left untouched)]. */
+static napi_value f_str_status(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    size_t len = 999;
+    ST(napi_get_value_string_utf8(env, arg(env, &a, 0), NULL, 0, &len));
+    napi_value it[2] = {dbl(env, g_status), dbl(env, (double)len)};
+    return list(env, 2, it);
+}
+
+/* strCut(v, n): copy into a 0xaa-filled buffer with bufsize n (n < 16) ->
+ * [status, copied, the first n + 1 buffer bytes]: what was written, plus one byte past bufsize. */
+static napi_value f_str_cut(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    size_t n = (size_t)argd(env, &a, 1);
+    char b[16];
+    memset(b, 0xaa, sizeof b);
+    size_t r = 99;
+    ST(napi_get_value_string_utf8(env, arg(env, &a, 0), b, n, &r));
+    napi_value it[18];
+    it[0] = dbl(env, g_status);
+    it[1] = dbl(env, (double)r);
+    for (size_t i = 0; i <= n && i < 16; i++) it[2 + i] = dbl(env, (uint8_t)b[i]);
+    return list(env, 2 + (n < 16 ? n + 1 : 16), it);
+}
+
 static napi_value f_coerce(napi_env env, napi_callback_info info) {
     Args a = args(env, info);
     napi_value out = NULL;
@@ -632,6 +657,8 @@ static const struct {
     {"basics", f_basics},
     {"typeOf", f_typeof},
     {"strInfo", f_strinfo},
+    {"strStatus", f_str_status},
+    {"strCut", f_str_cut},
     {"coerce", f_coerce},
     {"num", f_num},
     {"setNamed", f_set_named},

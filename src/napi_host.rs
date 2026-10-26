@@ -20,6 +20,7 @@ use std::ptr::NonNull;
 pub type napi_status = i32;
 pub const napi_ok: napi_status = 0;
 pub const napi_invalid_arg: napi_status = 1;
+pub const napi_string_expected: napi_status = 3;
 pub const napi_generic_failure: napi_status = 9;
 pub const napi_pending_exception: napi_status = 10;
 
@@ -280,17 +281,25 @@ pub unsafe extern "C" fn napi_get_value_string_utf8(
     result: *mut usize,
 ) -> napi_status {
     let s = scope(env);
-    let str_val = to_local(v).to_rust_string_lossy(s);
-    let bytes = str_val.as_bytes();
+    let Ok(str_val) = v8::Local::<v8::String>::try_from(to_local(v)) else {
+        return napi_string_expected;
+    };
     if buf.is_null() {
         if !result.is_null() {
-            *result = bytes.len();
+            *result = str_val.utf8_length(s);
         }
         return napi_ok;
     }
-    let n = bytes.len().min(bufsize.saturating_sub(1));
-    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
-    *(buf.add(n)) = 0;
+    // As Node: bufsize 0 writes nothing; otherwise at most bufsize - 1 bytes of whole UTF-8
+    // characters (never a split sequence; lone surrogates become U+FFFD) plus the NUL.
+    let n = if bufsize == 0 {
+        0
+    } else {
+        let dst = std::slice::from_raw_parts_mut(buf as *mut u8, bufsize - 1);
+        let n = str_val.write_utf8_v2(s, dst, v8::WriteFlags::kReplaceInvalidUtf8, None);
+        *buf.add(n) = 0;
+        n
+    };
     if !result.is_null() {
         *result = n;
     }
