@@ -371,8 +371,8 @@ if (typeof globalThis.URL === 'undefined') {
   globalThis.URL = class URL {
     constructor(url, base) {
       url = String(url);
-      if (base && !/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
-        url = String(base).replace(/\/+$/, '') + '/' + url.replace(/^\/+/, '');
+      if (base !== undefined && !/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+        url = URL._resolve(url, new globalThis.URL(String(base)));
       }
       // Real URL throws on input without a valid scheme (e.g. "not a url"). Matching this is
       // required for validators built on `new URL()` (e.g. zod's .url()).
@@ -390,7 +390,7 @@ if (typeof globalThis.URL === 'undefined') {
         this.host = m[2] || '';
         this.hostname = (m[2] || '').split(':')[0];
         this.port = (m[2] || '').split(':')[1] || '';
-        this.pathname = m[3] || '/';
+        this.pathname = URL._removeDots(m[3] || '/');
         searchStr = m[4] || '';
         this.hash = m[5] || '';
         this.origin = this.protocol + '//' + this.host;
@@ -422,6 +422,42 @@ if (typeof globalThis.URL === 'undefined') {
     }
     set href(v) { const u = new globalThis.URL(v); this.protocol = u.protocol; this.host = u.host; this.hostname = u.hostname; this.port = u.port; this.pathname = u.pathname; this.hash = u.hash; this.origin = u.origin; this._hierarchical = u._hierarchical; this._sp = u._sp; }
     toString() { return this.href; }
+    // WHATWG relative-reference resolution against a parsed base (Node's `new URL(rel, base)`):
+    // scheme-relative `//h/p`, absolute path `/p`, query-only `?q`, fragment-only `#f`, empty,
+    // and a relative path merged with the base path's directory. Dot segments are removed by
+    // the caller's pathname normalization. An opaque base (`mailto:x`) only takes a fragment.
+    static _resolve(rel, b) {
+      const auth = b.protocol + '//' + b.host;
+      const noHash = b.href.replace(/#.*$/, '');
+      if (!b._hierarchical) {
+        if (rel.startsWith('#')) return noHash + rel;
+        throw new TypeError('Invalid URL: ' + rel);
+      }
+      if (rel.startsWith('//')) return b.protocol + rel;
+      if (rel.startsWith('/')) return auth + rel;
+      if (rel === '') return noHash;
+      if (rel.startsWith('#')) return noHash + rel;
+      if (rel.startsWith('?')) return auth + b.pathname + rel;
+      return auth + b.pathname.replace(/[^/]*$/, '') + rel;
+    }
+    // RFC 3986 / WHATWG dot-segment removal on a path (`/a/./b/../c` -> `/a/c`).
+    static _removeDots(path) {
+      const out = [];
+      const segs = path.split('/');
+      for (let i = 1; i < segs.length; i++) {
+        const seg = segs[i];
+        const last = i === segs.length - 1;
+        if (seg === '..' || seg.toLowerCase() === '%2e%2e') {
+          if (out.length) out.pop();
+          if (last) out.push('');
+        } else if (seg === '.' || seg.toLowerCase() === '%2e') {
+          if (last) out.push('');
+        } else {
+          out.push(seg);
+        }
+      }
+      return '/' + out.join('/');
+    }
     static createObjectURL() { return 'blob:mock'; }
     static revokeObjectURL() {}
     static parse(url, base) { try { return new globalThis.URL(url, base); } catch { return null; } }
