@@ -49,8 +49,11 @@ required APIs are available to registry consumers.
 
 ## Gates and final merge tag
 
-Run the complete locked Rust tests, the Node compatibility/type tests, and all
-nine native DOM compatibility fixtures used by `.github/workflows/ci.yml`. Check
+Run `npm ci` (npm 10 and npm 11 must both install the committed lock unchanged; CI job
+`npm-lockfile`), the complete locked Rust tests, the Node compatibility/type tests, all
+nine native DOM compatibility fixtures used by `.github/workflows/ci.yml`, and the
+line-coverage gate (`cargo tarpaulin`, `fail-under = 99` in tarpaulin.toml; CI job
+`coverage`). Check
 formatting for changed Rust sources and report any additional Clippy checks with
 their actual outcomes rather than relabeling an older failing baseline. The binding's
 Chrome-parity tests (including the explicit unknown-pseudo CSSOM admission ignore

@@ -8,7 +8,7 @@ test/`vi` API surface. Goal: be a true drop-in for `vitest run` in CI.
   section below whenever a gap is closed.
 
 Sources of truth in this repo:
-- CLI arg parser: `src/bin/turbo_test.rs` (`main`, the `while let Some(a) = args.next()` match).
+- CLI arg parser: `src/cli.rs` (`parse_args`, the `while let Some(a) = args.next()` match; `src/cli.rs` is a thin wrapper).
 - Launcher / config reading / file discovery: `cli.js`.
 - Test + `vi`/`expect` API + runner loop: `src/runtime.js`.
 - CLI-level compat tests: `test/*.mjs` (run via `npm test` → `node --test`).
@@ -56,10 +56,10 @@ subcommand layer** — `argv[0]` that isn't a flag is treated as a test-file pat
 ### Missing / partial — prioritized
 | flag | status | Priority | Notes |
 |---|---|---|---|
-| `-t, --testNamePattern <re>` | ✅ | **P0 — DONE** | Filter tests by name (regex, unanchored, case-sensitive). `turbo_test.rs` → `TURBO_TEST_NAME_PATTERN` env → `__TT_NAME_PATTERN` global → `runtime.js` `runSuite` filter. `cli.js` forwards the value. |
+| `-t, --testNamePattern <re>` | ✅ | **P0 — DONE** | Filter tests by name (regex, unanchored, case-sensitive). `cli.rs` → `TURBO_TEST_NAME_PATTERN` env → `__TT_NAME_PATTERN` global → `runtime.js` `runSuite` filter. `cli.js` forwards the value. |
 | `--run` | ✅ | **P0 — DONE** | `run`/`watch`/`dev` leading subcommand token stripped in `cli.js`; `--run` (and other unknown flags) accepted-and-ignored. |
 | `--passWithNoTests` | ✅ | **P0 — DONE** | `cli.js`: exit 0 instead of 1 when discovery finds no files. |
-| `--bail <n>` | 🟡 | **P1 — DONE** | Stop after N **failed tests** total. `turbo_test.rs`: shared `Arc<AtomicUsize>` failure counter incremented after each file; workers stop pulling new files once it reaches N. **File-granular**: a worker already mid-file finishes that file, so the final failed count can exceed N (esp. with multiple workers); partial results are still reported. `cli.js` forwards the value. |
+| `--bail <n>` | 🟡 | **P1 — DONE** | Stop after N **failed tests** total. `cli.rs`: shared `Arc<AtomicUsize>` failure counter incremented after each file; workers stop pulling new files once it reaches N. **File-granular**: a worker already mid-file finishes that file, so the final failed count can exceed N (esp. with multiple workers); partial results are still reported. `cli.js` forwards the value. |
 | `--reporter junit` / `--outputFile` | ✅ | **P1 — DONE** | JUnit XML (per-testcase) + `--outputFile` for json/junit/tap. See §3. |
 | `--reporter` (verbose/dot/tap/default) | ✅ | **P1/P2 — DONE** | `tap`/`verbose`/`dot`/`default` implemented; unknown values (`html`, `tap-flat`, …) accepted-and-ignored → text fallback. See §3. |
 | `-c, --config <path>` | ✅ | **P1 — DONE** | Forces that exact config file for include/exclude/coverage/`environment` reading instead of the walk-up search. `cli.js` `findConfig`/`vitestPatterns`/`vitestCoverage` take a `forced` arg; the file's dir becomes the discovery root for relative globs. Still a string-scan (no TS eval — same limits as auto-discovery). |
@@ -68,13 +68,13 @@ subcommand layer** — `argv[0]` that isn't a flag is treated as a test-file pat
 | `--globals` / `--no-globals` | 🟡 | **P2 — accepted, gap documented** | Both spellings accepted (`cli.js`). Globals (`describe`/`it`/`expect`) are **always on** and injected unconditionally; `--no-globals` is a **no-op** — it CANNOT be honored because there is no `vitest` module-export shim to `import { describe } from 'vitest'` from. Honoring it would require shipping such a shim. |
 | `--isolate` / `--no-isolate` | ✅ | **P1 — DONE** | CLI flag added: `cli.js` sets `--no-isolate` → `TURBO_REUSE_ISOLATE=1` (reuse one isolate per worker), `--isolate` → `TURBO_NO_REUSE=1` (force fresh) in the env before spawning the binary (which inherits it). Config `isolate:false` autodetect still applies when neither flag is passed. |
 | `--pool <threads\|forks\|vmThreads>` | ⏸ | — | turbo-test has its own native worker model; flag is meaningless but should be accepted-and-ignored. |
-| `--maxWorkers` / `--minWorkers` | ✅ | **P2 — DONE** | `--maxWorkers N` aliases `--jobs` (`turbo_test.rs`). `--minWorkers` is accepted-and-ignored — turbo-test has no minimum-worker concept (work-stealing scales down naturally). `cli.js` forwards both values. |
+| `--maxWorkers` / `--minWorkers` | ✅ | **P2 — DONE** | `--maxWorkers N` aliases `--jobs` (`cli.rs`). `--minWorkers` is accepted-and-ignored — turbo-test has no minimum-worker concept (work-stealing scales down naturally). `cli.js` forwards both values. |
 | `--maxConcurrency <n>` | ❌ | P3 | Within-file concurrency; turbo-test runs a file's tests sequentially anyway. |
-| `-u, --update` | ✅ | **P1 — DONE** | Snapshot update. `turbo_test.rs` → `TURBO_UPDATE_SNAPSHOTS` env → `globalThis.__TT_UPDATE_SNAPSHOTS`; `toMatchSnapshot` writes missing/changed keys instead of failing. Forwarded as a boolean flag by `cli.js`. Inline-snapshot auto-write is **not** supported (see §4). |
-| `--retry <n>` | ✅ | **P2 — DONE** | Global default retry. `turbo_test.rs` → `TURBO_TEST_RETRY` env → `__TT_DEFAULT_RETRY` global → `runtime.js` `runSuite` (per-test `{ retry }` still wins). `cli.js` forwards the value. |
-| `--silent` | ✅ | **P2 — DONE** | `turbo_test.rs` → `TURBO_TEST_SILENT` → `__TT_SILENT` global; `runtime.js` console.log/info/warn/error become no-ops (checked at call time, since the global is injected after the runtime module is snapshot-evaluated). |
+| `-u, --update` | ✅ | **P1 — DONE** | Snapshot update. `cli.rs` → `TURBO_UPDATE_SNAPSHOTS` env → `globalThis.__TT_UPDATE_SNAPSHOTS`; `toMatchSnapshot` writes missing/changed keys instead of failing. Forwarded as a boolean flag by `cli.js`. Inline-snapshot auto-write is **not** supported (see §4). |
+| `--retry <n>` | ✅ | **P2 — DONE** | Global default retry. `cli.rs` → `TURBO_TEST_RETRY` env → `__TT_DEFAULT_RETRY` global → `runtime.js` `runSuite` (per-test `{ retry }` still wins). `cli.js` forwards the value. |
+| `--silent` | ✅ | **P2 — DONE** | `cli.rs` → `TURBO_TEST_SILENT` → `__TT_SILENT` global; `runtime.js` console.log/info/warn/error become no-ops (checked at call time, since the global is injected after the runtime module is snapshot-evaluated). |
 | `--changed [since]` | 🟡 | **P2 — DONE (direct filter)** | `cli.js` `gitChanged()`: `git diff --name-only [since]` + `--cached` + untracked (`ls-files --others`), intersected with discovered test files (absolute paths). `since` arg is optional (working-tree vs HEAD/index by default). When nothing changed → exit 0 (running nothing is not a failure). When git is unavailable / not a repo → runs all. **Gap:** this is a direct changed-*file* filter, NOT an affected-graph — a test that imports a changed *source* file but is itself unchanged is NOT re-run (no import graph built; the `m5-affected` graph idea is still unwired). |
-| `--allowOnly` / `--no-allowOnly` | 🟡 | **P3 — DONE** | Both flags accepted (`turbo_test.rs`). Default allows `.only`. `--no-allowOnly` → `TURBO_TEST_FORBID_ONLY` → `__TT_FORBID_ONLY`; `runtime.js` `__tt.run()` records a failure (flipping the exit code) for any **file** that collected a `.only`. **Partial**: per-file granularity — the failure is attributed to the file, and the file's `.only` tests still execute (vitest collect-time errors before running); the run exits non-zero with a clear message, which is the CI-relevant behavior. |
+| `--allowOnly` / `--no-allowOnly` | 🟡 | **P3 — DONE** | Both flags accepted (`cli.rs`). Default allows `.only`. `--no-allowOnly` → `TURBO_TEST_FORBID_ONLY` → `__TT_FORBID_ONLY`; `runtime.js` `__tt.run()` records a failure (flipping the exit code) for any **file** that collected a `.only`. **Partial**: per-file granularity — the failure is attributed to the file, and the file's `.only` tests still execute (vitest collect-time errors before running); the run exits non-zero with a clear message, which is the CI-relevant behavior. |
 | `--watch` / `-w` | ❌ | ⏸ | No watcher. |
 | `--ui` | ❌ | ⏸ | No browser UI. |
 | `--browser` | ❌ | ⏸ | No browser-mode. |
@@ -88,7 +88,7 @@ subcommand layer** — `argv[0]` that isn't a flag is treated as a test-file pat
 | `--version` / `-v`, `--help` / `-h` | ❌ | P2 | No version/help output; unknown flags currently mis-handled (see below). |
 
 ### Robustness gap — unknown flags become phantom files — ✅ FIXED
-Previously `src/bin/turbo_test.rs`'s `_ =>` arm did `files.push(PathBuf::from(a))` for **any**
+Previously the CLI arg loop's (then `src/cli.rs`, now `src/cli.rs`) `_ =>` arm did `files.push(PathBuf::from(a))` for **any**
 unrecognized token — including `--something` — so an unmodeled vitest flag (e.g. `--silent`,
 `--pool=forks`) reached the runner as a hard **load-error** and flipped the exit code. Now a new
 `other if other.starts_with('-')` arm warns + ignores unknown flags. **Known limitation:** an
@@ -103,13 +103,13 @@ for unmodeled flags. Covered by `test/cli-compat.test.mjs`.
 | capability | status | Notes |
 |---|---|---|
 | default text (`PASS/FAIL file (n passed, n failed)` + summary line) | ✅ | turbo-test's own format, not byte-identical to vitest's. `--reporter default` selects it. |
-| `--reporter json` | 🟡 | Emits `{numTotalTests,numPassedTests,…,testResults[]}` (file-level, not per-assertion). To **stdout** (summary line moved to stderr to keep stdout clean) or to `--outputFile`. `testResults[]` is per-FILE counts, not per-test `assertionResults[]` like vitest. **Where:** `src/bin/turbo_test.rs` `Reporter::Json`. |
-| `--reporter junit` + `--outputFile` | ✅ | JUnit XML: `<testsuites tests= failures= errors=>` → one `<testsuite>` per file → one `<testcase name="describe > it" classname=file time=>` per test, with `<failure message=…/>` on failures. Names/messages XML-escaped. A file that fails to LOAD emits one synthetic `<testcase>` with `<error>`. Skipped tests omitted from `<testcase>` list. **Where:** `src/bin/turbo_test.rs` `Reporter::Junit`; per-test list from `TestReport.tests` (`runner.rs`) ← `summary.tests[]` (`runtime.js runSuite`). **Gap:** no `<system-out>`/`<properties>`; `time` is wall-clock `Date.now()` (ms-granular, can read `0.000` for sub-ms tests; affected by `vi.setSystemTime`). |
+| `--reporter json` | 🟡 | Emits `{numTotalTests,numPassedTests,…,testResults[]}` (file-level, not per-assertion). To **stdout** (summary line moved to stderr to keep stdout clean) or to `--outputFile`. `testResults[]` is per-FILE counts, not per-test `assertionResults[]` like vitest. **Where:** `src/cli.rs` `render_json`. |
+| `--reporter junit` + `--outputFile` | ✅ | JUnit XML: `<testsuites tests= failures= errors=>` → one `<testsuite>` per file → one `<testcase name="describe > it" classname=file time=>` per test, with `<failure message=…/>` on failures. Names/messages XML-escaped. A file that fails to LOAD emits one synthetic `<testcase>` with `<error>`. Skipped tests omitted from `<testcase>` list. **Where:** `src/cli.rs` `render_junit`; per-test list from `TestReport.tests` (`runner.rs`) ← `summary.tests[]` (`runtime.js runSuite`). **Gap:** no `<system-out>`/`<properties>`; `time` is wall-clock `Date.now()` (ms-granular, can read `0.000` for sub-ms tests; affected by `vi.setSystemTime`). |
 | `--reporter tap` | ✅ | TAP v13: `TAP version 13`, flat `1..N` plan over all tests, `ok N - name` / `not ok N - name`, `# SKIP` directive, YAML `message:` diagnostic block on failure. **Where:** `Reporter::Tap`. **Gap:** flat (no nested subtests); message newlines flattened to spaces. |
 | `--reporter verbose` | ✅ | Per-file PASS/FAIL line + one `✓/✗/- name (Nms)` line per test. To stdout. **Where:** `Reporter::Verbose`. |
 | `--reporter dot` | ✅ | One char per FILE (`.` pass / `x` fail / `!` load-error), not per-test (vitest is per-test). **Where:** `Reporter::Dot`. Documented divergence. |
 | `--reporter html` / `tap-flat` / `hanging-process` / `basic` / unknown | 🟡 | Accepted-and-ignored → falls back to the default text reporter, never errors. |
-| `--outputFile[.<reporter>] <path>` | 🟡 | `--outputFile <path>` writes the active artifact reporter (json/junit/tap) to disk; for text/dot/verbose it writes the plain PASS/FAIL lines. The vitest per-reporter dotted form `--outputFile.junit=…` (multi-reporter fan-out) is **not** parsed. **Where:** `src/bin/turbo_test.rs` `--outputFile` arm; `cli.js` value-flag regex. |
+| `--outputFile[.<reporter>] <path>` | 🟡 | `--outputFile <path>` writes the active artifact reporter (json/junit/tap) to disk; for text/dot/verbose it writes the plain PASS/FAIL lines. The vitest per-reporter dotted form `--outputFile.junit=…` (multi-reporter fan-out) is **not** parsed. **Where:** `src/cli.rs` `--outputFile` arm; `cli.js` value-flag regex. |
 | dotted flags (`--coverage.reporter`, `--reporter.0`) | ❌ | turbo-test uses flat `--coverage-*`; vitest's dotted form unrecognized. |
 
 ---
@@ -191,7 +191,7 @@ All four are locked by `test/cli-compat.test.mjs` (`npm test`).
   `verbose`, `dot`, `default`, `json`-to-file via `--outputFile`. Unknown reporter values fall back
   to text (never error). Extended `TestReport`/`summary` with a per-test list
   (`tests[] = {name,status,duration_ms,message}`: `runtime.js runSuite` → `runner.rs` parse →
-  `turbo_test.rs` reporters) — passing test names are now retained. Added
+  `cli.rs` reporters) — passing test names are now retained. Added
   `test/compat-reporters.test.mjs` + `fixtures/compat/mixed.test.ts` (pass+fail mix) and the
   `fixtures/compat/empty/` dir the existing `--passWithNoTests` test needs. `cli.js` value-flag
   regex now forwards `--outputFile`. **Gaps:** dotted per-reporter `--outputFile.junit=` fan-out

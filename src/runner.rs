@@ -3954,7 +3954,7 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
         }
     }
     // Execution-control knobs from the CLI, plumbed to the runtime the same way as the name
-    // pattern: env (set by turbo_test.rs) → global the runtime reads. All optional.
+    // pattern: env (set by cli.rs) → global the runtime reads. All optional.
     //   --testTimeout → __TT_DEFAULT_TIMEOUT (ms), --retry → __TT_DEFAULT_RETRY,
     //   --silent → __TT_SILENT, --no-allowOnly → __TT_FORBID_ONLY.
     let mut prelude = String::new();

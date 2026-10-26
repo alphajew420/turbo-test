@@ -14,7 +14,7 @@
 //!   - prune file args that no longer exist.
 //!
 //! `prepare()` returns the effective argument vector — the runner-side flags it did NOT consume,
-//! followed by the resolved absolute test-file paths — which `turbo_test.rs`'s existing flag loop
+//! followed by the resolved absolute test-file paths — which `cli::parse_args`' flag loop
 //! then parses unchanged. It may `std::process::exit` directly for the terminal cases
 //! (`--passWithNoTests`, no files found, `--changed` with nothing changed), exactly as cli.js did.
 
@@ -1066,7 +1066,7 @@ pub struct Plan {
 }
 
 /// Port of cli.js `main()` up to the point of spawning the native binary. Returns the effective
-/// argv (forwarded runner flags + resolved absolute test files) for `turbo_test.rs` to parse, or
+/// argv (forwarded runner flags + resolved absolute test files) for `cli::parse_args` to parse, or
 /// exits the process for the terminal cases. `raw` is argv WITHOUT the program name.
 pub fn prepare(raw: Vec<String>) -> Vec<String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

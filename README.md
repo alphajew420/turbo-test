@@ -375,6 +375,24 @@ and bare literals.
 `node >= 18`. Prebuilt binaries ship for macOS (arm64/x64), Linux (x64/arm64-gnu), and Windows x64.
 Other platforms: build from source with a Rust toolchain (`npm run build`).
 
+## Developing
+
+`npm ci` works with npm 10 and npm 11 (CI installs the committed `package-lock.json` with
+both and fails if either rewrites it). Run it before the Rust tests: the CLI integration
+tests in `tests/` link the repo's esbuild/typescript installs into throwaway fixture
+projects and spawn the real `turbo-test` binary against them.
+
+```sh
+npm ci
+cargo test --locked          # unit + CLI integration tests
+npm test                     # node --test test/*.mjs (CLI compat + tsc type checks)
+cargo tarpaulin              # line-coverage gate (tarpaulin.toml), fails below 99%
+```
+
+The Rust crate is gated at **>= 99% line coverage** (cargo-tarpaulin, Llvm engine; CI job
+`coverage`). Subprocess runs of the instrumented binaries are attributed through
+`tarpaulin.toml`'s `objects`; the `#[path]` unit-test modules are excluded from the figure.
+
 ## License
 
 MIT
