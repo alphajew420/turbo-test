@@ -6,7 +6,8 @@
 //!
 //!   - imports → `var import_<src> = require("src")` (or `__toESM(require(...))` when the import
 //!     binds a default or namespace), references to named/default locals rewritten to
-//!     `import_<src>.<name>` so bindings stay LIVE (spyOn / vi.mock observe writes);
+//!     `import_<src>.<name>` (`import_<src>["a-b"]` for a non-identifier string name) so bindings
+//!     stay LIVE (spyOn / vi.mock observe writes);
 //!   - exports → an `__export(__tt_exports, { name: () => binding, ... })` getter block +
 //!     `module.exports = __toCommonJS(__tt_exports)`, `export *` via `__reExport`.
 //!
@@ -163,8 +164,19 @@ impl<'a> EmitState<'a, '_> {
         self.imports.get(&sym)
     }
 
+    /// `var.prop`, or `var["prop"]` when `prop` (a string-named import such as `"a-b"`) is not an
+    /// identifier name.
     fn build_member(&self, access: &Access) -> Expression<'a> {
         let obj = self.ast.expression_identifier(SPAN, self.ast.ident(&access.var));
+        if !is_plain_ident(&access.prop) {
+            let key = self
+                .ast
+                .expression_string_literal(SPAN, self.ast.str(&access.prop), None);
+            return Expression::ComputedMemberExpression(
+                self.ast
+                    .alloc_computed_member_expression(SPAN, obj, key, false),
+            );
+        }
         Expression::StaticMemberExpression(self.ast.alloc_static_member_expression(
             SPAN,
             obj,
@@ -535,7 +547,7 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
 
     for (exported, local, sym) in deferred_named {
         let value_js = match sym.and_then(|s| imports.get(&s)) {
-            Some(access) => format!("{}.{}", access.var, access.prop),
+            Some(access) => member_js(&access.var, &access.prop),
             None => local,
         };
         exports.push(ExportEntry { name: exported, value_js });
@@ -696,7 +708,10 @@ fn collect_export_named<'a>(
         for spec in &decl.specifiers {
             let exported = module_export_name(&spec.exported);
             let local = module_export_name(&spec.local);
-            exports.push(ExportEntry { name: exported, value_js: format!("{var}.{local}") });
+            exports.push(ExportEntry {
+                name: exported,
+                value_js: member_js(&var, &local),
+            });
         }
         return true;
     }
@@ -850,14 +865,33 @@ fn assemble(requires: &[String], re_exports: &[String], exports: &[ExportEntry],
     out
 }
 
+/// Whether `name` can be written bare as an object key or after `.` (an ASCII identifier name;
+/// reserved words are fine there). Conservative: non-ASCII identifiers are quoted, still valid.
+fn is_plain_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// An object key for an export name: bare if an identifier, else a JS string literal (a JSON
+/// string is one; ES module export names are well-formed Unicode, so no lone surrogates).
 pub(crate) fn quote_key(name: &str) -> String {
-    let ok = !name.is_empty()
-        && name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_' || c == '$').unwrap_or(false)
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
-    if ok {
+    if is_plain_ident(name) {
         name.to_string()
     } else {
-        format!("\"{}\"", name.replace('"', "\\\""))
+        json_string(name)
+    }
+}
+
+/// Source text reading property `prop` of `obj`: `obj.prop`, or `obj["a-b"]` for a string export
+/// name that isn't an identifier (`obj.a-b` would parse as `obj.a - b`).
+fn member_js(obj: &str, prop: &str) -> String {
+    if is_plain_ident(prop) {
+        format!("{obj}.{prop}")
+    } else {
+        format!("{obj}[{}]", json_string(prop))
     }
 }
 

@@ -187,3 +187,48 @@ fn native_failures_fall_back_to_esbuild_unless_strict() {
     assert!(r.stderr.contains(&app_err), "{}", r.all());
     assert!(!r.stderr.contains(&dep_err), "{}", r.all());
 }
+
+#[test]
+fn non_identifier_string_names_import_and_reexport() {
+    // turbo-test#35 item 2: the native emitter wrote `import_s.a-b()` (= `import_s.a - b()`,
+    // "b is not defined") for string-named imports/re-exports that aren't identifiers.
+    let p = mr_project("xform-strnames");
+    let s = "const f = () => 7;\nexport { f as \"a-b\", f as 'it\"s\\\\' };\n";
+    p.file("s.js", s);
+    p.file("re.js", "export { \"a-b\" as c } from \"./s.js\";\n");
+    p.file(
+        "star.js",
+        "export * as \"n-s\" from \"./s.js\";\nimport { \"a-b\" as f } from \"./s.js\";\n\
+         export { f as \"q-r\" };\n",
+    );
+    p.file(
+        "node_modules/sdep/package.json",
+        "{\"name\":\"sdep\",\"main\":\"index.js\"}",
+    );
+    p.file("node_modules/sdep/s.js", s);
+    p.file(
+        "node_modules/sdep/index.js",
+        "import { \"a-b\" as ab } from './s.js';\nexport { ab as \"x-y\" };\n\
+         export { \"a-b\" as viaRe } from './s.js';\nexport * as \"ns-x\" from './s.js';\n",
+    );
+    p.file(
+        "a.test.js",
+        "import { \"a-b\" as ab, 'it\"s\\\\' as its } from './s.js';\nimport { c } from './re.js';\n\
+         import { \"n-s\" as ns, \"q-r\" as qr } from './star.js';\n\
+         import { \"x-y\" as xy, viaRe, \"ns-x\" as depNs } from 'sdep';\n\
+         test('string-named import', () => { expect(ab()).toBe(7); expect(its()).toBe(7); });\n\
+         test('string-named re-export', () => { expect(c()).toBe(7); });\n\
+         test('export * as / local re-export', () => { expect(ns['a-b']()).toBe(7); expect(qr()).toBe(7); });\n\
+         test('bundled dep', () => { expect(xy()).toBe(7); expect(viaRe()).toBe(7); expect(depNs['a-b']()).toBe(7); });\n",
+    );
+    // native strict (no esbuild fallback can mask the emitter) and the esbuild baseline agree
+    for env in [
+        &[("TURBO_NATIVE_CJS_STRICT", "1")][..],
+        &[("TURBO_NATIVE_CJS", "0"), ("TURBO_NATIVE_DEPS", "0")][..],
+    ] {
+        let r = turbo_test(&p.dir, &["--reporter", "json"], env);
+        assert_eq!(r.code, Some(0), "{env:?}: {}", r.all());
+        let j = json_report(&r);
+        assert_eq!(j["numPassedTests"], 4, "{env:?}: {}", r.all());
+    }
+}

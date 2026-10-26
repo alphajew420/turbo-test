@@ -87,6 +87,8 @@ fn quote_key_quotes_only_non_identifiers() {
     assert_eq!(quote_key("1a"), "\"1a\"");
     assert_eq!(quote_key("a-b"), "\"a-b\"");
     assert_eq!(quote_key("x\"y"), "\"x\\\"y\"");
+    // backslashes and line terminators are escaped too, so the key reads back the same name
+    assert_eq!(quote_key("x\\y\nz"), r#""x\\y\nz""#);
 }
 
 #[test]
@@ -147,6 +149,26 @@ fn default_plus_namespace_import_binds_the_namespace_local() {
 fn string_named_import_specifier_reads_that_export() {
     let o = e("import { \"x\" as y } from \"s\"; y();");
     assert!(o.contains("import_s_1.x()"), "{o}");
+}
+
+#[test]
+fn non_identifier_string_import_names_use_computed_access() {
+    // turbo-test#35 item 2: `import_s_1.a-b()` parsed as `import_s_1.a - b()`.
+    let o = e(
+        r#"import { "a-b" as ab, 'x"y\\z' as q, "1st" as first } from "s"; ab(q, first, { ab });"#,
+    );
+    assert!(
+        o.contains(r#"import_s_1["a-b"](import_s_1["x\"y\\z"], import_s_1["1st"], { ab: import_s_1["a-b"] })"#),
+        "{o}"
+    );
+    assert!(!o.contains("import_s_1.a-b"), "{o}");
+}
+
+#[test]
+fn local_reexport_of_a_non_identifier_import_uses_computed_access() {
+    let o = e(r#"import { "a-b" as ab } from "s"; export { ab, ab as "c-d" };"#);
+    assert!(o.contains("  ab: () => import_s_1[\"a-b\"],\n"), "{o}");
+    assert!(o.contains("  \"c-d\": () => import_s_1[\"a-b\"],\n"), "{o}");
 }
 
 #[test]
@@ -286,6 +308,28 @@ fn reexport_from_with_string_names() {
     assert!(o.contains("var import_s_1000001 = require(\"s\");"), "{o}");
     assert!(o.contains("  b: () => import_s_1000001.a,\n"), "{o}");
     assert!(o.contains("  c: () => import_s_1000001.default,\n"), "{o}");
+}
+
+#[test]
+fn reexport_from_with_non_identifier_names_uses_computed_access() {
+    // turbo-test#35 item 2 repro B: `export { "a-b" as c } from "./s.js"`.
+    let o = e(r#"export { "a-b" as c, "d-e" as "f-g", 'q"\\' as h, x as "y-z" } from "s";"#);
+    assert!(o.contains("  c: () => import_s_1000001[\"a-b\"],\n"), "{o}");
+    assert!(
+        o.contains("  \"f-g\": () => import_s_1000001[\"d-e\"],\n"),
+        "{o}"
+    );
+    assert!(
+        o.contains(r#"  h: () => import_s_1000001["q\"\\"],"#),
+        "{o}"
+    );
+    assert!(o.contains("  \"y-z\": () => import_s_1000001.x,\n"), "{o}");
+}
+
+#[test]
+fn export_star_as_a_non_identifier_name_is_a_quoted_key() {
+    let o = e(r#"export * as "a-b" from "s";"#);
+    assert!(o.contains("  \"a-b\": () => import_s_1,\n"), "{o}");
 }
 
 #[test]
@@ -496,6 +540,16 @@ fn bundled_side_effect_imports() {
 
 #[test]
 fn bundled_esm_imports_read_the_exports_object() {
+    let p = parts(
+        r#"import { "a-b" as ab } from "./esm"; import { "c-d" as cd } from "./cjs"; ab(cd);"#,
+    );
+    assert!(
+        p.body_code
+            .contains(r#"e_exports["a-b"](import_cjs_2["c-d"])"#),
+        "{}",
+        p.body_code
+    );
+
     let p = parts(
         "import E, { e1 as one } from \"./esm\"; import * as ns from \"./esm2\"; E(one, ns.k);",
     );
