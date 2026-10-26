@@ -2680,11 +2680,12 @@ function describe(name, a, b) {
   current = suite;
   fn();
   current = prev;
+  return suite;
 }
 // A skipped/todo suite registers no tests, but it IS a collected task for vitest's "No test suite
 // found in file" check (see __tt.run) — count it so such a file is not reported as empty.
 describe.skip = (name, _fn) => { __tt.skippedSuites++; };
-describe.only = (name, fn) => { __tt.hasOnly = true; describe(name, fn); };
+describe.only = (name, a, b) => { __tt.hasOnly = true; describe(name, a, b).only = true; };
 describe.todo = (name) => { __tt.skippedSuites++; /* todo: collected as nothing to run */ };
 // describe.skipIf/runIf: when the condition skips the block, register NO tests (the whole suite
 // is absent) — mirrors it.skipIf/runIf semantics applied at the suite level.
@@ -2781,7 +2782,7 @@ async function runSuite(suite, ancestors, summary) {
     // -t/--testNamePattern: skip tests whose full `describe > it` name does not match the regex
     // (vitest: unanchored, case-sensitive, tested against the joined name).
     if (__tt.namePattern && !__tt.namePattern.test(label)) { summary.skipped++; continue; }
-    if (t.skip || (__tt.hasOnly && !t.only)) { summary.skipped++; summary.tests.push({ name: label, status: 'skipped', duration_ms: 0 }); continue; }
+    if (t.skip || t.notOnly) { summary.skipped++; summary.tests.push({ name: label, status: 'skipped', duration_ms: 0 }); continue; }
     // retry: per-test `{ retry }` wins; else the global default (--retry → __TT_DEFAULT_RETRY).
     const retry = (t.retry != null && t.retry > 0)
       ? t.retry
@@ -2864,6 +2865,22 @@ async function runSuite(suite, ancestors, summary) {
   }
 }
 
+// `.only` (vitest `interpretTaskModes`): with a `.only` in the file, a task runs when it or an
+// enclosing suite is `.only` — except that inside a suite holding `.only` tasks only those run.
+// Every other test is marked `notOnly` (skipped) (turbo-test#65).
+function __someOnly(suite) {
+  return suite.tasks.some((t) => t.only || (t.suite && __someOnly(t)));
+}
+function __interpretOnly(suite, parentIsOnly) {
+  const suiteIsOnly = parentIsOnly || !!suite.only;
+  const hasSomeOnly = __someOnly(suite);
+  for (const t of suite.tasks) {
+    const include = hasSomeOnly ? !!t.only || (!!t.suite && __someOnly(t)) : suiteIsOnly || !!t.only;
+    if (t.suite) __interpretOnly(t, include);
+    else if (!include) t.notOnly = true;
+  }
+}
+
 globalThis.__tt = {
   hasOnly: false,
   // Skipped/todo describe blocks seen in this file (they register nothing in `root`).
@@ -2891,6 +2908,7 @@ globalThis.__tt = {
       summary.failed++;
       summary.failures.push('found `.only` test(s) but --allowOnly is disabled (--no-allowOnly)');
     }
+    if (this.hasOnly) __interpretOnly(root, false);
     await runSuite(root, [], summary);
     return summary;
   },

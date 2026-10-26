@@ -47,7 +47,6 @@ fn tasks_run_in_declaration_order() {
 }
 
 #[test]
-#[ignore = "turbo-test#65: fails until the fix"]
 fn only_runs_what_vitest_runs() {
     // turbo-test#65: `describe.only` skipped its own tests (only tests marked `.only` themselves
     // ran). Expected = vitest 4.1.12 (`interpretTaskModes`): a task runs when it or an enclosing

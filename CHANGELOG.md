@@ -65,6 +65,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - Tests and `describe` blocks run, and are reported, in declaration order (turbo-test#64): a
   block's own tests ran before its nested `describe`s, so a test declared after a `describe` ran
   before that block's tests.
+- `.only` runs what vitest runs (turbo-test#65): a `describe.only` block's tests ran nowhere —
+  every test not itself marked `.only` was skipped. Now a test runs when it or an enclosing
+  suite is `.only`, except that inside a suite holding `.only` tasks only those run.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain
