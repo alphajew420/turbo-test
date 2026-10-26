@@ -838,56 +838,28 @@ pub fn map_branches(file: &Path, ranges: &[(usize, usize, i64)]) {
         return;
     }
     let oranges = orig_ranges(&meta, ranges);
-    let count_at = |p: OrigPos| innermost(&oranges, p).map(|r| r.2);
-    // The innermost covered range CONTAINING `p` (start, end, count) — gives the enclosing block.
-    let block_of = |p: OrigPos| innermost(&oranges, p);
-    // The covered range with the SMALLEST start within `[lo, hi)` — used to find a consequent's
-    // own block even when its start does not map exactly onto the AST keyword position (so
-    // point-containment at the keyword would miss it and fall through to the parent count).
-    let first_range_in = |lo: (u32, u32), hi: (u32, u32)| -> Option<i64> {
-        oranges
-            .iter()
-            .filter(|(s, _, _)| *s >= lo && *s < hi)
-            .min_by_key(|(s, _, _)| *s)
-            .map(|(_, _, c)| *c)
-    };
+    let count_at = |p: OrigPos| innermost(&oranges, p).map(|r| r.2).unwrap_or(0).max(0) as u64;
     for (block, br) in meta.branches.iter().enumerate() {
         let block_id = block as u32;
         let line = br.decision.0 + 1; // 1-based source line of the decision
-        let block_count = count_at(br.decision).unwrap_or(0).max(0) as u64;
+        let block_count = count_at(br.decision);
         let reached = block_count > 0;
         if br.implicit_else && br.arms.len() == 2 {
-            // `if` with no `else`. arms[0] = consequent start, arms[1] = if-statement end (the
-            // implicit-else position). Derive then/else from V8's sub-ranges rather than a single
-            // point sample — robust to a braceless `if (c) return X;` consequent range that maps
-            // a column past the `return`/`throw` keyword.
-            let (then_taken, else_taken) =
-                if let Some(c) = first_range_in(br.arms[0], br.arms[1]) {
-                    // consequent has its own block (then taken sometimes-but-not-always): that
-                    // range's count IS the then-count; else = block − then.
-                    let t = c.max(0) as u64;
-                    (t, block_count.saturating_sub(t))
-                } else {
-                    // No distinct consequent range. Two cases, told apart by the continuation:
-                    //  - then ALWAYS taken → code after the `if` is unreachable → V8 emits a
-                    //    lower-count continuation range → else = that count (0), then = block.
-                    //  - then NEVER taken → continuation count == block (no distinct range) →
-                    //    then = 0, else = block.
-                    let block_end = block_of(br.decision).map(|(_, e, _)| e).unwrap_or((u32::MAX, 0));
-                    match first_range_in(br.arms[1], block_end) {
-                        Some(c) => {
-                            let e = c.max(0) as u64;
-                            (block_count.saturating_sub(e), e)
-                        }
-                        None => (0, block_count),
-                    }
-                };
+            // `if` with no `else`: arms[0] = consequent start; the implicit else has no code of
+            // its own, so its count is derived: else = (if-statement executions) − then.
+            // The then-count is sampled at the consequent like any other arm (as vitest's v8
+            // provider does). V8 keeps a consequent range only when its count differs from the
+            // enclosing range's: a never-run consequent keeps a 0-count range, but one that ALWAYS
+            // ran is dropped, so the enclosing count is then the then-count (then = block,
+            // else = 0). No continuation search is needed (or safe: the first range after the
+            // `if` may belong to a later nested function).
+            let then_taken = count_at(br.arms[0]);
+            let else_taken = block_count.saturating_sub(then_taken);
             record_branch(file, block_id, 0, line, reached, then_taken);
             record_branch(file, block_id, 1, line, reached, else_taken);
         } else {
             for (i, &arm) in br.arms.iter().enumerate() {
-                let taken = count_at(arm).unwrap_or(0).max(0) as u64;
-                record_branch(file, block_id, i as u32, line, reached, taken);
+                record_branch(file, block_id, i as u32, line, reached, count_at(arm));
             }
         }
     }

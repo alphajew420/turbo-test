@@ -735,43 +735,82 @@ function f(x, y) {
 
 #[test]
 fn map_branches_implicit_else_derives_counts_from_sub_ranges() {
-    let src = "function g(x) {\n  if (x) return 1;\n  return 2;\n}";
-    let ranges_for = |consequent: Option<i64>, continuation: Option<i64>| {
-        let mut r = vec![(at(src, "function", 0), WRAP.len() + src.len(), 5)];
-        if let Some(c) = consequent {
-            // a braceless consequent's range that maps a column past the keyword
-            r.push((at(src, "return 1", 1), at(src, "return 1", 9), c));
-        }
-        if let Some(c) = continuation {
-            r.push((at(src, "\n  return 2", 0), at_last(src, "}", 0), c));
-        }
-        r
-    };
-    let run = |name: &str, ranges: Vec<(usize, usize, i64)>| {
+    // V8's ranges for `g` called 5 times. V8 keeps a nested range only when its count differs from
+    // the enclosing range's: a consequent's when it ran sometimes or never (NOT always), the
+    // continuation after the `if` when the consequent returned. The then-count is the count at the
+    // consequent's start; else = (if-statement executions) − then.
+    let run = |name: &str, src: &str, ranges: Vec<(usize, usize, i64)>| {
         let p = vpath(name);
         register_meta(&p, &identity_wrapped(src), src);
         map_branches(&p, &ranges);
         let b = brs_of(&p);
         (b[&(0, 0)], b[&(0, 1)])
     };
-    // then sometimes taken: its own range's count is the then-count, else = block − then
+    let ret = "function g(x) {\n  if (x) return 1;\n  return 2;\n}";
+    let ret_ranges = |consequent: Option<i64>, continuation: Option<i64>| {
+        let mut r = vec![(at(ret, "function", 0), WRAP.len() + ret.len(), 5)];
+        if let Some(c) = consequent {
+            r.push((at(ret, "return 1", 0), at(ret, "return 1", 9), c));
+        }
+        if let Some(c) = continuation {
+            r.push((at(ret, "\n  return 2", 0), at_last(ret, "}", 0), c));
+        }
+        r
+    };
+    // then sometimes taken: its own range's count is the then-count
     assert_eq!(
-        run("ie-some.js", ranges_for(Some(2), None)),
-        ((2, true, 2), (2, true, 3))
+        run("ie-some.js", ret, ret_ranges(Some(3), Some(2))),
+        ((2, true, 3), (2, true, 2))
     );
-    // then always taken: the continuation after the `if` is a lower-count (0) range
+    // then always taken: no consequent range (the enclosing count is the then-count); the code
+    // after the `if` never ran
     assert_eq!(
-        run("ie-always.js", ranges_for(None, Some(0))),
+        run("ie-always.js", ret, ret_ranges(None, Some(0))),
         ((2, true, 5), (2, true, 0))
     );
-    // then never taken: no distinct sub-range at all
+    // then never taken: the consequent keeps its 0-count range, the continuation has none
     assert_eq!(
-        run("ie-never.js", ranges_for(None, None)),
+        run("ie-never.js", ret, ret_ranges(Some(0), None)),
         ((2, true, 0), (2, true, 5))
     );
+    // a consequent that falls through, then a nested function `h` that g returns (its callers
+    // call it any number of times)
+    let fall = "function g(x) {\n  if (x) {\n    x++;\n  }\n  const h = () => x;\n  return h;\n}";
+    let fall_ranges = |consequent: Option<i64>, h: Option<i64>| {
+        let mut r = vec![(at(fall, "function", 0), WRAP.len() + fall.len(), 5)];
+        if let Some(c) = consequent {
+            r.push((at(fall, "{\n    x++", 0), at(fall, "}\n  const", 1), c));
+        }
+        if let Some(c) = h {
+            r.push((at(fall, "() => x", 0), at(fall, "() => x", 7), c));
+        }
+        r
+    };
+    assert_eq!(
+        run("ie-fall-some.js", fall, fall_ranges(Some(3), Some(7))),
+        ((2, true, 3), (2, true, 2))
+    );
+    assert_eq!(
+        run("ie-fall-never.js", fall, fall_ranges(Some(0), Some(7))),
+        ((2, true, 0), (2, true, 5))
+    );
+    // turbo-test#40: always taken, so V8 emits no range besides the function's (and `h`'s). This
+    // was read as "then never taken" (then 0 / else 5), and a later nested function's range was
+    // taken for the continuation after the `if` (else = `h`'s count)
+    for (name, h) in [
+        ("ie-fall-always.js", None),
+        ("ie-fall-always-h-called.js", Some(3)),
+        ("ie-fall-always-h-uncalled.js", Some(0)),
+    ] {
+        assert_eq!(
+            run(name, fall, fall_ranges(None, h)),
+            ((2, true, 5), (2, true, 0)),
+            "{name}"
+        );
+    }
     // the decision itself never reached (no range covers it): not reached, nothing taken
     assert_eq!(
-        run("ie-unreached.js", vec![]),
+        run("ie-unreached.js", ret, vec![]),
         ((2, false, 0), (2, false, 0))
     );
 }

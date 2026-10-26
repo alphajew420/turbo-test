@@ -883,3 +883,101 @@ fn lines_inside_never_run_switch_cases_are_uncovered() {
     assert_eq!(summary_of(&j, &p.path("sw.js"), "lines"), (4, 6));
     assert_eq!(summary_of(&j, &p.path("sw.js"), "statements"), (2, 4));
 }
+
+/// turbo-test#40's repro: a braced `if` with no `else` whose consequent always runs.
+const I40_K: &str = "export function k(c) {\n  if (c) {\n    c++;\n  }\n  return c;\n}\n";
+/// More `if`-without-`else` shapes: an always-taken top-level `if`, one followed by a nested
+/// function, one in a loop, a braceless nested pair, an else-if chain, and a never-taken one.
+const I40_SHAPES: &str = "\
+const on = !globalThis.__off;
+if (on) {
+  globalThis.__seen = 1;
+}
+export function later(c) {
+  if (c) {
+    c++;
+  }
+  const twice = () => c * 2;
+  return twice();
+}
+export function loop(c) {
+  let n = 0;
+  for (let i = 0; i < 3; i++) {
+    if (c) n++;
+  }
+  return n;
+}
+export function nested(c, d) {
+  if (c)
+    if (d) c++;
+  return c;
+}
+export function chain(c) {
+  if (c === 1) {
+    c = 'a';
+  } else if (c === 2) {
+    c = 'b';
+  }
+  return c;
+}
+export function never(c) {
+  if (c) {
+    c++;
+  }
+  return c;
+}
+";
+const I40_TEST: &str = "\
+import { k } from './k.js';
+import { later, loop, nested, chain, never } from './shapes.js';
+test('k', () => { expect(k(1)).toBe(2); });
+test('shapes', () => {
+  expect(later(1)).toBe(4);
+  expect(loop(1)).toBe(3);
+  expect([nested(1, 1), nested(1, 0), nested(0, 1)]).toEqual([2, 1, 0]);
+  expect(chain(2)).toBe('b');
+  expect(never(0)).toBe(0);
+});
+";
+
+#[test]
+fn always_taken_if_without_else_counts_the_then_arm() {
+    let p = esbuild_project("cov-i40-always");
+    p.file("k.js", I40_K);
+    p.file("shapes.js", I40_SHAPES);
+    p.file("a.test.js", I40_TEST);
+    let r = turbo_test(
+        &p.dir,
+        &["--coverage", "--coverage-reporter", "lcov", "a.test.js"],
+        &[],
+    );
+    assert_ok(&r);
+    let lcov = read(&p, "coverage/lcov.info");
+    // V8 drops a consequent range whose count equals the enclosing one (it always ran): then=1
+    assert_eq!(
+        lines_with(&lcov_record(&lcov, &p.path("k.js")), "BRDA:"),
+        vec!["BRDA:2,0,0,1", "BRDA:2,0,1,0"]
+    );
+    // every value below is what vitest 4.1.12's v8 provider reports for the same files
+    assert_eq!(
+        lines_with(&lcov_record(&lcov, &p.path("shapes.js")), "BRDA:"),
+        vec![
+            "BRDA:2,0,0,1",
+            "BRDA:2,0,1,0", // top-level, always taken
+            "BRDA:6,1,0,1",
+            "BRDA:6,1,1,0", // always taken, a called arrow function after it
+            "BRDA:15,2,0,3",
+            "BRDA:15,2,1,0", // braceless, in a loop, taken on every iteration
+            "BRDA:20,3,0,2",
+            "BRDA:20,3,1,1", // outer braceless `if (c)`: twice of three
+            "BRDA:21,4,0,1",
+            "BRDA:21,4,1,1", // inner `if (d)`: once of two
+            "BRDA:25,5,0,0",
+            "BRDA:25,5,1,1", // `c === 1` false
+            "BRDA:27,6,0,1",
+            "BRDA:27,6,1,0", // `else if (c === 2)`: always taken when reached
+            "BRDA:33,7,0,0",
+            "BRDA:33,7,1,1", // never taken: V8 keeps its 0-count consequent range
+        ]
+    );
+}
