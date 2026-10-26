@@ -934,6 +934,46 @@ fn plan_discovers_and_strips_subcommands() {
     assert!(p.messages.is_empty());
 }
 
+/// vitest 4.1.12's "No test files found" message with the default include / exclude (`filter`:
+/// its `filter: …` line, or empty).
+fn no_test_files(code: i32, filter: &str) -> String {
+    format!(
+        "No test files found, exiting with code {code}\n\n{filter}include: **/*.{{test,spec}}.?(c|m)[jt]s?(x)\nexclude:  **/node_modules/**, **/.git/**"
+    )
+}
+
+/// turbo-test#59, as vitest 4.1.12: discovered files are named relative to the working
+/// directory, as filtered ones are; nothing to run prints vitest's lines (the filters, then
+/// the include and exclude in effect).
+#[test]
+#[ignore = "turbo-test#59: fails until the fix"]
+fn discovery_names_and_no_files_message_follow_vitest() {
+    let t = Tmp::new("plan-vitest-names");
+    t.file("src/u.ts", T);
+    let p = run_plan(&t, &[]);
+    assert_eq!(p.outcome, Err(1));
+    assert_eq!(p.messages, vec![no_test_files(1, "")]);
+    let p = run_plan(&t, &["--passWithNoTests"]);
+    assert_eq!(p.outcome, Err(0));
+    assert_eq!(p.messages, vec![no_test_files(0, "")]);
+    let p = run_plan(&t, &["foo", "bar"]);
+    assert_eq!(p.messages, vec![no_test_files(1, "filter: foo, bar\n")]);
+    // a config's include / exclude are the ones printed
+    let cfg = t.file(
+        "vitest.config.ts",
+        "export default { test: { include: ['src/**/*.check.ts', 'x/*.ts'], exclude: ['**/skip/**'] } }",
+    );
+    let p = run_plan(&t, &["foo"]);
+    assert_eq!(
+        p.messages,
+        vec!["No test files found, exiting with code 1\n\nfilter: foo\ninclude: src/**/*.check.ts, x/*.ts\nexclude:  **/skip/**"]
+    );
+    std::fs::remove_file(cfg).unwrap();
+    t.file("a.test.ts", T);
+    t.file("sub/b.spec.ts", T);
+    assert_eq!(argv(&run_plan(&t, &[])), vec!["a.test.ts", "sub/b.spec.ts"]);
+}
+
 #[test]
 fn plan_no_files_found() {
     let t = Tmp::new("plan-empty");

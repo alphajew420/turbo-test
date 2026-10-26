@@ -489,6 +489,29 @@ fn history_updates_only_files_that_ran() {
     assert_eq!((h["a"], h["b"], h["old"]), (1.0, 42.0, 2.0));
 }
 
+/// turbo-test#59: the launcher names files relative to the working directory; the JSON report
+/// still names them by absolute path (vitest's `filepath`) and the duration history (shared by
+/// runs from any directory) is keyed by it.
+#[test]
+#[ignore = "turbo-test#59: fails until the fix"]
+fn json_names_and_history_keys_are_absolute() {
+    let cwd = std::env::current_dir().unwrap();
+    let abs = cwd.join("rel/a.test.ts").display().to_string();
+    let files = vec![
+        PathBuf::from("rel/a.test.ts"),
+        PathBuf::from("rel/b.test.ts"),
+    ];
+    let res = vec![file_result(0, &files[0], Ok(report(1, 0)), 42.0)];
+    let v: serde_json::Value =
+        serde_json::from_str(&render_json(&files, &res, &tally(&res))).unwrap();
+    assert_eq!(v["testResults"][0]["name"], abs.as_str());
+    let h = update_history(HashMap::new(), &files, &res);
+    assert_eq!(h.keys().collect::<Vec<_>>(), vec![&abs]);
+    let mut hist = HashMap::new();
+    hist.insert(cwd.join("rel/b.test.ts").display().to_string(), 5.0);
+    assert_eq!(schedule_order(&files, &hist), vec![1, 0]);
+}
+
 // ---- retry decisions ----------------------------------------------------------------------
 
 #[test]
