@@ -135,7 +135,7 @@ import { a } from './auto.js';
 vi.mock('./rel.js', () => ({ r: () => 'mock-rel' }));
 jest.mock('pkg', () => ({ p: () => 'mock-pkg' }));
 vi.mock('./auto.js');
-// glob/query specifiers are not modules: skipped, without disturbing the others
+// a glob, and a query id whose file does not exist, are skipped without disturbing the others
 vi.mock('./icons/*.svg', () => ({ default: 'svg' }));
 vi.mock('./styles.css?inline', () => ({ default: '' }));
 test('entry mocks intercept', () => {

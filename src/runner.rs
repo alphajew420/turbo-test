@@ -1543,7 +1543,7 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
         // These registrations are this file's prepass: the module's own vi.mock call keeps them
         // instead of re-running the factory.
         for (spec, _) in &mocks {
-            let Some(abs) = resolve_spec(spec, dir) else {
+            let Some(abs) = mock_key(spec, dir) else {
                 continue;
             };
             if REGISTRY.with(|r| r.borrow().mocks.contains_key(&abs)) {
@@ -3087,8 +3087,8 @@ fn drain_pending_mocks(scope: &mut v8::PinScope, base_dir: &Path, skip_relative:
         if exports.is_undefined() {
             continue; // a factory that returned nothing (a throwing one left its error stand-in)
         }
-        if let Some(abs) = resolve_spec(&spec, base_dir) {
-            register_mock_value(scope, &abs, exports);
+        if let Some(key) = mock_key(&spec, base_dir) {
+            register_mock_value(scope, &key, exports);
         }
     }
     // rebuild the queue with only the still-pending entries (cleared if none remain)
@@ -3652,6 +3652,7 @@ fn native_require(
         throw(scope, &format!("cannot resolve {spec}"));
         return;
     };
+    let abs = query_mock_variant(&spec, abs);
     // Record the import edge (imported <- importer) for mock-graph invalidation under reuse.
     if reuse_isolate_enabled() {
         let importer = args.get(3);
@@ -3791,6 +3792,32 @@ fn native_require(
 
 /// __ttRegisterMock(dir, spec, exports): register a mock immediately (vi.mock hoisting). The
 /// factory ran in the calling module's scope, so `exports` already closes over the right vars.
+/// The mock-registry key for `spec` imported from `dir`: its resolved path, plus the `?query`
+/// when it has one. vitest keys mocks by module id, so `vi.mock('./x.js?raw', ...)` is a module
+/// of its own and must not replace `./x.js`'s mock (turbo-test#39 item 2) — resolution itself
+/// strips the query to find the file.
+fn mock_key(spec: &str, dir: &Path) -> Option<PathBuf> {
+    let abs = resolve_spec(spec, dir)?;
+    Some(match spec.split_once('?') {
+        Some((_, query)) => PathBuf::from(format!("{}?{query}", abs.display())),
+        None => abs,
+    })
+}
+
+/// The registry key an import of `spec` (resolved to `abs`) uses: the query-suffixed key when a
+/// mock is registered under it (see mock_key), else the module's own path.
+fn query_mock_variant(spec: &str, abs: PathBuf) -> PathBuf {
+    let Some((_, query)) = spec.split_once('?') else {
+        return abs;
+    };
+    let key = PathBuf::from(format!("{}?{query}", abs.display()));
+    if REGISTRY.with(|r| r.borrow().mocks.contains_key(&key)) {
+        key
+    } else {
+        abs
+    }
+}
+
 fn native_register_mock(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -3802,8 +3829,8 @@ fn native_register_mock(
     if exports.is_undefined() {
         return;
     }
-    if let Some(abs) = resolve_spec(&spec, Path::new(&dir)) {
-        register_mock_value(scope, &abs, exports);
+    if let Some(key) = mock_key(&spec, Path::new(&dir)) {
+        register_mock_value(scope, &key, exports);
     }
 }
 
@@ -3864,8 +3891,9 @@ fn native_import_actual(
     }
 }
 
-/// __ttResolveSpec(dir, spec): the absolute path `spec` resolves to from `dir` (undefined when
-/// it does not resolve). runtime.js keys the entry prepass's once-only factories by it.
+/// __ttResolveSpec(dir, spec): the mock-registry key of `spec` from `dir` (its absolute path,
+/// `?query` kept; undefined when it does not resolve). runtime.js keys the entry prepass's
+/// once-only factories by it.
 fn native_resolve_spec(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -3873,7 +3901,7 @@ fn native_resolve_spec(
 ) {
     let dir = args.get(0).to_rust_string_lossy(scope);
     let spec = args.get(1).to_rust_string_lossy(scope);
-    if let Some(abs) = resolve_spec(&spec, Path::new(&dir)) {
+    if let Some(abs) = mock_key(&spec, Path::new(&dir)) {
         if let Some(v) = v8::String::new(scope, &abs.to_string_lossy()) {
             rv.set(v.into());
         }
@@ -3889,7 +3917,7 @@ fn native_unmock(
 ) {
     let dir = args.get(0).to_rust_string_lossy(scope);
     let spec = args.get(1).to_rust_string_lossy(scope);
-    if let Some(abs) = resolve_spec(&spec, Path::new(&dir)) {
+    if let Some(abs) = mock_key(&spec, Path::new(&dir)) {
         REGISTRY.with(|r| {
             let mut reg = r.borrow_mut();
             reg.mocks.remove(&abs);
@@ -4116,7 +4144,7 @@ fn resolve_callback<'s>(
             resolve_spec(&spec, &base)
         })
     };
-    let abs = lookup?;
+    let abs = query_mock_variant(&spec, lookup?);
     // a mock factory that threw: linking the importer fails with its error (vitest)
     if let Some(e) = mock_factory_error(scope, &abs) {
         scope.throw_exception(e);
@@ -4207,7 +4235,8 @@ fn dynamic_import_callback<'s>(
         ensure_node_builtin(scope, &spec);
         (Some(PathBuf::from(format!("<node:{spec}>"))), true)
     } else {
-        (from_dir.as_deref().and_then(|d| resolve_spec(&spec, d)), false)
+        let abs = from_dir.as_deref().and_then(|d| resolve_spec(&spec, d));
+        (abs.map(|a| query_mock_variant(&spec, a)), false)
     };
     let Some(abs) = abs else {
         let err = v8::String::new(scope, &format!("dynamic import cannot resolve {spec}"))?;
@@ -4869,10 +4898,12 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
             .into_iter()
             .chain(extract_do_mocks(&entry_src));
         for (s, factory) in calls {
-            if s.contains('*') || s.contains('?') || !mock_externalizable(&factory) {
+            // a glob is not a module; a `?query` id is one of its own (mock_key keeps the query,
+            // so the rewritten import reaches that mock, not the plain module's)
+            if s.contains('*') || !mock_externalizable(&factory) {
                 continue;
             }
-            let Some(abs) = resolve_spec(&s, entry_dir) else {
+            let Some(abs) = mock_key(&s, entry_dir) else {
                 continue;
             };
             mock_targets.entry(spec_basename(&s)).or_insert(abs);

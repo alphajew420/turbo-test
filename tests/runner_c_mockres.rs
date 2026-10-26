@@ -1,5 +1,5 @@
 //! Mock resolution that follows vitest: a `vi.doMock` applies to a later `import()` on every
-//! loader path.
+//! loader path, and a mock whose specifier has a `?query` is a module id of its own.
 #![cfg(unix)]
 
 mod common;
@@ -63,6 +63,49 @@ test('doMock of an already-imported module, then import()', async () => {
         };
         for env in envs {
             assert_passes(&turbo_test(&p.dir, &["a.test.js"], env), 2);
+        }
+    }
+}
+
+#[test]
+fn a_query_suffixed_mock_is_a_module_of_its_own() {
+    // turbo-test#39 item 2: resolve_spec strips `?query`, so `vi.mock('./rel.js?raw', ...)`
+    // replaced the mock of `./rel.js`. vitest keys mocks by module id, query included.
+    for esbuild in [true, false] {
+        let p = if esbuild {
+            let p = Project::new("rc-query-mock");
+            p.with_esbuild();
+            p.file("package.json", r#"{"name":"r39b"}"#);
+            p
+        } else {
+            esm_graph_project("rc-query-mock-esm")
+        };
+        p.file("rel.js", "export const r = () => 'real';\n");
+        p.file("other.js", "export const o = 'real-o';\n");
+        p.file(
+            "a.test.js",
+            r#"import { r } from './rel.js';
+import { o } from './other.js';
+vi.mock('./rel.js', () => ({ r: () => 'mock-rel' }));
+vi.mock('./rel.js?raw', () => ({ default: 'raw' }));
+vi.mock('./other.js?inline', () => ({ default: 'inline' }));
+test('query ids are separate modules', async () => {
+  expect(r()).toBe('mock-rel');
+  // only the query id is mocked: the plain module stays real
+  expect(o).toBe('real-o');
+  // the query id itself gets its own mock
+  expect((await import('./rel.js?raw')).default).toBe('raw');
+  expect((await import('./other.js?inline')).default).toBe('inline');
+});
+"#,
+        );
+        let envs: &[&[(&str, &str)]] = if esbuild {
+            &[&[], &[("TURBO_NO_MR", "1")]]
+        } else {
+            &[&[]]
+        };
+        for env in envs {
+            assert_passes(&turbo_test(&p.dir, &["a.test.js"], env), 1);
         }
     }
 }
