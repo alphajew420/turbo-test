@@ -3,7 +3,8 @@
 //! stays factory-less whatever code follows it; entry-file mocks intercept on the legacy
 //! TURBO_NO_MR bundle path too; a bare `vi.hoisted` after a declared one is its own statement;
 //! re-mocking under isolate reuse keeps an already-mocked importer, and a fresh isolate under the
-//! reuse switch registers a doMock as a new module.
+//! reuse switch registers a doMock as a new module; `await import()` of a `TURBO_LAZY_STUBS`
+//! barrel settles to its stub namespace.
 #![cfg(unix)]
 
 mod common;
@@ -252,4 +253,37 @@ fn a_fresh_isolate_under_the_reuse_switch_does_not_patch_mocks_into_real_exports
         let r = turbo_test(&p.dir, &["--coverage", "a.test.js"], env);
         assert_passes(&r, 1);
     }
+}
+
+#[test]
+fn dynamic_import_of_a_lazy_stub_barrel_settles() {
+    // turbo-test#31 item 3 repro (ESM-graph path, no esbuild): the stub Proxy answered `then`,
+    // so the import() promise treated the namespace as a thenable and never settled.
+    let p = Project::new("rc-lazy-import");
+    p.file("package.json", r#"{"name":"r3","type":"module"}"#);
+    p.file(
+        "node_modules/react/package.json",
+        r#"{"name":"react","main":"index.js"}"#,
+    );
+    p.file(
+        "node_modules/react/index.js",
+        "exports.createElement = (t, p) => ({ type: t, props: p });\nexports.forwardRef = (render) => render;\n",
+    );
+    p.file(
+        "a.test.js",
+        r#"test('dynamic import of a lazy-stub barrel settles', async () => {
+  const m = await import('@mui/icons-material');
+  expect(typeof m.Add).toBe('function');
+  expect(m.then).toBe(undefined);
+  const again = await import('@mui/icons-material');
+  expect(again.Add).toBe(m.Add);
+});
+"#,
+    );
+    let r = turbo_test(
+        &p.dir,
+        &["--testTimeout", "2000", "a.test.js"],
+        &[("TURBO_LAZY_STUBS", "@mui/icons-material")],
+    );
+    assert_passes(&r, 1);
 }

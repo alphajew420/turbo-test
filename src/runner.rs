@@ -3504,13 +3504,15 @@ fn lazy_stub_factory_src(default_js: &str) -> String {
   return new Proxy({{}}, {{
     get: function(t, k) {{
       if (k === '__esModule') return false;
-      if (typeof k === 'symbol') return undefined;
+      // not a thenable: `await import(barrel)` resolves its promise WITH this namespace, and an
+      // answered `then` made promise resolution call it as a thenable and wait forever
+      if (typeof k === 'symbol' || k === 'then') return undefined;
       if (k === '__turboLazyStub') return true;
       if (k === 'default') return cache['__default'] || (cache['__default'] = make(DEFAULT_NAME || 'default'));
       return cache[k] || (cache[k] = make(k));
     }},
     set: function(t, k, v) {{ cache[k] = v; return true; }},
-    has: function() {{ return true; }},
+    has: function(t, k) {{ return k !== 'then'; }},
     defineProperty: function() {{ return true; }},
     deleteProperty: function() {{ return true; }},
     getOwnPropertyDescriptor: function() {{ return undefined; }},
