@@ -442,7 +442,6 @@ vi.mock('./dep.js', () => ({
 "#;
 
 #[test]
-#[ignore = "turbo-test#72: fails until the fix"]
 fn a_mock_factory_sees_the_files_top_level_bindings() {
     // turbo-test#72: the hoisted factory ran in the prepass, outside the file's scope: without
     // esbuild every binding was missing, with esbuild all but a shared `let`.

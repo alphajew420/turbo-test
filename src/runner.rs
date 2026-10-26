@@ -869,7 +869,7 @@ fn is_ident_byte(b: u8) -> bool {
 
 /// Build a double-quoted JS string literal for `s` (escapes the metacharacters that appear in
 /// filesystem paths). Used to embed `__dirname`/`__filename` path constants in injected source.
-fn js_string_literal(s: &str) -> String {
+pub(crate) fn js_string_literal(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -1685,8 +1685,30 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
                  globalThis.__hoistedCache = []; globalThis.__hoistedIdx = 0;"
             ),
         );
-        if !run_js_ok(scope, &format!("(() => {{\n{hoisted}\n{calls}}})();")) {
-            run_js_ok(scope, &format!("(() => {{\n{calls}}})();"));
+        // the factories see the file's top-level bindings through its scope (mock_scope.rs)
+        let bindings = factory_bindings(entry, &src, false);
+        // a TypeScript file's factories (and hoisted declarations) carry types: strip them
+        let ts = matches!(
+            entry.extension().and_then(|e| e.to_str()),
+            Some("ts" | "mts" | "cts")
+        );
+        let scoped = |code: String| {
+            let code = if ts {
+                crate::transform::transform(Path::new("prepass.ts"), &code).unwrap_or(code)
+            } else {
+                code
+            };
+            if bindings.is_empty() {
+                code
+            } else {
+                crate::mock_scope::with_scope(&code, &bindings)
+            }
+        };
+        if !run_js_ok(
+            scope,
+            &scoped(format!("(() => {{\n{hoisted}\n{calls}}})();")),
+        ) {
+            run_js_ok(scope, &scoped(format!("(() => {{\n{calls}}})();")));
         }
         run_js(scope, "globalThis.__ttDir = globalThis.__ttPrevDir;");
         resolve_pending_mocks(scope);
@@ -1753,6 +1775,13 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
         let prev_resolving = RESOLVING_MOCKS.with(|f| f.replace(true));
         set_mock_prepass(scope, true);
         if let Some(raw) = esbuild_transform_cjs(&p, false) {
+            // the factories see the file's top-level bindings through its scope (mock_scope.rs)
+            let bindings = factory_bindings(entry, &src, true);
+            let raw = if bindings.is_empty() {
+                raw
+            } else {
+                crate::mock_scope::with_scope(&raw, &bindings)
+            };
             let wrapped = format!(
                 "(function (exports, module, require, __filename, __dirname) {{\n{raw}\n}})"
             );
@@ -2087,7 +2116,7 @@ fn file_has_decorator(src: &str) -> bool {
 /// falls back to esbuild.
 fn native_transform_cjs(file: &Path) -> Option<String> {
     use std::hash::{Hash, Hasher};
-    let raw = std::fs::read_to_string(file).ok()?;
+    let raw = with_binder(file, std::fs::read_to_string(file).ok()?, true);
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
     file.extension()
@@ -2125,7 +2154,7 @@ fn native_transform_cjs(file: &Path) -> Option<String> {
 /// built uncached with the emitter's source map, whose lines follow the mock hoisting and the
 /// shared-`let` prelude so the map stays aligned with the code that runs.
 fn native_transform_cjs_located(file: &Path) -> Option<String> {
-    let raw = std::fs::read_to_string(file).ok()?;
+    let raw = with_binder(file, std::fs::read_to_string(file).ok()?, true);
     let legacy_decorators = decorator_metadata_enabled(file) && file_has_decorator(&raw);
     let emitted = crate::esm_cjs::emit_mapped(file, &raw, legacy_decorators)?;
     let map = crate::coverage::inline_segments(&emitted)?;
@@ -3134,7 +3163,7 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
             }
         }
     }
-    let raw = std::fs::read_to_string(abs).ok()?;
+    let raw = with_binder(abs, std::fs::read_to_string(abs).ok()?, false);
     if !crate::transform::needs_transform(abs) {
         if crate::location::is_entry(abs) {
             crate::location::set_identity(abs);
@@ -4081,6 +4110,44 @@ thread_local! {
     /// behavior — stubbing there would mask bugs AND turn a transient turbo-dom parser failure
     /// into a permanent DOM-less stub (mass "document is not defined").
     static ENTRY_LENIENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The test file this thread runs (its mock factories see its scope, mock_scope.rs).
+    static TEST_FILE: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
+}
+
+/// The test file's top-level bindings its `vi.mock` factories name (mock_scope.rs); the shared
+/// `let`s the module runner already routes through `globalThis.__ms` (`mr`) are left out.
+fn factory_bindings(entry: &Path, src: &str, mr: bool) -> Vec<crate::mock_scope::Binding> {
+    let mocks = extract_mocks(src);
+    if mocks.is_empty() {
+        return Vec::new();
+    }
+    let factories: String = mocks
+        .iter()
+        .map(|(_, f)| f.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let shared = if mr {
+        shared_mock_lets(src)
+    } else {
+        Vec::new()
+    };
+    crate::mock_scope::bindings(entry, src, &factories)
+        .into_iter()
+        .filter(|(n, _)| !shared.contains(n))
+        .collect()
+}
+
+/// `src` of the file `abs` as it loads: the test file gets the binder statement that hands its
+/// factories' bindings to the runtime, on a line of its own at the end (so no position moves).
+fn with_binder(abs: &Path, src: String, mr: bool) -> String {
+    if !TEST_FILE.with(|f| *f.borrow() == abs) {
+        return src;
+    }
+    let bindings = factory_bindings(abs, &src, mr);
+    if bindings.is_empty() {
+        return src;
+    }
+    format!("{src}\n{}", crate::mock_scope::binder(&bindings))
 }
 
 /// Whether to stub a failed node_modules load for the CURRENT file. e2e entries only;
@@ -5775,6 +5842,7 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
 
     let entry_abs = std::fs::canonicalize(entry).map_err(|e| format!("{e}"))?;
     crate::location::begin(&entry_abs);
+    TEST_FILE.with(|f| *f.borrow_mut() = entry_abs.clone());
     // e2e helper tests may import heavy Node-only deps they don't exercise — allow stubbing a
     // failed node_modules load for these files only (see stub_failed_deps).
     ENTRY_LENIENT.with(|c| c.set(entry_abs.components().any(|p| p.as_os_str() == "e2e")));

@@ -2985,6 +2985,34 @@ function __for(register, cases, targs, isSuite) {
   };
 }
 
+// ---- the test file's scope for its hoisted vi.mock factories (turbo-test#72, mock_scope.rs) ----
+// The prepass runs the factories inside `with (__ttScope)`: the file's top-level names the
+// factories mention (__ttScopeNames) resolve through getters / setters the file itself registers
+// when it runs (__ttScopeBind); read before that, a name is in its temporal dead zone.
+const __scopeGet = new Map();
+const __scopeSet = new Map();
+let __scopeNames = new Set();
+globalThis.__ttScopeNames = (names) => { __scopeNames = new Set(names); __scopeGet.clear(); __scopeSet.clear(); };
+globalThis.__ttScopeBind = (get, set) => {
+  for (const k of Object.keys(get)) __scopeGet.set(k, get[k]);
+  for (const k of Object.keys(set)) __scopeSet.set(k, set[k]);
+};
+const __tdz = (k) => new ReferenceError(`Cannot access '${k}' before initialization`);
+globalThis.__ttScope = new Proxy(Object.create(null), {
+  has: (_, k) => __scopeNames.has(k),
+  get: (_, k) => {
+    if (typeof k !== 'string') return undefined; // `with` asks for Symbol.unscopables
+    const g = __scopeGet.get(k);
+    if (!g) throw __tdz(k);
+    return g();
+  },
+  set: (_, k, v) => {
+    const set = __scopeSet.get(k);
+    if (set) { set(v); return true; }
+    throw __scopeGet.has(k) ? new TypeError('Assignment to constant variable.') : __tdz(k);
+  },
+});
+
 // ---- collector: describe / it / hooks ----
 // A suite's `tasks` hold its tests and child suites (`suite: true`) in declaration order: vitest
 // runs and reports them in that order (turbo-test#64).

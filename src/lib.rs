@@ -11,6 +11,7 @@ pub mod esm_cjs;
 pub mod graph;
 pub mod launcher;
 pub mod location;
+pub mod mock_scope;
 pub mod napi_host;
 pub mod runner;
 pub mod structured_clone;

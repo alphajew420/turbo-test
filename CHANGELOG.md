@@ -111,6 +111,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   config `test.exclude` replaces vitest's default exclude, so test files there are discovered
   unless the config lists them; they were never searched. Discovery still prunes any directory a
   `<prefix>/**` exclude covers.
+- A hoisted `vi.mock` factory sees the test file's top-level bindings (turbo-test#72): the
+  prepass ran it outside the file's scope, so without esbuild any binding it read was
+  `not defined`, and with esbuild only a shared `let` reached it (a `const`, function, class or
+  import did not, and the mock was dropped). The prepass now runs in a scope proxy the file fills
+  when it runs; without esbuild a TypeScript file's factories are type-stripped first (their
+  types made the prepass a syntax error, so the mock was dropped).
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain
