@@ -324,6 +324,25 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
     o
 }
 
+/// How the reports name each file: relative to `root` (`--root`, the launcher's `TURBO_ROOT`), as
+/// vitest names files relative to its root; without one, or for a file outside it, as given (the
+/// launcher names discovered files relative to the working directory).
+pub fn display_names(files: &[PathBuf], root: Option<&Path>) -> Vec<PathBuf> {
+    files
+        .iter()
+        .map(|f| {
+            root.and_then(|r| {
+                std::path::absolute(f)
+                    .ok()?
+                    .strip_prefix(std::path::absolute(r).ok()?)
+                    .ok()
+                    .map(Path::to_path_buf)
+            })
+            .unwrap_or_else(|| f.clone())
+        })
+        .collect()
+}
+
 /// Sharding: deterministic partition by index (spec §M6). An out-of-range `i/n` keeps every file.
 pub fn apply_shard(files: Vec<PathBuf>, shard: Option<(usize, usize)>) -> Vec<PathBuf> {
     if let Some((i, n)) = shard {
@@ -584,9 +603,11 @@ pub fn file_result(idx: usize, file: &Path, r: FileOutcome, dur_ms: f64) -> File
 /// The worker pool: `jobs` threads pull files in `order` from a shared cursor. Under `bail > 0`,
 /// workers stop pulling NEW files once the cumulative failed-test count reaches `bail` (a worker
 /// mid-file finishes that file — file-granular, see vitest.compat.md). Results sorted by index.
+/// `names[i]` is how the reports name `files[i]` ([`display_names`]).
 pub fn run_files(
     engine: &Engine,
     files: &[PathBuf],
+    names: &[PathBuf],
     order: &[usize],
     jobs: usize,
     bail: usize,
@@ -610,7 +631,8 @@ pub fn run_files(
                         let file = &files[idx];
                         let t = Instant::now();
                         let r = execute_file(engine, file);
-                        let fr = file_result(idx, file, r, t.elapsed().as_secs_f64() * 1000.0);
+                        let fr =
+                            file_result(idx, &names[idx], r, t.elapsed().as_secs_f64() * 1000.0);
                         if bail > 0 {
                             failed_total.fetch_add(fr.failed as usize, Ordering::Relaxed);
                         }
@@ -969,10 +991,12 @@ pub fn render_tap(files: &[PathBuf], res: &[FileResult]) -> String {
 }
 
 /// The active artifact reporter's output (json/junit/tap); `None` for the human reporters.
+/// JUnit / TAP name the files by `names`, the JSON report by their absolute `files` path;
 /// `start_ms` (the run's start, epoch ms) and `did_update` (`-u`) feed the JSON report.
 pub fn render_artifact(
     reporter: Reporter,
     files: &[PathBuf],
+    names: &[PathBuf],
     res: &[FileResult],
     t: &Totals,
     start_ms: f64,
@@ -980,8 +1004,8 @@ pub fn render_artifact(
 ) -> Option<String> {
     match reporter {
         Reporter::Json => Some(render_json(files, res, start_ms, did_update)),
-        Reporter::Junit => Some(render_junit(files, res, t)),
-        Reporter::Tap => Some(render_tap(files, res)),
+        Reporter::Junit => Some(render_junit(names, res, t)),
+        Reporter::Tap => Some(render_tap(names, res)),
         _ => None,
     }
 }
@@ -1145,7 +1169,11 @@ pub fn run(opts: Options) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |d| d.as_millis() as f64);
     let wall = Instant::now();
-    let res = run_files(&Engine::v8(), &files, &order, jobs, opts.bail);
+    let names = display_names(
+        &files,
+        std::env::var_os("TURBO_ROOT").map(PathBuf::from).as_deref(),
+    );
+    let res = run_files(&Engine::v8(), &files, &names, &order, jobs, opts.bail);
     let wall_ms = wall.elapsed().as_secs_f64() * 1000.0;
 
     let t = tally(&res);
@@ -1153,7 +1181,15 @@ pub fn run(opts: Options) -> i32 {
     save_durations(&hist_path, &update_history(hist, &files, &res));
 
     let did_update = opts.env.iter().any(|(k, _)| *k == "TURBO_UPDATE_SNAPSHOTS");
-    let artifact = render_artifact(opts.reporter, &files, &res, &t, start_ms, did_update);
+    let artifact = render_artifact(
+        opts.reporter,
+        &files,
+        &names,
+        &res,
+        &t,
+        start_ms,
+        did_update,
+    );
     let (out, err) = emit_output(
         artifact.as_deref(),
         opts.reporter,

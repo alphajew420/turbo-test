@@ -1169,6 +1169,8 @@ fn git_changed(since: &str, cwd: &Path) -> Option<HashSet<PathBuf>> {
 struct Opts {
     config: Option<String>,
     root: Option<String>,
+    /// `--root` (not `--dir`): the files are named relative to it.
+    name_root: Option<String>,
     environment: Option<String>,
     /// `Some("true")` for bare `--changed`, `Some(<ref>)` for `--changed <ref>`, `None` if absent.
     changed: Option<String>,
@@ -1248,6 +1250,7 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
     let mut opts = Opts {
         config: None,
         root: None,
+        name_root: None,
         environment: None,
         changed: None,
         isolate: None,
@@ -1293,9 +1296,13 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
                 continue;
             }
             // vitest distinguishes --root (project root) from --dir (test scan dir); turbo-test
-            // scans the project root, so both override the discovery directory (last wins).
+            // scans the project root, so both override the discovery directory (last wins). Only
+            // --root moves the base the files are named from (vitest's root).
             "--root" | "--dir" => {
                 opts.root = take_val();
+                if key == "--root" {
+                    opts.name_root = opts.root.clone();
+                }
                 i += 1;
                 continue;
             }
@@ -1406,6 +1413,14 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         .config
         .as_ref()
         .map(|f| absolute_in(proc_cwd, Path::new(f)));
+
+    // `--root`: the reports name the files relative to it (cli.rs `display_names`).
+    if let Some(r) = &opts.name_root {
+        env.push((
+            "TURBO_ROOT",
+            absolute_in(proc_cwd, Path::new(r)).display().to_string(),
+        ));
+    }
 
     // `--passWithNoTests` also covers a test file that collects no test at all (vitest: no
     // "No test suite found in file" error) → the runtime reads it per file.

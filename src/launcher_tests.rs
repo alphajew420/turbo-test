@@ -1172,9 +1172,11 @@ fn plan_isolate_environment_and_root_flags() {
     );
     let a = "proj/a.test.ts";
     let p = run_plan(&t, &["--no-isolate", "--root", "proj"]);
+    // --root (not --dir) is the base the reports name files from (turbo-test#63 item 2)
     assert_eq!(
         p.env,
         vec![
+            ("TURBO_ROOT", t.p("proj")),
             ("TURBO_REUSE_ISOLATE", "1".to_string()),
             ("TURBO_ENV", "jsdom".to_string())
         ]
@@ -1212,10 +1214,10 @@ fn plan_isolate_environment_and_root_flags() {
     // an absolute --root; last of --root/--dir wins
     let p = run_plan(&t, &["--root", "nowhere", "--dir", &t.p("proj")]);
     assert_eq!(argv(&p), args(&["--testTimeout", "1234", a]));
-    // a --root without a config: no env, no timeout injection
+    // a --root without a config: only the naming root, no timeout injection
     t.file("plain/b.test.ts", T);
     let p = run_plan(&t, &["--root", "plain"]);
-    assert!(p.env.is_empty());
+    assert_eq!(p.env, vec![("TURBO_ROOT", t.p("plain"))]);
     assert_eq!(argv(&p), vec!["plain/b.test.ts"]);
     // `--root ""` is an empty discovery root (nothing found), like the original
     assert_eq!(run_plan(&t, &["--root="]).outcome, Err(1));

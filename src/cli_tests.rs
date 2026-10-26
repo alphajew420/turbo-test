@@ -888,7 +888,7 @@ fn worker_pool_runs_everything_sorted_by_index() {
         end_worker: &end,
         ..Engine::v8()
     };
-    let res = run_files(&e, &files, &[4, 3, 2, 1, 0], 3, 0);
+    let res = run_files(&e, &files, &files, &[4, 3, 2, 1, 0], 3, 0);
     assert_eq!(
         res.iter().map(|r| r.idx).collect::<Vec<_>>(),
         vec![0, 1, 2, 3, 4]
@@ -918,7 +918,7 @@ fn bail_stops_pulling_new_files() {
         ..Engine::v8()
     };
     // bail 2, one worker, slow-first order 2,0,1,3: pass1, fail1 (x3 retries), fail2 → stop
-    let res = run_files(&e, &files, &[2, 0, 1, 3], 1, 2);
+    let res = run_files(&e, &files, &files, &[2, 0, 1, 3], 1, 2);
     assert_eq!(res.iter().map(|r| r.idx).collect::<Vec<_>>(), vec![0, 1, 2]);
     assert_eq!(
         seen.lock()
@@ -930,9 +930,9 @@ fn bail_stops_pulling_new_files() {
     );
     assert_eq!(seen.lock().unwrap()[0], "pass1", "order is honoured");
     // bail 0 = disabled
-    assert_eq!(run_files(&e, &files, &[0, 1, 2, 3], 1, 0).len(), 4);
+    assert_eq!(run_files(&e, &files, &files, &[0, 1, 2, 3], 1, 0).len(), 4);
     // nothing to run
-    assert!(run_files(&e, &[], &[], 1, 0).is_empty());
+    assert!(run_files(&e, &[], &[], &[], 1, 0).is_empty());
 }
 
 // ---- renderers ----------------------------------------------------------------------------
@@ -1123,19 +1123,22 @@ fn artifact_dispatch() {
     let (files, res) = sample();
     let t = tally(&res);
     assert_eq!(
-        render_artifact(Reporter::Json, &files, &res, &t, 7.0, true),
+        render_artifact(Reporter::Json, &files, &files, &res, &t, 7.0, true),
         Some(render_json(&files, &res, 7.0, true))
     );
     assert_eq!(
-        render_artifact(Reporter::Junit, &files, &res, &t, 0.0, false),
+        render_artifact(Reporter::Junit, &files, &files, &res, &t, 0.0, false),
         Some(render_junit(&files, &res, &t))
     );
     assert_eq!(
-        render_artifact(Reporter::Tap, &files, &res, &t, 0.0, false),
+        render_artifact(Reporter::Tap, &files, &files, &res, &t, 0.0, false),
         Some(render_tap(&files, &res))
     );
     for r in [Reporter::Default, Reporter::Dot, Reporter::Verbose] {
-        assert_eq!(render_artifact(r, &files, &res, &t, 0.0, false), None);
+        assert_eq!(
+            render_artifact(r, &files, &files, &res, &t, 0.0, false),
+            None
+        );
     }
 }
 
@@ -1288,4 +1291,29 @@ fn a_suite_error_without_a_failed_test_fails_the_file() {
         serde_json::from_str(&render_json(&[file], &res, 0.0, false)).unwrap();
     assert_eq!(j["success"], false);
     assert_eq!(j["testResults"][0]["status"], "failed");
+}
+
+#[test]
+fn files_are_named_relative_to_the_root() {
+    // turbo-test#63 item 2: with `--root` the reports name files relative to it (vitest); a file
+    // outside it, or no root, keeps the given path.
+    let cwd = std::env::current_dir().unwrap();
+    let files = vec![
+        PathBuf::from("sub/a.test.ts"),
+        cwd.join("sub/in/b.test.ts"),
+        PathBuf::from("other/c.test.ts"),
+    ];
+    assert_eq!(
+        display_names(&files, Some(Path::new("sub"))),
+        [
+            PathBuf::from("a.test.ts"),
+            PathBuf::from("in/b.test.ts"),
+            PathBuf::from("other/c.test.ts")
+        ]
+    );
+    assert_eq!(display_names(&files, None), files);
+    assert_eq!(
+        display_names(&files[..1], Some(Path::new(""))),
+        [PathBuf::from("sub/a.test.ts")]
+    );
 }

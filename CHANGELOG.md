@@ -103,6 +103,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   registered the test, in the original source: 1-based, UTF-16 columns). The flag was an
   unsupported flag. The call site's V8 position is mapped back through the transform's source
   map (the native emitter's, following the `vi.mock` hoisting; oxc's on the ESM path).
+- `--root` names files relative to the root (turbo-test#63 item 2), as vitest does, in the
+  default / verbose / dot output, JUnit and TAP (the JSON report keeps absolute names): they were
+  relative to the working directory (absolute for a root above it). `--dir` keeps
+  working-directory names.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

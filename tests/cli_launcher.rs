@@ -497,7 +497,6 @@ fn a_directory_argument_runs_the_test_files_under_it() {
 }
 
 #[test]
-#[ignore = "turbo-test#63: fails until the fix"]
 fn root_names_files_relative_to_the_root() {
     // turbo-test#63 item 2: with --root, files were named relative to the working directory
     // (`sub/inner/a.test.js`, or absolute for a root above it). vitest 4.1.12 names them
