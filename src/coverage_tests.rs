@@ -435,6 +435,91 @@ fn gen_to_orig_maps_through_segments() {
     assert_eq!(gen_to_orig(&meta, w.len() - 1), None);
 }
 
+/// An ESM source as esbuild emits it under `--format=cjs`: the interop prologue (export table +
+/// `__toCommonJS`, every line mapped to (0, 0) only), then the code. Source line 1 holds a whole
+/// function whose export getter (`longExportedName: () => …`) is never read.
+const ESM_SRC: &str = "\
+export function longExportedName() { return 1; }
+export function api() {
+  return longExportedName();
+}
+";
+const ESM_GEN: &str = "\
+var m_exports = {};
+__export(m_exports, {
+  api: () => api,
+  longExportedName: () => longExportedName
+});
+module.exports = __toCommonJS(m_exports);
+function longExportedName() {
+  return 1;
+}
+function api() {
+  return longExportedName();
+}";
+const ESM_MAP: &str = "AAAA;AAAA;AAAA;AAAA;AAAA;AAAA;AAAO;EAA8B;AAAW;AACzC;EACL;AACF";
+
+fn esm_meta(name: &str) -> PathBuf {
+    let p = vpath(name);
+    let w = inline_wrapped(ESM_GEN, &format!("{{\"mappings\":\"{ESM_MAP}\"}}"));
+    register_meta(&p, &w, ESM_SRC);
+    p
+}
+
+#[test]
+fn interop_header_end_spans_the_esbuild_prologue_only() {
+    let (_, segs) = parse_mappings_full(ESM_MAP);
+    let gen: Vec<&str> = ESM_GEN.lines().collect();
+    assert_eq!(interop_header_end(&gen, &segs), 6);
+    // CommonJS output: real mappings come first, so there is no prologue
+    let (_, cjs) = parse_mappings_full("AAAA,IAAI;AACA");
+    let cjs_gen = ["const a = 1;", "module.exports = __toCommonJS(a);"];
+    assert_eq!(interop_header_end(&cjs_gen, &cjs), 0);
+    // (0, 0)-only lines without the closing `__toCommonJS` line are not a prologue either
+    assert_eq!(interop_header_end(&gen[..5], &segs), 0);
+}
+
+#[test]
+fn interop_prologue_has_no_source_positions_or_functions() {
+    let p = esm_meta("esm-prologue.js");
+    let meta = meta_for(&p).unwrap();
+    assert_eq!(meta.header_end, 6);
+    let getter = at(ESM_GEN, "() => longExportedName", 0);
+    assert_eq!(gen_to_orig(&meta, getter), None);
+    assert_eq!(
+        gen_to_orig(&meta, at(ESM_GEN, "function longExportedName", 0)),
+        Some((0, 7))
+    );
+    let lf = (
+        at(ESM_GEN, "function longExportedName", 0),
+        at(ESM_GEN, "}\nfunction api", 1),
+    );
+    let api = (at(ESM_GEN, "function api", 0), WRAP.len() + ESM_GEN.len());
+    let ranges = vec![
+        (getter, at(ESM_GEN, "\n});", 0), 0), // the getter is never read
+        (lf.0, lf.1, 1),                      // …but the function runs, via api()
+        (api.0, api.1, 1),
+    ];
+    // export getters (named after their export, mapped to line 1) are not the source's functions
+    let funcs = vec![
+        ("api".to_string(), at(ESM_GEN, "() => api", 0), 1),
+        ("longExportedName".to_string(), getter, 0),
+        ("longExportedName".to_string(), lf.0, 1),
+        ("api".to_string(), api.0, 1),
+    ];
+    map_script(&p, &ranges, &funcs);
+    assert_eq!(
+        fns_of(&p),
+        BTreeMap::from([
+            ((1, "longExportedName".to_string()), 1),
+            ((2, "api".to_string()), 1)
+        ])
+    );
+    // the unread getter's 0-count range does not land on `return 1` (source line 1, col 37)
+    map_statements(&p, &ranges);
+    assert_eq!(stmts_of(&p), BTreeMap::from([(0, (1, 1)), (1, (3, 1))]));
+}
+
 // ---- mapping V8 ranges onto lines / functions / branches / statements -----------------------
 
 #[test]

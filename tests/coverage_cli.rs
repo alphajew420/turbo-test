@@ -93,7 +93,7 @@ test('branches', () => {
 });
 ";
 
-/// A plain CommonJS source: no ESM export thunks, so its function list is exact.
+/// A plain CommonJS source (no esbuild ESM interop prologue).
 const CJS_JS: &str = "\
 function twice(x) {
   return x * 2;
@@ -723,4 +723,88 @@ fn failing_tests_still_report_coverage_and_exit_nonzero() {
     let r = turbo_test(&p.dir, &["--coverage", "--coverage-reporter", "lcov"], &[]);
     assert_fail(&r);
     assert!(read(&p, "coverage/lcov.info").contains("FNDA:1,twice\n"));
+}
+
+// ---- turbo-test#34: instrumentation accuracy ---------------------------------------------------
+//
+// The issue's repro project. Every expected value below is what vitest 4.1's v8 provider
+// (@vitest/coverage-v8) reports for the same sources, except where a comment says otherwise.
+
+/// Two ESM exports, one never called; esbuild turns each export into a named getter arrow.
+const I34_LIB: &str =
+    "export function used() { return 1 }\n\n\nexport function unused() { return 2 }\n";
+/// Case bodies on the `case` line; only `case 'a'` runs.
+const I34_SW: &str = "\
+export function sw(x) {
+  switch (x) {
+    case 'a': return 1;
+    case 'b': return 2;
+    default: return 0;
+  }
+}
+";
+/// A braceless `if … throw` that never fires.
+const I34_THR: &str = "export function g(c) {\n  if (c) throw new Error('x');\n  return 1;\n}\n";
+/// Top-level CommonJS statements only.
+const I34_TOP: &str = "const a = 1;\nconst b = a + 1;\nmodule.exports = { b };\n";
+const I34_TEST: &str = "\
+import { used } from './lib.js';
+import { sw } from './sw.js';
+import { g } from './thr.js';
+const { b } = require('./top.cjs');
+test('t', () => { expect(used()).toBe(1); expect(sw('a')).toBe(1); expect(g(false)).toBe(1); expect(b).toBe(2); });
+";
+
+/// Run the #34 repro (`--coverage --coverage-reporter lcov,json-summary a.test.js`); returns the
+/// project, its lcov text and its coverage-summary.json.
+fn issue34_run(name: &str) -> (Project, String, serde_json::Value) {
+    let p = esbuild_project(name);
+    p.file("package.json", "{\"name\":\"k1\"}");
+    p.file("lib.js", I34_LIB);
+    p.file("sw.js", I34_SW);
+    p.file("thr.js", I34_THR);
+    p.file("top.cjs", I34_TOP);
+    p.file("a.test.js", I34_TEST);
+    let r = turbo_test(
+        &p.dir,
+        &[
+            "--coverage",
+            "--coverage-reporter",
+            "lcov,json-summary",
+            "a.test.js",
+        ],
+        &[],
+    );
+    assert_ok(&r);
+    let lcov = read(&p, "coverage/lcov.info");
+    let j = json(&p, "coverage/coverage-summary.json");
+    (p, lcov, j)
+}
+
+/// `(covered, total)` of `metric` for `file` in a coverage-summary.json.
+fn summary_of(j: &serde_json::Value, file: &std::path::Path, metric: &str) -> (u64, u64) {
+    let m = &j[file.to_str().unwrap()][metric];
+    (m["covered"].as_u64().unwrap(), m["total"].as_u64().unwrap())
+}
+
+#[test]
+fn esm_export_getters_are_not_counted_as_functions() {
+    let (p, lcov, j) = issue34_run("cov-i34-getters");
+    let rec = lcov_record(&lcov, &p.path("lib.js"));
+    // esbuild's `__export` getters (`unused: () => unused`) map to line 1; they are not functions
+    // of the source, so `unused` is listed once, at its declaration.
+    assert_eq!(
+        rec.lines()
+            .filter(|l| l.starts_with("FN"))
+            .collect::<Vec<_>>(),
+        vec![
+            "FN:1,used",
+            "FN:4,unused",
+            "FNDA:1,used",
+            "FNDA:0,unused",
+            "FNF:2",
+            "FNH:1"
+        ]
+    );
+    assert_eq!(summary_of(&j, &p.path("lib.js"), "functions"), (1, 2));
 }
