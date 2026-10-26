@@ -214,21 +214,25 @@ fn config_alias_list() -> oxc_resolver::Alias {
         }
         let parsed: oxc_resolver::Alias = std::env::var("TURBO_ALIAS")
             .ok()
-            .map(|raw| {
-                raw.split('\u{1e}')
-                    .filter_map(|rec| {
-                        let (k, v) = rec.split_once('\u{1f}')?;
-                        if k.is_empty() || v.is_empty() {
-                            return None;
-                        }
-                        Some((k.to_string(), vec![oxc_resolver::AliasValue::Path(v.to_string())]))
-                    })
-                    .collect()
-            })
+            .map(|raw| parse_alias_list(&raw))
             .unwrap_or_default();
         *c.borrow_mut() = Some(parsed.clone());
         parsed
     })
+}
+
+/// Parse the TURBO_ALIAS wire format: records separated by U+001E, each `key U+001F path`.
+/// Records with an empty key or path (or no separator) are dropped.
+fn parse_alias_list(raw: &str) -> oxc_resolver::Alias {
+    raw.split('\u{1e}')
+        .filter_map(|rec| {
+            let (k, v) = rec.split_once('\u{1f}')?;
+            if k.is_empty() || v.is_empty() {
+                return None;
+            }
+            Some((k.to_string(), vec![oxc_resolver::AliasValue::Path(v.to_string())]))
+        })
+        .collect()
 }
 
 /// Cached node-resolution Resolver (oxc_resolver) for bare specifiers / node_modules.
@@ -1052,15 +1056,20 @@ fn esbuild_bundle_full(
     }
     // Publish atomically: `out` only ever becomes visible fully-written. A racing worker either
     // sees no `out` (and builds its own temp) or the complete file — never a partial one.
-    if std::fs::rename(&tmp, &out).is_err() {
-        // Rename can fail if another worker already published an identical `out`; fall back to it
-        // when present, else give up (and clean the temp).
-        let _ = std::fs::remove_file(&tmp);
+    publish_bundle(&tmp, &out).then_some(out)
+}
+
+/// Rename the finished temp bundle onto its cache path. Rename can fail if another worker already
+/// published an identical `out`; fall back to it when present, else give up (and clean the temp).
+/// Returns whether `out` is usable.
+fn publish_bundle(tmp: &Path, out: &Path) -> bool {
+    if std::fs::rename(tmp, out).is_err() {
+        let _ = std::fs::remove_file(tmp);
         if !out.exists() {
-            return None;
+            return false;
         }
     }
-    Some(out)
+    true
 }
 
 
@@ -1851,9 +1860,9 @@ fn hoist_mock_setup(code: &str) -> String {
         req_end += 1;
     }
     // end of the last top-level `.mock(` statement (balance parens from the call to its close + ;)
-    let Some(last_mock) = lines.iter().rposition(|l| l.contains(".mock(")) else {
-        return code.to_string();
-    };
+    // (`code` contains ".mock(" and that needle has no newline, so some line always matches; the
+    // 0 default would hit the `<= req_end` early return below anyway.)
+    let last_mock = lines.iter().rposition(|l| l.contains(".mock(")).unwrap_or(0);
     if last_mock <= req_end {
         return code.to_string();
     }
