@@ -51,14 +51,15 @@ test('toMatchSnapshot: a changed value fails; -u/--update rewrites and re-passes
   // ensure a baseline exists
   run(['--reporter', 'json', file('snapshot.test.ts')]);
   // corrupt the primitive snapshot so the next compare mismatches
-  fs.writeFileSync(snap, fs.readFileSync(snap, 'utf8').replace(/\n42\n/, '\n999\n'));
+  fs.writeFileSync(snap, fs.readFileSync(snap, 'utf8').replace('= `42`;', '= `999`;'));
 
   const bad = parseJson(run(['--reporter', 'json', file('snapshot.test.ts')]).out);
   assert.equal(bad.numFailedTests, 1, 'mismatched snapshot fails');
 
   const upd = parseJson(run(['-u', '--reporter', 'json', file('snapshot.test.ts')]).out);
   assert.equal(upd.numFailedTests, 0, '-u rewrites the snapshot');
-  assert.match(fs.readFileSync(snap, 'utf8'), /matches a primitive snapshot 1`\] = `\n42\n/, 'snapshot rewritten to 42');
+  // vitest's format: a single-line value has no surrounding line breaks
+  assert.match(fs.readFileSync(snap, 'utf8'), /matches a primitive snapshot 1`\] = `42`;/, 'snapshot rewritten to 42');
 
   const after = parseJson(run(['--reporter', 'json', file('snapshot.test.ts')]).out);
   assert.equal(after.numFailedTests, 0, 're-compares cleanly after update');

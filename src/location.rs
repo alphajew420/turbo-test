@@ -39,14 +39,17 @@ struct Entry {
     identity: bool,
     /// V8 call positions `(line, column)` (1-based, UTF-16 columns) in the original source, sorted.
     calls: Vec<(u32, u32)>,
+    /// The file writes inline snapshots, which need call sites too (turbo-test#73).
+    inline: bool,
 }
 
 thread_local! {
     static ENTRY: RefCell<Option<Entry>> = const { RefCell::new(None) };
 }
 
-/// A new test file starts on this thread (no map, no wrapper offset yet).
-pub fn begin(path: &Path) {
+/// A new test file starts on this thread (no map, no wrapper offset yet). `src` is its source: one
+/// that uses inline snapshots needs call sites (to write them back) even without test locations.
+pub fn begin(path: &Path, src: &str) {
     ENTRY.with(|e| {
         *e.borrow_mut() = Some(Entry {
             path: path.to_path_buf(),
@@ -54,18 +57,19 @@ pub fn begin(path: &Path) {
             map: None,
             identity: false,
             calls: Vec::new(),
+            inline: src.contains("InlineSnapshot("),
         })
     });
 }
 
-/// Whether locations are on and `path` is the test file being run.
+/// Whether `path` is the test file being run and its call sites are needed (test locations on,
+/// or the file uses inline snapshots).
 pub fn is_entry(path: &Path) -> bool {
-    enabled() && is_current(path)
-}
-
-/// Whether `path` is the test file begun on this thread.
-fn is_current(path: &Path) -> bool {
-    ENTRY.with(|e| e.borrow().as_ref().is_some_and(|e| e.path == path))
+    ENTRY.with(|e| {
+        e.borrow()
+            .as_ref()
+            .is_some_and(|e| e.path == path && (e.inline || enabled()))
+    })
 }
 
 /// The loader compiled the test file with `offset` lines before its transformed code.

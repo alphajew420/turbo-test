@@ -32,7 +32,7 @@ fn resolve_maps_snaps_and_offsets() {
     // no entry / another file / an entry without a map or identity: nothing
     ENTRY.with(|e| *e.borrow_mut() = None);
     assert_eq!(resolve(name, 1, 1), None);
-    begin(f);
+    begin(f, "");
     assert_eq!(resolve("/p/other.ts", 1, 1), None);
     assert_eq!(resolve(name, 1, 1), None);
     // identity, below a one-line wrapper: line 2 is the code's line 1; the wrapper line has none
@@ -65,10 +65,13 @@ fn resolve_maps_snaps_and_offsets() {
 }
 
 #[test]
-fn the_entry_is_the_file_begun_on_this_thread() {
+fn the_entry_needs_call_sites_for_locations_or_inline_snapshots() {
+    // without TURBO_TASK_LOCATION (unset in unit tests) only a file using inline snapshots
     let f = Path::new("/p/b.test.js");
-    begin(f);
-    assert!(is_current(f) && !is_current(Path::new("/p/c.test.js")));
+    begin(f, "expect(1).toMatchInlineSnapshot(`1`)");
+    assert!(is_entry(f) && !is_entry(Path::new("/p/c.test.js")));
+    begin(f, "expect(1).toBe(1)");
+    assert!(!is_entry(f));
     ENTRY.with(|e| *e.borrow_mut() = None);
-    assert!(!is_current(f));
+    assert!(!is_entry(f));
 }

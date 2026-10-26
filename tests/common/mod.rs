@@ -146,6 +146,26 @@ pub fn run_exe(exe: &str, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Ru
             cmd.env_remove(k);
         }
     }
+    // CI variables switch snapshots to vitest's CI mode (a missing snapshot fails); the tests set
+    // `CI` themselves where they check that.
+    for k in [
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "BUILDKITE",
+        "JENKINS_URL",
+        "TF_BUILD",
+        "TEAMCITY_VERSION",
+        "BITBUCKET_BUILD_NUMBER",
+        "CODEBUILD_BUILD_ARN",
+        "APPVEYOR",
+        "DRONE",
+        "SEMAPHORE",
+    ] {
+        cmd.env_remove(k);
+    }
     cmd.env("TMPDIR", &tmp)
         .env("TURBO_CACHE_DIR", cwd.join(".tt-cache"))
         .env("TURBO_JOBS", "2");

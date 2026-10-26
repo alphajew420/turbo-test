@@ -5280,6 +5280,31 @@ fn native_call_site(
     }
 }
 
+/// Whether the run is on CI, as std-env's `isCI` (vitest's snapshot `update: 'none'` default there):
+/// `CI` set to anything but `false` / `0`, or a known CI provider's variable.
+fn is_ci(var: impl Fn(&str) -> Option<String>) -> bool {
+    if let Some(v) = var("CI") {
+        return !matches!(v.as_str(), "" | "false" | "0");
+    }
+    [
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "BUILDKITE",
+        "JENKINS_URL",
+        "TF_BUILD",
+        "TEAMCITY_VERSION",
+        "BITBUCKET_BUILD_NUMBER",
+        "CODEBUILD_BUILD_ARN",
+        "APPVEYOR",
+        "DRONE",
+        "SEMAPHORE",
+    ]
+    .iter()
+    .any(|k| var(k).is_some())
+}
+
 /// Re-bind native callbacks into a fresh (snapshot-derived) context.
 /// os.tmpdir() as Node's: TMPDIR, else TMP, else TEMP, else /tmp, without a trailing slash.
 fn node_tmpdir(var: impl Fn(&str) -> Option<String>) -> String {
@@ -5344,6 +5369,10 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     // `-u/--update` → write/overwrite obsolete-or-missing snapshots instead of failing the
     // comparison (vitest's --update semantics). Plumbed via TURBO_UPDATE_SNAPSHOTS env (set by
     // the CLI) → globalThis.__TT_UPDATE_SNAPSHOTS, read by toMatchSnapshot in the runtime.
+    // On CI (vitest: std-env's isCI) a missing snapshot is not written: it fails (turbo-test#73).
+    if is_ci(|k| std::env::var(k).ok()) {
+        run_js(scope, "globalThis.__TT_CI=true;");
+    }
     if std::env::var("TURBO_UPDATE_SNAPSHOTS").is_ok() {
         if let Some(code) = v8::String::new(scope, "globalThis.__TT_UPDATE_SNAPSHOTS=true") {
             if let Some(s) = v8::Script::compile(scope, code, None) {
@@ -5635,8 +5664,24 @@ pub struct TestReport {
     pub tests: Vec<TestCase>,
     /// One state per `describe` block: "pass" | "fail" | "skip" | "todo".
     pub suites: Vec<String>,
+    /// The file's snapshot counts (`None`: it used no snapshot and has no snapshot file).
+    pub snapshot: Option<SnapshotResult>,
     /// Per-file environment setup time (isolate+context-from-snapshot+natives), µs.
     pub setup_us: f64,
+}
+
+/// A test file's snapshot outcome, as @vitest/snapshot's `SnapshotResult` (turbo-test#73).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SnapshotResult {
+    pub added: u32,
+    pub matched: u32,
+    pub unmatched: u32,
+    pub updated: u32,
+    /// Obsolete snapshots (0 when the emptied file was deleted) and their keys.
+    pub unchecked: u32,
+    pub unchecked_keys: Vec<String>,
+    /// The snapshot file was emptied (and, under -u, deleted).
+    pub file_deleted: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5841,7 +5886,10 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     let _dom_guard = DomGuard;
 
     let entry_abs = std::fs::canonicalize(entry).map_err(|e| format!("{e}"))?;
-    crate::location::begin(&entry_abs);
+    crate::location::begin(
+        &entry_abs,
+        &std::fs::read_to_string(&entry_abs).unwrap_or_default(),
+    );
     TEST_FILE.with(|f| *f.borrow_mut() = entry_abs.clone());
     // e2e helper tests may import heavy Node-only deps they don't exercise — allow stubbing a
     // failed node_modules load for these files only (see stub_failed_deps).
@@ -6509,13 +6557,52 @@ fn drive_tests_bounded(
             }
         }
     }
+    let snapshot = snapshot_of(scope, summary);
     Ok(TestReport {
         passed,
         failed,
         failures,
         tests,
         suites,
+        snapshot,
         setup_us: 0.0,
+    })
+}
+
+/// The run summary's `snapshot` counts (runtime.js `__snapFinish`), when the file has any.
+fn snapshot_of<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    summary: v8::Local<'s, v8::Object>,
+) -> Option<SnapshotResult> {
+    let k = v8::String::new(scope, "snapshot").unwrap();
+    let o = summary
+        .get(scope, k.into())
+        .and_then(|v| v8::Local::<v8::Object>::try_from(v).ok())?;
+    let num = |key: &str| {
+        let k = v8::String::new(scope, key).unwrap();
+        o.get(scope, k.into())
+            .and_then(|v| v.uint32_value(scope))
+            .unwrap_or(0)
+    };
+    let (added, matched, unmatched, updated, unchecked) = (
+        num("added"),
+        num("matched"),
+        num("unmatched"),
+        num("updated"),
+        num("unchecked"),
+    );
+    let k = v8::String::new(scope, "file_deleted").unwrap();
+    let file_deleted = o
+        .get(scope, k.into())
+        .is_some_and(|v| v.boolean_value(scope));
+    Some(SnapshotResult {
+        added,
+        matched,
+        unmatched,
+        updated,
+        unchecked,
+        unchecked_keys: string_array(scope, o, "unchecked_keys"),
+        file_deleted,
     })
 }
 

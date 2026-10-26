@@ -1945,63 +1945,216 @@ function __snapFile() {
   const base = slash >= 0 ? f.slice(slash + 1) : f;
   return { dir: `${dir}/__snapshots__`, path: `${dir}/__snapshots__/${base}.snap` };
 }
-// pretty-format-ish serializer (jest-snapshot style): stable, indented, ordered keys.
-function __serialize(v, indent = '') {
-  const ni = indent + '  ';
-  if (v === null) return 'null';
-  if (v === undefined) return 'undefined';
-  const t = typeof v;
-  if (t === 'string') return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;
-  if (t === 'number' || t === 'boolean' || t === 'bigint') return String(v);
-  if (t === 'function') return `[Function ${v.name || 'anonymous'}]`;
-  if (t === 'symbol') return v.toString();
-  if (v instanceof RegExp) return String(v);
-  if (v instanceof Date) return v.toISOString();
-  if (v instanceof Error) return `[Error: ${v.message}]`;
-  if (Array.isArray(v)) {
-    if (v.length === 0) return '[]';
-    const items = v.map((x) => ni + __serialize(x, ni));
-    return `[\n${items.join(',\n')},\n${indent}]`;
-  }
-  if (v instanceof Map) {
-    const items = [...v.entries()].map(([k, val]) => `${ni}${__serialize(k, ni)} => ${__serialize(val, ni)}`);
-    return `Map {\n${items.join(',\n')},\n${indent}}`;
-  }
-  if (v instanceof Set) {
-    const items = [...v.values()].map((x) => ni + __serialize(x, ni));
-    return `Set {\n${items.join(',\n')},\n${indent}}`;
-  }
-  if (t === 'object') {
-    const keys = Object.keys(v).sort();
-    if (keys.length === 0) return '{}';
-    const ctor = v.constructor && v.constructor.name;
-    const prefix = ctor && ctor !== 'Object' ? `${ctor} ` : '';
-    const items = keys.map((k) => `${ni}"${k}": ${__serialize(v[k], ni)}`);
-    return `${prefix}{\n${items.join(',\n')},\n${indent}}`;
-  }
-  return String(v);
+// vitest's snapshot serializer (turbo-test#73): pretty-format with vitest's snapshotFormat
+// (printBasicPrototype false, escapeString false), printFunctionName false, escapeRegex true and
+// the mock-function serializer; CRLF normalized.
+function __serialize(v) {
+  return __pf(v, { indent: 2, basic: false, escape: false, fnName: false, escapeRegex: true, mocks: true }).replace(/\r\n|\r/g, '\n');
 }
-// Parse a .snap file into a map of key -> serialized body. Format mirrors jest/vitest:
-//   exports[`<key>`] = `\n<body>\n`;
+// Read a .snap file (vitest's or turbo-test's older one: both are `exports[...] = ...;` JS).
 function __parseSnapFile(text) {
   const out = Object.create(null);
-  const re = /exports\[`((?:[^`\\]|\\.)*)`\]\s*=\s*`((?:[^`\\]|\\.)*)`;/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const key = m[1].replace(/\\`/g, '`').replace(/\\\\/g, '\\');
-    const body = m[2].replace(/\\`/g, '`').replace(/\\\\/g, '\\');
-    out[key] = body;
+  try { new Function('exports', text)(out); } catch (e) {}
+  return out;
+}
+// natural-compare-lite, the order vitest writes snapshot keys in.
+function __naturalCompare(a, b) {
+  let i, codeA, codeB = 1, posA = 0, posB = 0;
+  const code = (str, pos, num) => {
+    if (num) {
+      for (i = pos; (num = code(str, i)), num < 76 && num > 65;) ++i;
+      return +str.slice(pos - 1, i);
+    }
+    const c = str.charCodeAt(pos) || 0;
+    return c < 45 || c > 127 ? c : c < 46 ? 65 : c < 48 ? c - 1 : c < 58 ? c + 18 : c < 65 ? c - 11 : c < 91 ? c + 11 : c < 97 ? c - 37 : c < 123 ? c + 5 : c - 63;
+  };
+  if ((a += '') !== (b += '')) {
+    for (; codeB;) {
+      codeA = code(a, posA++);
+      codeB = code(b, posB++);
+      if (codeA < 76 && codeB < 76 && codeA > 66 && codeB > 66) {
+        codeA = code(a, posA, posA);
+        codeB = code(b, posB, (posA = i));
+        posB = i;
+      }
+      if (codeA !== codeB) return codeA < codeB ? -1 : 1;
+    }
+  }
+  return 0;
+}
+function __serializeSnapFile(map) {
+  const bt = (str) => `\`${str.replace(/`|\\|\$\{/g, '\\$&')}\``;
+  const entries = Object.keys(map).sort(__naturalCompare).map((k) => `exports[${bt(k)}] = ${bt(map[k].replace(/\r\n|\r/g, '\n'))};`);
+  return `// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html\n\n${entries.join('\n\n')}\n`;
+}
+// a multi-line snapshot is stored with a line break at either end (vitest addExtraLineBreaks)
+function __snapBody(serialized) { return serialized.includes('\n') ? `\n${serialized}\n` : serialized; }
+// vitest deepMergeSnapshot: the property matchers replace the received values they name
+function __snapMerge(target, source) {
+  const isObj = (x) => x != null && typeof x === 'object' && !Array.isArray(x) && !(x instanceof Asymmetric);
+  if (Array.isArray(target) && Array.isArray(source)) {
+    const out = Array.from(target);
+    source.forEach((s, i) => { out[i] = isObj(s) && isObj(out[i]) ? __snapMerge(out[i], s) : Array.isArray(s) ? __snapMerge(out[i], s) : s; });
+    return out;
+  }
+  if (!isObj(target) || !isObj(source)) return source === undefined ? target : source;
+  const out = { ...target };
+  for (const k of Object.keys(source)) {
+    out[k] = isObj(source[k]) && isObj(target[k]) ? __snapMerge(target[k], source[k]) : Array.isArray(source[k]) ? __snapMerge(target[k], source[k]) : source[k];
   }
   return out;
 }
-function __serializeSnapFile(map) {
-  const header = "// turbo-test snapshot v1\n\n";
-  const keys = Object.keys(map).sort();
-  const esc = (s) => s.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
-  return header + keys.map((k) => `exports[\`${esc(k)}\`] = \`${esc(map[k])}\`;\n`).join('\n');
+
+// The file's snapshot state, as @vitest/snapshot's SnapshotState (turbo-test#73): the update mode
+// (`all` under -u, `none` on CI — a missing snapshot fails —, else `new`), the snapshot data read
+// once, the keys not yet checked (obsolete at the end of the file), and the counts the JSON
+// report's `snapshot` summary adds up. The file is written once, when the file's tests are done.
+const __snapState = { loaded: false };
+function __snapMode() {
+  return globalThis.__TT_UPDATE_SNAPSHOTS ? 'all' : globalThis.__TT_CI ? 'none' : 'new';
 }
-// snapshot body is stored as `\n<serialized>\n` (jest convention); compare on the trimmed form.
-function __snapBody(serialized) { return `\n${serialized}\n`; }
+function __snapLoad() {
+  const st = __snapState;
+  if (st.loaded) return st;
+  const sf = __snapFile();
+  st.loaded = true;
+  st.sf = sf;
+  st.exists = !!sf && globalThis.__fs_existsSync(sf.path);
+  st.data = st.exists ? __parseSnapFile(globalThis.__fs_readFileSync(sf.path, 'utf8')) : Object.create(null);
+  st.unchecked = new Set(Object.keys(st.data));
+  st.dirty = false;
+  st.inline = false;
+  st.inlineWrites = [];
+  st.raw = false;
+  st.added = 0; st.matched = 0; st.unmatched = 0; st.updated = 0;
+  return st;
+}
+// @vitest/snapshot `_reconcile`: whether the snapshot passes, counting it and adding / updating
+// it (`add`) when the mode allows.
+function __snapReconcile(st, pass, hasSnapshot, add) {
+  const mode = __snapMode();
+  if ((hasSnapshot && mode === 'all') || (!hasSnapshot && mode !== 'none')) {
+    if (mode === 'all') {
+      if (!pass) { if (hasSnapshot) st.updated++; else st.added++; add(); }
+      else st.matched++;
+    } else { add(); st.added++; }
+    return true;
+  }
+  if (!pass) { st.unmatched++; return false; }
+  st.matched++;
+  return true;
+}
+// @vitest/snapshot stripSnapshotIndentation
+function __stripSnapIndent(snap) {
+  const m = snap.match(/^([^\S\n]*)\S/m);
+  if (!m || !m[1]) return snap;
+  const indent = m[1];
+  const lines = snap.split(/\n/g);
+  if (lines.length <= 2 || lines[0].trim() !== '' || lines[lines.length - 1].trim() !== '') return snap;
+  for (let i = 1; i < lines.length - 1; i++) {
+    if (lines[i] !== '') {
+      if (lines[i].indexOf(indent) !== 0) return snap;
+      lines[i] = lines[i].substring(indent.length);
+    }
+  }
+  lines[lines.length - 1] = '';
+  return lines.join('\n');
+}
+// @vitest/snapshot prepareSnapString: the snapshot as a template literal indented like its line
+function __snapLiteral(snap, code, index) {
+  const lineStart = code.lastIndexOf('\n', index - 1) + 1;
+  const indent = code.slice(lineStart).match(/^\s*/)[0].split('\n')[0];
+  const next = indent.includes('\t') ? `${indent}\t` : `${indent}  `;
+  const lines = snap.trim().replace(/\\/g, '\\\\').split(/\n/g);
+  const esc = (x) => x.replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+  if (lines.length <= 1) return `\`${esc(lines.join('\n'))}\``;
+  return `\`\n${esc(lines.map((l) => (l ? next + l : '')).join('\n'))}\n${indent}\``;
+}
+// @vitest/snapshot replaceInlineSnap / replaceObjectSnap on `code` at `index` (the method name):
+// the splice [start, end, text] that writes `snap` as the call's snapshot argument.
+function __inlineSplice(code, index, snap, name) {
+  const at = code.slice(index);
+  const ws = String.raw`\s*\(\s*(?:\/\*[\s\S]*\*\/\s*|\/\/.*(?:[\n\r  ]\s*|[\t\v\f \xA0  -   　﻿]))*`;
+  const start = new RegExp(`${name}${ws}[\\w$]*(['"\`)])`).exec(at);
+  const first = at.indexOf(name);
+  if (!start || start.index !== first) {
+    // toMatchInlineSnapshot({ …properties }) [, `…`]
+    const obj = new RegExp(`${name}${ws}\\{`).exec(at);
+    if (!obj) return null;
+    let depth = 0, i = obj.index + obj[0].length - 1, end = -1;
+    for (; i < at.length; i++) { if (at[i] === '{') depth++; else if (at[i] === '}' && --depth === 0) { end = i + 1; break; } }
+    let callEnd = -1;
+    for (let j = obj.index + name.length, d = 0; j < at.length; j++) { if (at[j] === '(') d++; else if (at[j] === ')' && --d === 0) { callEnd = j; break; } }
+    if (end < 0 || callEnd < 0) return null;
+    const lit = `, ${__snapLiteral(snap, code, index)}`;
+    return end === callEnd ? [index + callEnd, index + callEnd, lit] : [index + end, index + callEnd, lit];
+  }
+  const quote = start[1];
+  const startIndex = index + start.index + start[0].length;
+  const lit = __snapLiteral(snap, code, index);
+  if (quote === ')') return [startIndex - 1, startIndex - 1, lit];
+  const endMatch = new RegExp(`(?:^|[^\\\\])${quote}`).exec(code.slice(startIndex));
+  if (!endMatch) return null;
+  return [startIndex - 1, startIndex + endMatch.index + endMatch[0].length, lit];
+}
+// Write the file's new / updated inline snapshots back into its source (vitest saveInlineSnapshots).
+function __writeInlineSnapshots(writes) {
+  const file = globalThis.__ttFile;
+  if (!writes.length || !file) return;
+  const code = globalThis.__fs_readFileSync(file, 'utf8');
+  const starts = [0];
+  for (let i = 0; i < code.length; i++) if (code[i] === '\n') starts.push(i + 1);
+  // UTF-16 columns are string indices in JS
+  const splices = writes
+    .map((w) => __inlineSplice(code, starts[w.line - 1] + w.column - 1, w.snapshot, w.name))
+    .filter(Boolean)
+    .sort((x, y) => y[0] - x[0]);
+  let out = code;
+  for (const [a, b, text] of splices) out = out.slice(0, a) + text + out.slice(b);
+  if (out !== code) globalThis.__fs_writeFileSync(file, out);
+}
+function __snapMismatch(key, expected, actual) {
+  const err = new Error(`Snapshot \`${key}\` mismatched`);
+  err.expected = expected;
+  err.actual = actual;
+  return err;
+}
+// End of the file: mark the snapshots of skipped tests checked, drop the obsolete ones under -u,
+// save (or, under -u, delete an emptied file) and report the counts.
+function __snapFinish(skipped) {
+  const st = __snapState;
+  if (!st.loaded) {
+    const sf = __snapFile();
+    if (!sf || !globalThis.__fs_existsSync(sf.path)) return undefined;
+    __snapLoad();
+  }
+  for (const name of skipped) {
+    for (const k of st.unchecked) if (k.startsWith(name) && / \d+$| > /.test(k.slice(name.length))) st.unchecked.delete(k);
+  }
+  const mode = __snapMode();
+  const uncheckedKeys = [...st.unchecked];
+  if (uncheckedKeys.length && mode === 'all') {
+    for (const k of uncheckedKeys) delete st.data[k];
+    st.dirty = true;
+    st.unchecked.clear();
+  }
+  __writeInlineSnapshots(st.inlineWrites);
+  const external = Object.keys(st.data).length;
+  let deleted = false;
+  if ((st.dirty || st.unchecked.size) && (external || st.inline || st.raw)) {
+    if (external) {
+      globalThis.__fs_mkdirSync(st.sf.dir);
+      globalThis.__fs_writeFileSync(st.sf.path, __serializeSnapFile(st.data));
+    }
+  } else if (!external && st.exists) {
+    if (mode === 'all') globalThis.__fs_rmSync(st.sf.path);
+    deleted = true;
+  }
+  return {
+    added: st.added, matched: st.matched, unmatched: st.unmatched, updated: st.updated,
+    unchecked: deleted ? 0 : uncheckedKeys.length, unchecked_keys: uncheckedKeys, file_deleted: deleted,
+  };
+}
 
 // ---- expect ----
 function makeExpect(actual, negated = false) {
@@ -2120,56 +2273,91 @@ function makeExpect(actual, negated = false) {
     toThrowError(e) { return api.toThrow(e); },
     // File snapshot: serialize `actual`, key by `<full test name> <counter>` under
     // `__snapshots__/<testfile>.snap`. Missing key or update-mode (-u) → write + pass; else compare.
-    toMatchSnapshot(_hint) {
+    // vitest: toMatchSnapshot(propertiesOrHint?, hint?) — key `<test> [> <hint>] <n>`
+    toMatchSnapshot(propertiesOrHint, hint) {
       const sf = __snapFile();
       if (!sf) throw new Error('toMatchSnapshot: no test file path available');
-      const key = __snapNextKey(__snap.testName);
-      const body = __snapBody(__serialize(actual));
-      const exists = globalThis.__fs_existsSync(sf.path);
-      const map = exists ? __parseSnapFile(globalThis.__fs_readFileSync(sf.path, 'utf8')) : Object.create(null);
-      const update = !!globalThis.__TT_UPDATE_SNAPSHOTS;
-      if (!(key in map) || update) {
-        map[key] = body;
-        globalThis.__fs_mkdirSync(sf.dir);
-        globalThis.__fs_writeFileSync(sf.path, __serializeSnapFile(map));
-        return;
+      const props = typeof propertiesOrHint === 'object' && propertiesOrHint !== null ? propertiesOrHint : undefined;
+      const h = typeof propertiesOrHint === 'string' ? propertiesOrHint : hint;
+      const key = __snapNextKey(h ? `${__snap.testName} > ${h}` : __snap.testName);
+      let received = actual;
+      if (props) {
+        if (typeof received !== 'object' || !received) throw new Error('Received value must be an object when the matcher has properties');
+        if (!__subsetMatches(received, props)) throw new Error('Snapshot properties mismatched');
+        received = __snapMerge(received, props);
       }
+      const body = __snapBody(__serialize(received));
+      const st = __snapLoad();
+      st.unchecked.delete(key);
+      const expected = st.data[key];
+      const pass = expected !== undefined && String(expected).trim() === body.trim();
+      // a passing snapshot is re-stored as freshly serialized (vitest: the file round-trip)
+      if (pass) st.data[key] = body;
+      const ok = __snapReconcile(st, pass, expected !== undefined, () => { st.data[key] = body; st.dirty = true; });
       // vitest: a plain Error naming the snapshot (the diff is its expected / actual)
-      if (map[key] !== body) {
-        const err = new Error(`Snapshot \`${key}\` mismatched`);
-        err.expected = map[key];
-        err.actual = body;
-        throw err;
-      }
+      if (!ok) throw __snapMismatch(key, expected, body);
     },
-    // Inline snapshot: compares against the provided string arg (whitespace-normalized, matching
-    // vitest's trimming). AUTO-WRITE back into the source on first run / -u is UNSUPPORTED — pass
-    // the expected string explicitly. With no arg and no update, the first run writes nothing and
-    // passes (parity gap documented in vitest.compat.md).
-    toMatchInlineSnapshot(expected) {
-      // inline snapshots share the test's snapshot counter (vitest keys them like file ones)
-      const key = __snapNextKey(__snap.testName);
-      const body = __serialize(actual);
-      if (expected === undefined) return; // no auto-write; treat as accepted (documented gap)
-      const norm = (s) => String(s).replace(/^\n/, '').replace(/\n\s*$/, '').split('\n').map((l) => l.trim()).join('\n');
-      if (norm(body) !== norm(expected)) {
-        const err = new Error(`Snapshot \`${key}\` mismatched`);
-        err.expected = norm(expected);
-        err.actual = norm(body);
-        throw err;
-      }
+    // vitest's toMatchFileSnapshot(path, hint?): the value (a string as is, else serialized)
+    // against the whole file at `path` (relative to the test file); async, like vitest's.
+    toMatchFileSnapshot(file, hint) {
+      return Promise.resolve().then(() => {
+        const sf = __snapFile();
+        if (!sf) throw new Error('toMatchFileSnapshot: no test file path available');
+        const testDir = sf.dir.replace(/\/__snapshots__$/, '');
+        const parts = [];
+        for (const seg of (String(file).startsWith('/') ? String(file) : `${testDir}/${file}`).split('/')) {
+          if (seg === '..') parts.pop();
+          else if (seg && seg !== '.') parts.push(seg);
+        }
+        const path = `/${parts.join('/')}`;
+        const key = __snapNextKey(hint ? `${__snap.testName} > ${hint}` : __snap.testName);
+        const body = typeof actual === 'string' ? actual : __serialize(actual);
+        const st = __snapLoad();
+        st.raw = true;
+        const exists = globalThis.__fs_existsSync(path);
+        const expected = exists ? globalThis.__fs_readFileSync(path, 'utf8').replace(/\r\n/g, '\n') : undefined;
+        const pass = expected === body;
+        const write = () => {
+          const slash = path.lastIndexOf('/');
+          if (slash > 0) globalThis.__fs_mkdirSync(path.slice(0, slash));
+          globalThis.__fs_writeFileSync(path, body);
+        };
+        if (!__snapReconcile(st, pass, expected !== undefined, write)) throw __snapMismatch(key, expected, body);
+      });
     },
-    toThrowErrorMatchingSnapshot(_hint) {
-      let msg;
-      if (typeof actual === 'function') { try { actual(); msg = undefined; } catch (e) { msg = (e && e.message) || String(e); } }
-      else if (actual instanceof Error) msg = actual.message;
-      makeExpect(msg).toMatchSnapshot();
+    // vitest: toMatchInlineSnapshot(propertiesOrInlineSnapshot?, inlineSnapshotOrHint?, hint?);
+    // a new or (-u) changed one is written back into the test file when its tests are done.
+    toMatchInlineSnapshot(a, b, c, assertionName = 'toMatchInlineSnapshot') {
+      let props, inline, hint;
+      if (typeof a === 'string') { inline = __stripSnapIndent(a); hint = b; }
+      else { props = a; if (b) inline = __stripSnapIndent(b); hint = c; }
+      const key = __snapNextKey(hint ? `${__snap.testName} > ${hint}` : __snap.testName);
+      let received = actual;
+      if (props && typeof props === 'object') {
+        if (typeof received !== 'object' || !received) throw new Error('Received value must be an object when the matcher has properties');
+        if (!__subsetMatches(received, props)) throw new Error('Snapshot properties mismatched');
+        received = __snapMerge(received, props);
+      }
+      const body = __snapBody(__serialize(received));
+      const st = __snapLoad();
+      st.inline = true;
+      const pass = inline !== undefined && inline.trim() === body.trim();
+      const site = globalThis.__ttCallSite && globalThis.__ttCallSite();
+      const write = () => { if (site) st.inlineWrites.push({ line: site[0], column: site[1], snapshot: body, name: assertionName }); st.dirty = true; };
+      if (!__snapReconcile(st, pass, inline !== undefined, write)) throw __snapMismatch(key, inline, body);
+    },
+    // vitest snapshots the thrown value itself (`[TypeError: boom]`)
+    toThrowErrorMatchingSnapshot(hint) {
+      let thrown;
+      if (typeof actual === 'function') { try { actual(); } catch (e) { thrown = e; } }
+      else thrown = actual;
+      makeExpect(thrown).toMatchSnapshot(hint);
     },
     toThrowErrorMatchingInlineSnapshot(expected) {
-      let msg;
-      if (typeof actual === 'function') { try { actual(); msg = undefined; } catch (e) { msg = (e && e.message) || String(e); } }
-      else if (actual instanceof Error) msg = actual.message;
-      makeExpect(msg).toMatchInlineSnapshot(expected);
+      let thrown;
+      if (typeof actual === 'function') { try { actual(); } catch (e) { thrown = e; } }
+      else thrown = actual;
+      makeExpect(thrown).toMatchInlineSnapshot(expected, undefined, undefined, 'toThrowErrorMatchingInlineSnapshot');
     },
     toStrictEqual_alias() {},
     toHaveLength(n) {
@@ -3046,6 +3234,9 @@ function __pf(val, o) {
     escape: o.escape !== false,
     toJSON: o.toJSON !== false,
     errors: !!o.errors,
+    fnName: o.fnName !== false,
+    escapeRegex: !!o.escapeRegex,
+    mocks: !!o.mocks,
   };
   return __pfPrint(val, cfg, '', 0, [], false);
 }
@@ -3077,6 +3268,16 @@ function __pfPrint(v, cfg, ind, depth, refs, calledToJSON) {
       default: return `${name} ${p(v.sample, ind)}`;
     }
   }
+  // vitest's snapshot serializer for mock functions: `[MockFunction name] { calls, results }`
+  if (cfg.mocks && typeof v === 'function' && v._isMockFunction) {
+    const name = v.getMockName();
+    let calls = '';
+    if (v.mock.calls.length) {
+      const next = ind + cfg.indent;
+      calls = ` {${cfg.outer}${next}"calls": ${__pfPrint(v.mock.calls, cfg, next, depth, refs, false)}${cfg.min ? ', ' : ','}${cfg.outer}${next}"results": ${__pfPrint(v.mock.results, cfg, next, depth, refs, false)}${cfg.min ? '' : ','}${cfg.outer}${ind}}`;
+    }
+    return `[MockFunction${name === 'vi.fn()' ? '' : ` ${name}`}]${calls}`;
+  }
   if (cfg.errors && v instanceof Error) {
     if (refs.includes(v)) return '[Circular]';
     const r = [...refs, v];
@@ -3095,7 +3296,7 @@ function __pfPrint(v, cfg, ind, depth, refs, calledToJSON) {
     case 'number': return Object.is(v, -0) ? '-0' : String(v);
     case 'bigint': return `${v}n`;
     case 'string': return cfg.escape ? `"${v.replace(/"|\\/g, '\\$&')}"` : `"${v}"`;
-    case 'function': return `[Function ${v.name || 'anonymous'}]`;
+    case 'function': return cfg.fnName ? `[Function ${v.name || 'anonymous'}]` : '[Function]';
     case 'symbol': return String(v).replace(/^Symbol\((.*)\)(.*)$/, 'Symbol($1)');
   }
   const tag = Object.prototype.toString.call(v);
@@ -3103,7 +3304,10 @@ function __pfPrint(v, cfg, ind, depth, refs, calledToJSON) {
   if (tag === '[object WeakSet]') return 'WeakSet {}';
   if (tag === '[object Date]') return Number.isNaN(+v) ? 'Date { NaN }' : v.toISOString();
   if (tag === '[object Error]' || v instanceof Error) return `[${Error.prototype.toString.call(v)}]`;
-  if (tag === '[object RegExp]') return RegExp.prototype.toString.call(v);
+  if (tag === '[object RegExp]') {
+    const r = RegExp.prototype.toString.call(v);
+    return cfg.escapeRegex ? r.replace(/[$()*+.?[\\\]^{|}]/g, '\\$&') : r;
+  }
   if (refs.includes(v)) return '[Circular]';
   refs = [...refs, v];
   const d = depth + 1;
@@ -3682,6 +3886,8 @@ async function runSuite(suite, ancestors, summary, mode = '') {
     if (todo || hookFailed || skipAll || filtered || t.skip || t.notOnly) {
       summary.skipped++;
       summary.tests.push(__testRecord(t, chain, todo ? 'todo' : 'skipped'));
+      // vitest marks a skipped test's snapshots checked (not obsolete)
+      if (!todo) summary.skippedNames.push(label);
       continue;
     }
     // retry: per-test `{ retry }` wins; else the global default (--retry → __TT_DEFAULT_RETRY).
@@ -3701,7 +3907,7 @@ async function runSuite(suite, ancestors, summary, mode = '') {
       // Reset per-test snapshot + assertion-count state (snapshot counter is keyed by test name,
       // so distinct multi-snapshot tests don't collide; assertion enforcement resets each attempt).
       __snap.testName = label;
-      __snap.counters[label] = 0;
+      for (const k of Object.keys(__snap.counters)) if (k === label || k.startsWith(`${label} > `)) __snap.counters[k] = 0;
       __snap.assertCount = 0;
       __snap.expectedAssertions = null;
       __snap.hasAssertions = false;
@@ -3806,7 +4012,7 @@ globalThis.__tt = {
   async run() {
     // `suites`: one state per describe block ('pass' / 'fail' / 'skip' / 'todo'), for the JSON
     // reporter's suite counts.
-    const summary = { passed: 0, failed: 0, skipped: 0, failures: [], tests: [], suites: [] };
+    const summary = { passed: 0, failed: 0, skipped: 0, failures: [], tests: [], suites: [], skippedNames: [] };
     // vitest (runner `runFiles`): a file that collected NO task at all — no test or suite, skipped
     // and todo ones included — fails with "No test suite found in file <path>" unless
     // passWithNoTests. Reported as the file's only failure entry with no failed test; the CLI
@@ -3823,6 +4029,7 @@ globalThis.__tt = {
     }
     if (this.hasOnly) __interpretOnly(root, false);
     await runSuite(root, [], summary);
+    summary.snapshot = __snapFinish(summary.skippedNames);
     return summary;
   },
 };
@@ -3860,6 +4067,7 @@ globalThis.__ttResetForNextFile = () => {
   root.tasks = [];
   // Reset snapshot counters between files (keyed by test name; cleared to avoid cross-file drift).
   __snap.counters = Object.create(null);
+  __snapState.loaded = false;
   // NOTE: root.hooks is intentionally LEFT in place. Restoring it to a post-global-setup baseline
   // drops @testing-library's auto-cleanup afterEach for most files (it registers during a test
   // file's first render, not during global setup) → DOM accumulates → mass failure. The downside

@@ -124,6 +124,15 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   ``Snapshot `<name> <n>` mismatched`` (inline snapshots now share the test's snapshot counter),
   a custom matcher's `message` must be a function, as in vitest. Spies record a throwing call in
   `mock.results` (`type: 'throw'`) and a `vi.spyOn` spy is named after its method.
+- Snapshots follow vitest 4.1.12 (turbo-test#73): snapshot files are written byte for byte as
+  vitest writes them (header, natural key order, vitest's snapshot serializer — `[Function]`,
+  `[MockFunction name] { calls, results }`, `10n`, `-0`, raw strings, escaped regexes —, single-line
+  values without line breaks, `<name> > <hint> <n>` keys, property matchers) and files vitest wrote
+  pass (they mismatched); thrown values are snapshotted (`[TypeError: boom]`, not the message);
+  `toMatchFileSnapshot` is added; inline snapshots are compared as vitest compares them and new /
+  `-u`-updated ones are written back into the test file; obsolete snapshots are reported and
+  removed by `-u` (an emptied snapshot file deleted); on CI a missing snapshot fails instead of
+  being written; the JSON report's `snapshot` summary has vitest's counts.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

@@ -65,7 +65,6 @@ fn failed_matchers_throw_what_vitest_throws() {
 }
 
 #[test]
-#[ignore = "turbo-test#73: fails until the fix"]
 fn snapshot_files_are_vitests() {
     // turbo-test#73: turbo-test wrote (and expected) its own snapshot format, so a file vitest
     // wrote mismatched. `f.test.js.snap` is the file vitest 4.1.12 writes for `f.test.js`.
@@ -113,7 +112,6 @@ fn snapshot_summary(p: &Project, r: &common::Run) -> String {
 }
 
 #[test]
-#[ignore = "turbo-test#73: fails until the fix"]
 fn snapshot_modes_obsolete_snapshots_and_file_snapshots_follow_vitest() {
     // turbo-test#73: no `toMatchFileSnapshot`, no CI mode, obsolete snapshots neither reported nor
     // removed by -u, and the JSON `snapshot` summary all zeros. Expected = vitest 4.1.12 on the
@@ -220,7 +218,6 @@ fn snapshot_modes_obsolete_snapshots_and_file_snapshots_follow_vitest() {
 }
 
 #[test]
-#[ignore = "turbo-test#73: fails until the fix"]
 fn inline_snapshots_are_written_back_as_vitest_writes_them() {
     // turbo-test#73: a new inline snapshot passed without being written, and -u could not update
     // one. vitest 4.1.12 writes them into the test file: `inline.new.ts` is the file after a

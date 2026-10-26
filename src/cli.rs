@@ -47,6 +47,8 @@ pub struct FileResult {
     pub tests: Vec<TestCase>,
     /// One state per `describe` block ("pass" / "fail" / "skip" / "todo"), for the JSON counts.
     pub suites: Vec<String>,
+    /// The file's snapshot counts, for the JSON report's `snapshot` summary.
+    pub snapshot: Option<runner::SnapshotResult>,
     pub setup_us: f64,
     pub dur_ms: f64,
 }
@@ -580,6 +582,7 @@ pub fn file_result(idx: usize, file: &Path, r: FileOutcome, dur_ms: f64) -> File
                 error_msg: String::new(),
                 tests: rep.tests,
                 suites: rep.suites,
+                snapshot: rep.snapshot,
                 setup_us: rep.setup_us,
                 dur_ms,
             }
@@ -594,6 +597,7 @@ pub fn file_result(idx: usize, file: &Path, r: FileOutcome, dur_ms: f64) -> File
             error_msg: e,
             tests: Vec::new(),
             suites: Vec::new(),
+            snapshot: None,
             setup_us: 0.0,
             dur_ms,
         },
@@ -774,13 +778,39 @@ fn file_message(error_msg: &str) -> String {
     m.to_string()
 }
 
-/// vitest's `snapshot` summary block. turbo-test does not count snapshots: every counter is 0 and
-/// `didUpdate` is whether `-u` / `--update` was given.
-fn snapshot_summary(did_update: bool) -> String {
+/// vitest's `snapshot` summary block: the files' snapshot results added up as @vitest/snapshot's
+/// `addSnapshotResult` does; `didUpdate` is whether `-u` / `--update` was given.
+fn snapshot_summary(files: &[PathBuf], res: &[FileResult], did_update: bool) -> String {
+    let (mut added, mut matched, mut unmatched, mut updated, mut unchecked) = (0, 0, 0, 0, 0);
+    let (mut f_added, mut f_removed, mut f_unmatched, mut f_updated) = (0, 0, 0, 0);
+    let mut by_file = Vec::new();
+    for r in res {
+        let Some(s) = &r.snapshot else { continue };
+        f_added += u32::from(s.added > 0);
+        f_removed += u32::from(s.file_deleted);
+        f_unmatched += u32::from(s.unmatched > 0);
+        f_updated += u32::from(s.updated > 0);
+        added += s.added;
+        matched += s.matched;
+        unmatched += s.unmatched;
+        updated += s.updated;
+        unchecked += s.unchecked;
+        if !s.unchecked_keys.is_empty() {
+            by_file.push(format!(
+                "{{\"filePath\":{},\"keys\":{}}}",
+                json_str(&history_key(&files[r.idx])),
+                json_strs(&s.unchecked_keys)
+            ));
+        }
+    }
+    let total = added + matched + unmatched + updated;
     format!(
-        "{{\"added\":0,\"failure\":false,\"filesAdded\":0,\"filesRemoved\":0,\"filesRemovedList\":[],\
-         \"filesUnmatched\":0,\"filesUpdated\":0,\"matched\":0,\"total\":0,\"unchecked\":0,\
-         \"uncheckedKeysByFile\":[],\"unmatched\":0,\"updated\":0,\"didUpdate\":{did_update}}}"
+        "{{\"added\":{added},\"failure\":false,\"filesAdded\":{f_added},\"filesRemoved\":{f_removed},\
+         \"filesRemovedList\":[],\"filesUnmatched\":{f_unmatched},\"filesUpdated\":{f_updated},\
+         \"matched\":{matched},\"total\":{total},\"unchecked\":{unchecked},\
+         \"uncheckedKeysByFile\":[{}],\"unmatched\":{unmatched},\"updated\":{updated},\
+         \"didUpdate\":{did_update}}}",
+        by_file.join(",")
     )
 }
 
@@ -849,7 +879,10 @@ pub fn render_json(
     out.push_str(&format!("\"numFailedTests\":{failed_tests},"));
     out.push_str(&format!("\"numPendingTests\":{},", count("skipped")));
     out.push_str(&format!("\"numTodoTests\":{},", count("todo")));
-    out.push_str(&format!("\"snapshot\":{},", snapshot_summary(did_update)));
+    out.push_str(&format!(
+        "\"snapshot\":{},",
+        snapshot_summary(files, res, did_update)
+    ));
     out.push_str(&format!("\"startTime\":{},", js_num(start_ms)));
     out.push_str(&format!(
         "\"success\":{},",
