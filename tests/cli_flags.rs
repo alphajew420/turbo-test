@@ -193,7 +193,12 @@ fn update_snapshots() {
         "test('snap', () => { expect({ v: 2 }).toMatchSnapshot() })\n",
     );
     let r = tt(&p, &[]);
-    assert!(r.stdout.contains("snapshot mismatch"), "{}", r.all());
+    // vitest's message (turbo-test#71)
+    assert!(
+        r.stdout.contains("✗ snap: Snapshot `snap 1` mismatched"),
+        "{}",
+        r.all()
+    );
     for flag in ["-u", "--update"] {
         assert_eq!(tt(&p, &[flag]).code, Some(0), "{flag}");
         assert!(std::fs::read_to_string(&snap).unwrap().contains("\"v\": 2"));

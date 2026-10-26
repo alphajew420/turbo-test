@@ -117,6 +117,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   import did not, and the mock was dropped). The prepass now runs in a scope proxy the file fills
   when it runs; without esbuild a TypeScript file's factories are type-stripped first (their
   types made the prepass a syntax error, so the mock was dropped).
+- Failed matchers throw what vitest 4.1.12 throws (turbo-test#71): chai's `AssertionError` with
+  vitest's message for every built-in matcher, positive and negated (`expected 1 to be 2 //
+  Object.is equality`, `expected [ 1 ] to include 2`, the spy matchers' call / return listings with
+  vitest's diff), instead of a plain `Error` with turbo-test's wording; a snapshot mismatch is
+  ``Snapshot `<name> <n>` mismatched`` (inline snapshots now share the test's snapshot counter),
+  a custom matcher's `message` must be a function, as in vitest. Spies record a throwing call in
+  `mock.results` (`type: 'throw'`) and a `vi.spyOn` spy is named after its method.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

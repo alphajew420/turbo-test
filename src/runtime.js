@@ -2009,15 +2009,37 @@ function makeExpect(actual, negated = false) {
   // only when the assertion fails, as vitest does — formatting can throw (a native class
   // prototype whose members check their receiver) and must not fail a passing assertion.
   const ok = (pass, msg) => {
-    if (negated ? pass : !pass) throw new Error(msg());
+    if (negated ? pass : !pass) throw new __ChaiAssertionError(msg());
   };
+  // chai's assert with vitest's templates (turbo-test#71)
+  const c = (pass, msg, notMsg, exp, act = actual) => __chaiAssert(negated, pass, msg, notMsg, actual, exp, act);
+  const spyOf = () => {
+    if (!(typeof actual === 'function' && actual._isMockFunction === true)) throw new TypeError(`${__inspect(actual)} is not a spy or a call to a spy!`);
+    return actual;
+  };
+  const numbers = (x, label) => {
+    if (typeof x !== 'number' && typeof x !== 'bigint') throw new TypeError(`${label} value must be number or bigint, received "${typeof x}"`);
+  };
+  const argsEqual = (a, b) => a.length === b.length && a.every((x, i) => deepEqual(x, b[i]));
   const api = {
     get not() { return makeExpect(actual, !negated); },
-    toBeTypeOf(t) { ok(typeof actual === t, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be typeof ${t}, got ${typeof actual}`); },
-    toSatisfy(fn) { ok(!!fn(actual), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to satisfy predicate`); },
+    toBeTypeOf(t) { c(typeof actual === t, 'expected #{this} to be type of #{exp}', 'expected #{this} not to be type of #{exp}', t, typeof actual); },
+    // a jest-style matcher in vitest: a plain Error with its matcher hint
+    toSatisfy(fn, message) {
+      const pass = !!fn(actual);
+      if (negated ? !pass : pass) return;
+      const shown = message || __stringify(fn);
+      throw new Error(negated
+        ? `expect(received).not.toSatisfy()\n\nExpected value to not satisfy:\n${shown}\nReceived:\n${__stringify(actual)}`
+        : `expect(received).toSatisfy()\n\nExpected value to satisfy:\n${shown}\n\nReceived:\n${__stringify(actual)}`);
+    },
     toHaveBeenCalledExactlyOnceWith(...a) {
-      const calls = actual.mock && actual.mock.calls;
-      ok(calls && calls.length === 1 && deepEqual(calls[0], a), () => `expected spy called exactly once with ${fmt(a)}`);
+      const spy = spyOf();
+      const name = spy.getMockName();
+      const pass = spy.mock.calls.length === 1 && spy.mock.calls.some((x) => argsEqual(x, a));
+      if (negated ? !pass : pass) return;
+      const msg = __chaiMsg(negated ? `expected "${name}" to not be called once with arguments: #{exp}` : `expected "${name}" to be called once with arguments: #{exp}`, actual, a, actual);
+      throw new __ChaiAssertionError(__formatCalls(spy, msg, a));
     },
     // async matchers: `await expect(promise).resolves.toX(...)`, `.rejects.toX(...)`, and
     // `.resolves.not.toX(...)` / `.rejects.not.toX(...)` (the `.not` returns a negated proxy).
@@ -2026,7 +2048,7 @@ function makeExpect(actual, negated = false) {
         if (m === 'not') return mk(!neg);
         return (...args) => Promise.resolve(actual).then(
           (v) => makeExpect(v, neg)[m](...args),
-          (e) => { throw new Error('expected promise to resolve, but it rejected with ' + fmt(e && e.message || e)); },
+          (e) => { const err = new __ChaiAssertionError(`promise rejected "${__inspect(e)}" instead of resolving`, { showDiff: false }); err.cause = e; throw err; },
         );
       } });
       return mk(negated);
@@ -2035,34 +2057,65 @@ function makeExpect(actual, negated = false) {
       const mk = (neg) => new Proxy({}, { get: (_, m) => {
         if (m === 'not') return mk(!neg);
         return (...args) => Promise.resolve(actual).then(
-          () => { throw new Error('expected promise to reject, but it resolved'); },
-          (e) => makeExpect(e, neg)[m](...args),
+          (v) => { throw new __ChaiAssertionError(`promise resolved "${__inspect(v)}" instead of rejecting`, { actual: v, expected: new Error('rejected promise') }); },
+          // `.rejects.toThrow()` checks the rejection as a thrown error (vitest wraps it in a thrower)
+          (e) => (m === 'toThrow' || m === 'toThrowError' ? makeExpect(() => { throw e; }, neg) : makeExpect(e, neg))[m](...args),
         );
       } });
       return mk(negated);
     },
-    toBe(e) { ok(Object.is(actual, e), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be ${fmt(e)}`); },
-    toEqual(e) { ok(deepEqual(actual, e), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to equal ${fmt(e)}`); },
-    toStrictEqual(e) { ok(deepEqual(actual, e, true), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to strictly equal ${fmt(e)}`); },
-    toBeTruthy() { ok(!!actual, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be truthy`); },
-    toBeFalsy() { ok(!actual, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be falsy`); },
-    toBeNull() { ok(actual === null, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be null`); },
-    toBeUndefined() { ok(actual === undefined, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be undefined`); },
-    toBeDefined() { ok(actual !== undefined, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be defined`); },
-    toBeNaN() { ok(Number.isNaN(actual), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be NaN`); },
-    toBeGreaterThan(n) { ok(actual > n, () => `expected ${fmt(actual)} > ${fmt(n)}`); },
-    toBeGreaterThanOrEqual(n) { ok(actual >= n, () => `expected ${fmt(actual)} >= ${fmt(n)}`); },
-    toBeLessThan(n) { ok(actual < n, () => `expected ${fmt(actual)} < ${fmt(n)}`); },
-    toBeLessThanOrEqual(n) { ok(actual <= n, () => `expected ${fmt(actual)} <= ${fmt(n)}`); },
-    toBeCloseTo(n, d = 2) { ok(Math.abs(actual - n) < Math.pow(10, -d) / 2, () => `expected ${fmt(actual)} close to ${fmt(n)}`); },
-    toContain(x) { ok(actual != null && actual.includes && actual.includes(x), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain ${fmt(x)}`); },
-    toContainEqual(x) { ok(Array.isArray(actual) && actual.some((a) => deepEqual(a, x)), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to contain equal ${fmt(x)}`); },
-    toBeInstanceOf(ctor) { ok(actual instanceof ctor, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to be instance of ${ctor && ctor.name}`); },
+    toBe(e) {
+      const pass = Object.is(actual, e);
+      let msg = 'expected #{this} to be #{exp} // Object.is equality';
+      if (!pass && !negated) {
+        const deep = deepEqual(actual, e, true) ? 'toStrictEqual' : deepEqual(actual, e) ? 'toEqual' : '';
+        if (deep) msg += `\n\nIf it should pass with deep equality, replace "toBe" with "${deep}"\n\nExpected: #{this}\nReceived: serializes to the same string\n`;
+      }
+      c(pass, msg, 'expected #{this} not to be #{exp} // Object.is equality', e);
+    },
+    toEqual(e) { c(deepEqual(actual, e), 'expected #{this} to deeply equal #{exp}', 'expected #{this} to not deeply equal #{exp}', e); },
+    toStrictEqual(e) { c(deepEqual(actual, e, true), 'expected #{this} to strictly equal #{exp}', 'expected #{this} to not strictly equal #{exp}', e); },
+    toBeTruthy() { c(!!actual, 'expected #{this} to be truthy', 'expected #{this} to not be truthy', true); },
+    toBeFalsy() { c(!actual, 'expected #{this} to be falsy', 'expected #{this} to not be falsy', false); },
+    toBeNull() { c(actual === null, 'expected #{this} to be null', 'expected #{this} not to be null', null); },
+    toBeUndefined() { c(actual === undefined, 'expected #{this} to be undefined', 'expected #{this} not to be undefined', undefined); },
+    toBeDefined() { c(actual !== undefined, 'expected #{this} to be defined', 'expected #{this} to be undefined', actual); },
+    toBeNaN() { c(Number.isNaN(actual), 'expected #{this} to be NaN', 'expected #{this} not to be NaN', NaN); },
+    toBeGreaterThan(n) { numbers(actual, 'actual'); numbers(n, 'expected'); c(actual > n, `expected ${actual} to be greater than ${n}`, `expected ${actual} to be not greater than ${n}`, n); },
+    toBeGreaterThanOrEqual(n) { numbers(actual, 'actual'); numbers(n, 'expected'); c(actual >= n, `expected ${actual} to be greater than or equal to ${n}`, `expected ${actual} to be not greater than or equal to ${n}`, n); },
+    toBeLessThan(n) { numbers(actual, 'actual'); numbers(n, 'expected'); c(actual < n, `expected ${actual} to be less than ${n}`, `expected ${actual} to be not less than ${n}`, n); },
+    toBeLessThanOrEqual(n) { numbers(actual, 'actual'); numbers(n, 'expected'); c(actual <= n, `expected ${actual} to be less than or equal to ${n}`, `expected ${actual} to be not less than or equal to ${n}`, n); },
+    toBeCloseTo(n, d = 2) {
+      let pass = false, expectedDiff = 0, receivedDiff = 0;
+      if ((n === Infinity && actual === Infinity) || (n === -Infinity && actual === -Infinity)) pass = true;
+      else { expectedDiff = 10 ** -d / 2; receivedDiff = Math.abs(actual - n); pass = receivedDiff < expectedDiff; }
+      c(pass, `expected #{this} to be close to #{exp}, received difference is ${receivedDiff}, but expected ${expectedDiff}`, `expected #{this} to not be close to #{exp}, received difference is ${receivedDiff}, but expected ${expectedDiff}`, n);
+    },
+    toContain(x) {
+      if (typeof Node !== 'undefined' && actual instanceof Node) {
+        if (!(x instanceof Node)) throw new TypeError(`toContain() expected a DOM node as the argument, but got ${typeof x}`);
+        return c(actual.contains(x), 'expected #{this} to contain element #{exp}', 'expected #{this} not to contain element #{exp}', x);
+      }
+      if (typeof actual === 'string' && typeof x === 'string') return c(actual.includes(x), 'expected #{this} to contain #{exp}', 'expected #{this} not to contain #{exp}', x);
+      // chai's include on the value made indexable (vitest: Array.from)
+      const list = actual != null && typeof actual !== 'string' ? Array.from(actual) : actual;
+      const pass = list != null && list.includes(x);
+      __chaiAssert(negated, pass, 'expected #{this} to include #{exp}', 'expected #{this} to not include #{exp}', list, x, list);
+    },
+    toContainEqual(x) { c(actual != null && Array.from(actual).some((a) => deepEqual(a, x)), 'expected #{this} to deep equally contain #{exp}', 'expected #{this} to not deep equally contain #{exp}', x); },
+    toBeInstanceOf(ctor) {
+      if (typeof ctor !== 'function') {
+        const t = ctor === null ? 'null' : Object.prototype.toString.call(ctor).slice(8, -1);
+        throw new __ChaiAssertionError(`The instanceof assertion needs a constructor but ${t} was given.`);
+      }
+      c(actual instanceof ctor, `expected #{this} to be an instance of ${ctor.name}`, `expected #{this} to not be an instance of ${ctor.name}`, ctor);
+    },
     toMatchObject(obj) {
-      const sub = (a, e) => (e instanceof Asymmetric) ? e.matches(a)
-        : e == null || typeof e !== 'object' ? deepEqual(a, e)
-        : a != null && typeof a === 'object' && Object.keys(e).every((k) => sub(a[k], e[k]));
-      ok(sub(actual, obj), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match object ${fmt(obj)}`);
+      const pass = __subsetMatches(actual, obj);
+      if (negated ? !pass : pass) return;
+      const msg = __chaiMsg(negated ? 'expected #{this} to not match object #{exp}' : 'expected #{this} to match object #{exp}', actual, obj, actual);
+      const n = __strippedCount(actual, obj);
+      throw new __ChaiAssertionError(n === 0 ? msg : `${msg}\n(${n} matching ${n === 1 ? 'property' : 'properties'} omitted from actual)`, { expected: obj });
     },
     toThrowError(e) { return api.toThrow(e); },
     // File snapshot: serialize `actual`, key by `<full test name> <counter>` under
@@ -2081,17 +2134,30 @@ function makeExpect(actual, negated = false) {
         globalThis.__fs_writeFileSync(sf.path, __serializeSnapFile(map));
         return;
       }
-      ok(map[key] === body, () => `snapshot mismatch for "${key}"\n- Snapshot\n+ Received\n- ${map[key].trim()}\n+ ${body.trim()}`);
+      // vitest: a plain Error naming the snapshot (the diff is its expected / actual)
+      if (map[key] !== body) {
+        const err = new Error(`Snapshot \`${key}\` mismatched`);
+        err.expected = map[key];
+        err.actual = body;
+        throw err;
+      }
     },
     // Inline snapshot: compares against the provided string arg (whitespace-normalized, matching
     // vitest's trimming). AUTO-WRITE back into the source on first run / -u is UNSUPPORTED — pass
     // the expected string explicitly. With no arg and no update, the first run writes nothing and
     // passes (parity gap documented in vitest.compat.md).
     toMatchInlineSnapshot(expected) {
+      // inline snapshots share the test's snapshot counter (vitest keys them like file ones)
+      const key = __snapNextKey(__snap.testName);
       const body = __serialize(actual);
       if (expected === undefined) return; // no auto-write; treat as accepted (documented gap)
       const norm = (s) => String(s).replace(/^\n/, '').replace(/\n\s*$/, '').split('\n').map((l) => l.trim()).join('\n');
-      ok(norm(body) === norm(expected), () => `inline snapshot mismatch\n- ${norm(expected)}\n+ ${norm(body)}`);
+      if (norm(body) !== norm(expected)) {
+        const err = new Error(`Snapshot \`${key}\` mismatched`);
+        err.expected = norm(expected);
+        err.actual = norm(body);
+        throw err;
+      }
     },
     toThrowErrorMatchingSnapshot(_hint) {
       let msg;
@@ -2106,7 +2172,10 @@ function makeExpect(actual, negated = false) {
       makeExpect(msg).toMatchInlineSnapshot(expected);
     },
     toStrictEqual_alias() {},
-    toHaveLength(n) { ok(actual != null && actual.length === n, () => `expected length ${actual && actual.length} ${negated ? 'not ' : ''}to be ${n}`); },
+    toHaveLength(n) {
+      if (actual == null || actual.length === undefined) throw new __ChaiAssertionError(__chaiMsg("expected #{this} to have property 'length'", actual));
+      c(actual.length === n, 'expected #{this} to have a length of #{exp} but got #{act}', 'expected #{this} to not have a length of #{exp}', n, actual.length);
+    },
     toHaveProperty(path, value) {
       let cur = actual, present;
       // A literal key (incl. one containing dots, e.g. a CSS selector) takes precedence over
@@ -2121,44 +2190,99 @@ function makeExpect(actual, negated = false) {
         }
       }
       const pass = arguments.length < 2 ? present : (present && deepEqual(cur, value));
-      ok(pass, () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to have property ${fmt(path)}${arguments.length < 2 ? '' : ' = ' + fmt(value)}`);
+      const name = Array.isArray(path) ? path.map((k) => String(k).replace(/([.[\]])/g, '\\$1')).join('.') : path;
+      const withValue = arguments.length < 2 ? '' : ` with value ${__objDisplay(value)}`;
+      c(pass, `expected #{this} to have property "${name}"${withValue}`, `expected #{this} to not have property "${name}"${withValue}`, value, present ? cur : undefined);
     },
-    toMatch(re) { const r = re instanceof RegExp ? re : new RegExp(re); ok(r.test(actual), () => `expected ${fmt(actual)} ${negated ? 'not ' : ''}to match ${r}`); },
+    toMatch(re) {
+      if (typeof actual !== 'string') throw new TypeError(`.toMatch() expects to receive a string, but got ${typeof actual}`);
+      c(typeof re === 'string' ? actual.includes(re) : re.test(actual), 'expected #{this} to match #{exp}', 'expected #{this} not to match #{exp}', re);
+    },
     toThrow(expected) {
       let threw = false, err;
-      // expect(fn).toThrow() calls the fn; expect(promise).rejects.toThrow() passes the already-
-      // rejected error as `actual` (not callable) — treat it as the thrown value directly.
       if (typeof actual === 'function') { try { actual(); } catch (e) { threw = true; err = e; } }
       else if (actual instanceof Error) { threw = true; err = actual; }
-      if (!expected) { ok(threw, () => `expected function ${negated ? 'not ' : ''}to throw`); return; }
-      const msg = err && (err.message || String(err)) || '';
-      let matches;
-      if (expected instanceof RegExp) matches = expected.test(msg);
-      else if (typeof expected === 'function') matches = err instanceof expected; // toThrow(ErrorClass)
-      else if (expected && typeof expected === 'object') matches = err && (expected.message == null || String(err.message || '').includes(expected.message)); // toThrow({message})
-      else matches = msg.includes(expected);
-      ok(threw && matches, () => `expected to throw matching ${fmt(expected)}, got ${fmt(msg)}`);
+      const fnShown = typeof actual === 'function' ? actual : () => {};
+      // chai's `throws` (no argument, a string, a RegExp): vitest's messages
+      if (expected === undefined || typeof expected === 'string' || expected instanceof RegExp) {
+        const shown = (x) => (x instanceof Error ? x.toString() : typeof x === 'string' ? x : x && x.constructor && x.constructor.name);
+        if (expected === undefined) {
+          return __chaiAssert(negated, threw, 'expected #{this} to throw an error', 'expected #{this} to not throw an error but #{act} was thrown', fnShown, undefined, shown(err));
+        }
+        if (!threw) {
+          if (negated) return;
+          throw new __ChaiAssertionError(__chaiMsg('expected #{this} to throw an error', fnShown));
+        }
+        const message = err instanceof Error ? err.message : typeof err === 'string' ? err : String(err);
+        const re = expected === '' ? /^$/ : expected;
+        const matches = re instanceof RegExp ? re.test(message) : message.includes(re);
+        const verb = re instanceof RegExp ? 'matching' : 'including';
+        return __chaiAssert(negated, matches, `expected #{this} to throw error ${verb} #{exp} but got #{act}`, `expected #{this} to throw error not ${verb} #{exp}`, fnShown, re, message);
+      }
+      if (!threw && !negated) throw new __ChaiAssertionError("expected function to throw an error, but it didn't", { showDiff: false });
+      if (typeof expected === 'function') {
+        const name = expected.name || expected.prototype.constructor.name;
+        return c(threw && err instanceof expected, `expected error to be instance of ${name}`, `expected error not to be instance of ${name}`, expected, err);
+      }
+      if (expected instanceof Error) {
+        return c(threw && err instanceof Error && err.message === expected.message, 'expected a thrown error to be #{exp}', 'expected a thrown error not to be #{exp}', expected, err);
+      }
+      if (expected instanceof Asymmetric) {
+        return c(threw && expected.matches(err), 'expected error to match asymmetric matcher', 'expected error not to match asymmetric matcher', expected, err);
+      }
+      const matches = threw && err && (expected.message == null || String(err.message || '').includes(expected.message));
+      c(matches, 'expected a thrown value to equal #{exp}', 'expected a thrown value not to equal #{exp}', expected, err);
     },
-    toHaveBeenCalled() { ok(actual.mock && actual.mock.calls.length > 0, () => `expected spy ${negated ? 'not ' : ''}to have been called`); },
-    toHaveBeenCalledTimes(n) { ok(actual.mock && actual.mock.calls.length === n, () => `expected spy called ${n}x, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
+    toHaveBeenCalled() {
+      const spy = spyOf();
+      const name = spy.getMockName();
+      const n = spy.mock.calls.length;
+      if (negated ? n === 0 : n > 0) return;
+      if (!negated) throw new __ChaiAssertionError(`expected "${name}" to be called at least once`);
+      throw new __ChaiAssertionError(__formatCalls(spy, `expected "${name}" to not be called at all, but actually been called ${n} times`));
+    },
+    toHaveBeenCalledTimes(times) {
+      const spy = spyOf();
+      const n = spy.mock.calls.length;
+      c(n === times, `expected "${spy.getMockName()}" to be called #{exp} times, but got ${n} times`, `expected "${spy.getMockName()}" to not be called #{exp} times`, times, n);
+    },
     toHaveBeenCalledWith(...a) {
-      const found = actual.mock && actual.mock.calls.some((c) => deepEqual(c, a));
-      const got = () => actual.mock ? `; received ${actual.mock.calls.length} call(s): ${fmt(actual.mock.calls)}` : '; not a spy';
-      ok(found, () => `expected spy ${negated ? 'not ' : ''}to have been called with ${fmt(a)}${negated ? '' : got()}`);
+      const spy = spyOf();
+      const name = spy.getMockName();
+      const pass = spy.mock.calls.some((x) => argsEqual(x, a));
+      if (negated ? !pass : pass) return;
+      const msg = __chaiMsg(negated ? `expected "${name}" to not be called with arguments: #{exp}` : `expected "${name}" to be called with arguments: #{exp}`, actual, a, actual);
+      throw new __ChaiAssertionError(__formatCalls(spy, msg, a));
     },
-    toHaveBeenCalledOnce() { ok(actual.mock && actual.mock.calls.length === 1, () => `expected spy called once, got ${actual.mock ? actual.mock.calls.length : 'n/a'}`); },
+    toHaveBeenCalledOnce() {
+      const spy = spyOf();
+      const n = spy.mock.calls.length;
+      c(n === 1, `expected "${spy.getMockName()}" to be called once, but got ${n} times`, `expected "${spy.getMockName()}" to not be called once`, 1, n);
+    },
     toHaveBeenLastCalledWith(...a) {
-      const calls = actual.mock && actual.mock.calls;
-      const last = calls && calls.length ? calls[calls.length - 1] : undefined;
-      ok(last && deepEqual(last, a), () => `expected spy last called with ${fmt(a)}, got ${fmt(last)}`);
+      const spy = spyOf();
+      const last = spy.mock.calls[spy.mock.calls.length - 1];
+      c(!!last && argsEqual(last, a), `expected last "${spy.getMockName()}" call to have been called with #{exp}`, `expected last "${spy.getMockName()}" call to not have been called with #{exp}`, a, last);
     },
-    toHaveBeenNthCalledWith(n, ...a) {
-      const calls = actual.mock && actual.mock.calls;
-      const c = calls && calls[n - 1];
-      ok(c && deepEqual(c, a), () => `expected spy call #${n} with ${fmt(a)}, got ${fmt(c)}`);
+    toHaveBeenNthCalledWith(times, ...a) {
+      const spy = spyOf();
+      const nth = spy.mock.calls[times - 1];
+      const n = spy.mock.calls.length;
+      c(!!nth && argsEqual(nth, a), `expected ${__ordinal(times)} "${spy.getMockName()}" call to have been called with #{exp}${times <= n ? '' : `, but called only ${n} times`}`, `expected ${__ordinal(times)} "${spy.getMockName()}" call to not have been called with #{exp}`, a, nth);
     },
-    toHaveReturned() { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return'), () => `expected spy to have returned`); },
-    toHaveReturnedWith(v) { ok(actual.mock && actual.mock.results.some((r) => r.type === 'return' && deepEqual(r.value, v)), () => `expected spy to have returned ${fmt(v)}`); },
+    toHaveReturned() {
+      const spy = spyOf();
+      const pass = spy.mock.calls.length > 0 && spy.mock.results.some((r) => r.type !== 'throw');
+      c(pass, `expected "${spy.getMockName()}" to be successfully called at least once`, `expected "${spy.getMockName()}" to not be successfully called`, pass, !pass);
+    },
+    toHaveReturnedWith(v) {
+      const spy = spyOf();
+      const pass = spy.mock.results.some((r) => r.type === 'return' && deepEqual(v, r.value));
+      if (negated ? !pass : pass) return;
+      const name = spy.getMockName();
+      const msg = __chaiMsg(negated ? `expected "${name}" to not return with: #{exp}` : `expected "${name}" to return with: #{exp} at least once`, actual, v, actual);
+      throw new __ChaiAssertionError(__formatReturns(spy, msg, v));
+    },
   };
   // custom matchers registered via expect.extend (e.g. @testing-library/jest-dom)
   for (const name of Object.keys(__customMatchers)) {
@@ -2174,9 +2298,10 @@ function makeExpect(actual, negated = false) {
       catch (e) { throw e; }
       const pass = res && res.pass;
       if (negated ? pass : !pass) {
-        let m = res && res.message;
-        m = typeof m === 'function' ? m() : m;
-        throw new Error(m || `${name} matcher failed`);
+        // vitest calls the matcher's `message` function (anything else is a TypeError)
+        const m = res && res.message;
+        if (typeof m !== 'function') throw new TypeError('message is not a function');
+        throw new Error(m());
       }
       return api;
     };
@@ -2247,13 +2372,19 @@ function makeSpy(impl) {
     fn.mock.instances.push(this);
     fn.mock.lastCall = args;
     let ret;
-    // constructor call (e.g. vi.spyOn(mod, 'default') on a class, then `new spy()`): construct
-    // the original with `new` — calling a class via .apply throws "cannot be invoked without new".
-    if (new.target) {
-      ret = typeof fn.__impl === 'function' ? Reflect.construct(fn.__impl, args, new.target) : this;
-    } else if (onceQueue.length) ret = onceQueue.shift().apply(this, args);
-    else if (fn.__returnValue !== undefined) ret = fn.__returnValue;
-    else if (fn.__impl) ret = fn.__impl.apply(this, args);
+    // a throwing call is recorded as vitest records it (`{ type: 'throw', value }`)
+    try {
+      // constructor call (e.g. vi.spyOn(mod, 'default') on a class, then `new spy()`): construct
+      // the original with `new` — calling a class via .apply throws "cannot be invoked without new".
+      if (new.target) {
+        ret = typeof fn.__impl === 'function' ? Reflect.construct(fn.__impl, args, new.target) : this;
+      } else if (onceQueue.length) ret = onceQueue.shift().apply(this, args);
+      else if (fn.__returnValue !== undefined) ret = fn.__returnValue;
+      else if (fn.__impl) ret = fn.__impl.apply(this, args);
+    } catch (e) {
+      fn.mock.results.push({ type: 'throw', value: e });
+      throw e;
+    }
     fn.mock.results.push({ type: 'return', value: ret });
     return ret;
   };
@@ -2455,6 +2586,8 @@ globalThis.vi = {
     // original must run with the CALL's `this` (the instance), not the prototype. makeSpy's
     // fn applies the call-time `this` to __impl, preserving it.
     const s = makeSpy(orig);
+    // vitest names a spy after its method
+    s.__name = String(key);
     // Use defineProperty so it replaces a (configurable) live-export getter, not just a
     // writable data prop — module-runner exports are configurable getters.
     const define = (v) => { try { Object.defineProperty(obj, key, { configurable: true, enumerable: true, writable: true, value: v }); } catch (e) { try { obj[key] = v; } catch (e2) {} } };
@@ -2833,6 +2966,11 @@ function __inspect(v, o = { truncate: Infinity, seen: [] }) {
     }
     return `${name}[ ${out} ]`;
   }
+  // vitest's asymmetric matchers inspect as their minimal pretty-format (`Any<Number>`, …)
+  if (v instanceof Asymmetric) {
+    const r = __pf(v, { min: true });
+    return r.length <= o.truncate ? r : `${__asymName(v)}{…}`;
+  }
   const chai = v[Symbol.for('chai/inspect')];
   if (typeof chai === 'function') return String(chai.call(v, o));
   const custom = v[Symbol.for('nodejs.util.inspect.custom')];
@@ -2859,6 +2997,361 @@ function __objDisplay(v) {
   }
   return str;
 }
+// ---- vitest's assertion errors and messages (turbo-test#71) ----
+// A failed built-in matcher throws chai's `AssertionError` with vitest's message: chai templates
+// whose `#{this}` / `#{exp}` / `#{act}` show values as chai's `objDisplay` (loupe, 40 chars), and for
+// the spy matchers vitest's call / return listings with @vitest/utils' `diff` of pretty-format
+// output (no colours, as with NO_COLOR).
+class __ChaiAssertionError extends Error {
+  constructor(message, props) {
+    super(message);
+    this.name = 'AssertionError';
+    this.showDiff = !(props && props.showDiff === false);
+    if (props && 'actual' in props) this.actual = props.actual;
+    if (props && 'expected' in props) this.expected = props.expected;
+  }
+}
+// chai `getMessage`: fill a template's placeholders.
+function __chaiMsg(tpl, obj, exp, act) {
+  return tpl.replace(/#\{this\}/g, () => __objDisplay(obj)).replace(/#\{act\}/g, () => __objDisplay(act)).replace(/#\{exp\}/g, () => __objDisplay(exp));
+}
+// chai `assert(pass, msg, negatedMsg, expected, actual)` for an assertion on `obj`.
+function __chaiAssert(negated, pass, msg, notMsg, obj, exp, act) {
+  if (negated ? !pass : pass) return;
+  throw new __ChaiAssertionError(__chaiMsg(negated ? notMsg : msg, obj, exp, act), { actual: act, expected: exp });
+}
+// The asymmetric matchers' vitest names and samples.
+function __asymName(m) {
+  const not = m.__negate;
+  switch (m.__asymmetric) {
+    case 'any': return 'Any';
+    case 'anything': return 'Anything';
+    case 'objectContaining': return not ? 'ObjectNotContaining' : 'ObjectContaining';
+    case 'arrayContaining': return not ? 'ArrayNotContaining' : 'ArrayContaining';
+    case 'stringContaining': return not ? 'StringNotContaining' : 'StringContaining';
+    case 'stringMatching': return not ? 'StringNotMatching' : 'StringMatching';
+    default: return String(m.__asymmetric);
+  }
+}
+// @vitest/pretty-format: `o` = { indent, min, basic (printBasicPrototype), maxDepth, escape
+// (escapeString), toJSON (callToJSON), errors (the Error plugin) }.
+function __pf(val, o) {
+  const cfg = {
+    indent: o.min ? '' : ' '.repeat(o.indent == null ? 2 : o.indent),
+    outer: o.min ? '' : '\n',
+    inner: o.min ? ' ' : '\n',
+    min: !!o.min,
+    basic: o.basic !== false,
+    maxDepth: o.maxDepth == null ? Infinity : o.maxDepth,
+    escape: o.escape !== false,
+    toJSON: o.toJSON !== false,
+    errors: !!o.errors,
+  };
+  return __pfPrint(val, cfg, '', 0, [], false);
+}
+function __pfCtorName(v) {
+  return (typeof v.constructor === 'function' && v.constructor.name) || 'Object';
+}
+function __pfItems(items, cfg, ind, depth, refs, print) {
+  if (!items.length) return '';
+  const next = ind + cfg.indent;
+  let out = cfg.outer;
+  items.forEach((it, i) => {
+    out += next + print(it, next);
+    if (i < items.length - 1) out += `,${cfg.inner}`;
+    else if (!cfg.min) out += ',';
+  });
+  return out + cfg.outer + ind;
+}
+function __pfPrint(v, cfg, ind, depth, refs, calledToJSON) {
+  const p = (x, i) => __pfPrint(x, cfg, i, depth, refs, false);
+  if (v instanceof Asymmetric) {
+    const name = __asymName(v);
+    const d = depth + 1;
+    const pp = (x, i) => __pfPrint(x, cfg, i, d, refs, false);
+    switch (v.__asymmetric) {
+      case 'any': return `Any<${v.sample && v.sample.name}>`;
+      case 'anything': return 'Anything';
+      case 'arrayContaining': return d > cfg.maxDepth ? `[${name}]` : `${name} [${__pfItems(Array.from(v.sample), cfg, ind, d, refs, pp)}]`;
+      case 'objectContaining': return d > cfg.maxDepth ? `[${name}]` : `${name} {${__pfProps(v.sample, cfg, ind, d, refs)}}`;
+      default: return `${name} ${p(v.sample, ind)}`;
+    }
+  }
+  if (cfg.errors && v instanceof Error) {
+    if (refs.includes(v)) return '[Circular]';
+    const r = [...refs, v];
+    const d = depth + 1;
+    const entries = { message: v.message };
+    if (v.cause !== undefined) entries.cause = v.cause;
+    for (const k of Object.keys(v)) if (k !== 'message' && k !== 'cause') entries[k] = v[k];
+    const name = v.name !== 'Error' ? v.name : __pfCtorName(v);
+    if (d > cfg.maxDepth) return `[${name}]`;
+    return `${name} {${__pfEntries(Object.entries(entries), cfg, ind, d, r, ': ')}}`;
+  }
+  if (v === true || v === false) return `${v}`;
+  if (v === undefined) return 'undefined';
+  if (v === null) return 'null';
+  switch (typeof v) {
+    case 'number': return Object.is(v, -0) ? '-0' : String(v);
+    case 'bigint': return `${v}n`;
+    case 'string': return cfg.escape ? `"${v.replace(/"|\\/g, '\\$&')}"` : `"${v}"`;
+    case 'function': return `[Function ${v.name || 'anonymous'}]`;
+    case 'symbol': return String(v).replace(/^Symbol\((.*)\)(.*)$/, 'Symbol($1)');
+  }
+  const tag = Object.prototype.toString.call(v);
+  if (tag === '[object WeakMap]') return 'WeakMap {}';
+  if (tag === '[object WeakSet]') return 'WeakSet {}';
+  if (tag === '[object Date]') return Number.isNaN(+v) ? 'Date { NaN }' : v.toISOString();
+  if (tag === '[object Error]' || v instanceof Error) return `[${Error.prototype.toString.call(v)}]`;
+  if (tag === '[object RegExp]') return RegExp.prototype.toString.call(v);
+  if (refs.includes(v)) return '[Circular]';
+  refs = [...refs, v];
+  const d = depth + 1;
+  const hit = d > cfg.maxDepth;
+  if (cfg.toJSON && !hit && typeof v.toJSON === 'function' && !calledToJSON) {
+    return __pfPrint(v.toJSON(), cfg, ind, d, refs, true);
+  }
+  const pp = (x, i) => __pfPrint(x, cfg, i, d, refs, false);
+  if (tag === '[object Arguments]') return hit ? '[Arguments]' : `${cfg.min ? '' : 'Arguments '}[${__pfItems(Array.from(v), cfg, ind, d, refs, pp)}]`;
+  if (Array.isArray(v) || ArrayBuffer.isView(v)) {
+    const name = v.constructor.name;
+    if (hit) return `[${name}]`;
+    const prefix = cfg.min ? '' : !cfg.basic && name === 'Array' ? '' : `${name} `;
+    return `${prefix}[${__pfItems(Array.from({ length: v.length }, (_, i) => v[i]), cfg, ind, d, refs, pp)}]`;
+  }
+  if (tag === '[object Map]') return hit ? '[Map]' : `Map {${__pfEntries([...v.entries()], cfg, ind, d, refs, ' => ')}}`;
+  if (tag === '[object Set]') return hit ? '[Set]' : `Set {${__pfItems([...v.values()], cfg, ind, d, refs, pp)}}`;
+  const name = __pfCtorName(v);
+  if (hit) return `[${name}]`;
+  const prefix = cfg.min ? '' : !cfg.basic && name === 'Object' ? '' : `${name} `;
+  return `${prefix}{${__pfProps(v, cfg, ind, d, refs)}}`;
+}
+function __pfEntries(entries, cfg, ind, depth, refs, sep) {
+  if (!entries.length) return '';
+  const next = ind + cfg.indent;
+  let out = cfg.outer;
+  entries.forEach(([k, x], i) => {
+    out += next + __pfPrint(k, cfg, next, depth, refs, false) + sep + __pfPrint(x, cfg, next, depth, refs, false);
+    if (i < entries.length - 1) out += `,${cfg.inner}`;
+    else if (!cfg.min) out += ',';
+  });
+  return out + cfg.outer + ind;
+}
+function __pfProps(v, cfg, ind, depth, refs) {
+  const keys = Object.keys(v).sort();
+  for (const s of Object.getOwnPropertySymbols(v)) if (Object.getOwnPropertyDescriptor(v, s).enumerable) keys.push(s);
+  return __pfEntries(keys.map((k) => [k, v[k]]), cfg, ind, depth, refs, ': ');
+}
+// @vitest/utils `stringify` (the call listings without a diff).
+function __stringify(v) {
+  return __pf(v, { maxDepth: 10, escape: false });
+}
+// A line diff (longest common subsequence): [op, line] with op -1 delete, 1 insert, 0 common.
+function __lineDiff(a, b) {
+  const n = a.length;
+  const m = b.length;
+  if (n * m > 4e6) return [...a.map((l) => [-1, l]), ...b.map((l) => [1, l])];
+  const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push([0, i, j]); i++; j++; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) { out.push([-1, i]); i++; }
+    else { out.push([1, j]); j++; }
+  }
+  while (i < n) out.push([-1, i++]);
+  while (j < m) out.push([1, j++]);
+  return out;
+}
+// jest-diff `joinAlignedDiffsNoExpand` (5 context lines, `@@` patch marks).
+function __joinDiffs(diffs) {
+  const ctx = 5;
+  const ctx2 = ctx + ctx;
+  const line = (ind, l, first) => (l.length ? `${ind} ${l}` : ind !== ' ' ? ind : '');
+  const len = diffs.length;
+  let jLength = len;
+  let excessEdge = false;
+  let excessBetween = 0;
+  let i = 0;
+  while (i !== len) {
+    const start = i;
+    while (i !== len && diffs[i][0] === 0) i++;
+    if (start !== i) {
+      if (start === 0) { if (i > ctx) { jLength -= i - ctx; excessEdge = true; } }
+      else if (i === len) { const k = i - start; if (k > ctx) { jLength -= k - ctx; excessEdge = true; } }
+      else { const k = i - start; if (k > ctx2) { jLength -= k - ctx2; excessBetween++; } }
+    }
+    while (i !== len && diffs[i][0] !== 0) i++;
+  }
+  const patch = excessBetween !== 0 || excessEdge;
+  if (excessBetween !== 0) jLength += excessBetween + 1;
+  else if (excessEdge) jLength += 1;
+  const lines = [];
+  let mark = 0;
+  if (patch) lines.push('');
+  let aStart = 0, bStart = 0, aEnd = 0, bEnd = 0;
+  const common = (l) => { lines.push(line(' ', l)); aEnd++; bEnd++; };
+  const del = (l) => { lines.push(line('-', l)); aEnd++; };
+  const ins = (l) => { lines.push(line('+', l)); bEnd++; };
+  const patchMark = () => `@@ -${aStart + 1},${aEnd - aStart} +${bStart + 1},${bEnd - bStart} @@`;
+  i = 0;
+  while (i !== len) {
+    let start = i;
+    while (i !== len && diffs[i][0] === 0) i++;
+    if (start !== i) {
+      if (start === 0) {
+        if (i > ctx) { start = i - ctx; aStart = start; bStart = start; aEnd = aStart; bEnd = bStart; }
+        for (let c = start; c !== i; c++) common(diffs[c][1]);
+      } else if (i === len) {
+        const end = i - start > ctx ? start + ctx : i;
+        for (let c = start; c !== end; c++) common(diffs[c][1]);
+      } else {
+        const k = i - start;
+        if (k > ctx2) {
+          for (let c = start; c !== start + ctx; c++) common(diffs[c][1]);
+          lines[mark] = patchMark();
+          mark = lines.length;
+          lines.push('');
+          const omit = k - ctx2;
+          aStart = aEnd + omit; bStart = bEnd + omit; aEnd = aStart; bEnd = bStart;
+          for (let c = i - ctx; c !== i; c++) common(diffs[c][1]);
+        } else {
+          for (let c = start; c !== i; c++) common(diffs[c][1]);
+        }
+      }
+    }
+    while (i !== len && diffs[i][0] === -1) { del(diffs[i][1]); i++; }
+    while (i !== len && diffs[i][0] === 1) { ins(diffs[i][1]); i++; }
+  }
+  if (patch) lines[mark] = patchMark();
+  return lines.join('\n');
+}
+// jest-diff `diffLinesUnified2`: align by the compare lines, show the display lines.
+function __diffLines(aDisp, bDisp, aCmp = aDisp, bCmp = bDisp) {
+  const empty = (l) => l.length === 1 && l[0].length === 0;
+  if (empty(aDisp) && empty(aCmp)) { aDisp = []; aCmp = []; }
+  if (empty(bDisp) && empty(bCmp)) { bDisp = []; bCmp = []; }
+  if (aDisp.length !== aCmp.length || bDisp.length !== bCmp.length) { aCmp = aDisp; bCmp = bDisp; }
+  const diffs = __lineDiff(aCmp, bCmp).map((d) => (d[0] === -1 ? [-1, aDisp[d[1]]] : d[0] === 1 ? [1, bDisp[d[1]]] : [0, bDisp[d[2]]]));
+  return __joinDiffs(diffs);
+}
+function __diffType(v) {
+  if (v === undefined) return 'undefined';
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'array';
+  if (typeof v !== 'object') return typeof v;
+  if (v.constructor === RegExp) return 'regexp';
+  if (v.constructor === Map) return 'map';
+  if (v.constructor === Set) return 'set';
+  if (v.constructor === Date) return 'date';
+  return 'object';
+}
+const __NO_DIFF = 'Compared values have no visual difference.';
+// @vitest/utils `diff(expected, received, { omitAnnotationLines: true })`.
+function __vdiff(a, b) {
+  if (Object.is(a, b)) return '';
+  let type = __diffType(a);
+  if (a instanceof Asymmetric) {
+    const t = { any: a.sample === String ? 'string' : a.sample === Number ? 'number' : a.sample === Boolean ? 'boolean' : undefined, stringContaining: 'string', stringMatching: 'string', objectContaining: 'object', arrayContaining: 'array' }[a.__asymmetric];
+    if (!t) return undefined;
+    if (t === 'string') return undefined;
+    type = t;
+  }
+  const fmt = { indent: 2, basic: false, maxDepth: 20, errors: true };
+  const fallback = { ...fmt, maxDepth: 8, toJSON: false };
+  if (type !== __diffType(b)) {
+    return `- Expected:\n${__pf(a, fallback)}\n\n+ Received:\n${__pf(b, fallback)}`;
+  }
+  const objects = (opts) => {
+    const ac = __pf(a, { ...opts, indent: 0 });
+    const bc = __pf(b, { ...opts, indent: 0 });
+    if (ac === bc) return __NO_DIFF;
+    return __diffLines(__pf(a, opts).split('\n'), __pf(b, opts).split('\n'), ac.split('\n'), bc.split('\n'));
+  };
+  const sortMap = (x) => new Map([...x.entries()].sort());
+  const sortSet = (x) => new Set([...x.values()].sort());
+  switch (type) {
+    case 'string': return __diffLines(a.split('\n'), b.split('\n'));
+    case 'boolean':
+    case 'number': {
+      const af = __pf(a, fmt);
+      const bf = __pf(b, fmt);
+      return af === bf ? '' : __diffLines(af.split('\n'), bf.split('\n'));
+    }
+    case 'map': a = sortMap(a); b = sortMap(b); break;
+    case 'set': a = sortSet(a); b = sortSet(b); break;
+  }
+  let d;
+  let threw = false;
+  try { d = objects(fmt); } catch (e) { threw = true; }
+  if (d === undefined || d === __NO_DIFF) {
+    d = objects(fallback);
+    if (d !== __NO_DIFF && !threw) d = `Compared values serialize to the same structure.\nPrinting internal object structure without calling \`toJSON\` instead.\n\n${d}`;
+  }
+  return d;
+}
+function __ordinal(n) {
+  const j = n % 10;
+  const k = n % 100;
+  if (j === 1 && k !== 11) return `${n}st`;
+  if (j === 2 && k !== 12) return `${n}nd`;
+  if (j === 3 && k !== 13) return `${n}rd`;
+  return `${n}th`;
+}
+// vitest's `formatCalls` / `formatReturns`: each call (or return) diffed against `shown`, or listed.
+function __formatCalls(spy, msg, shown) {
+  const calls = spy.mock.calls;
+  if (calls.length) {
+    msg += `\n\nReceived:\n\n${calls.map((args, i) => {
+      let s = `  ${__ordinal(i + 1)} ${spy.getMockName()} call:\n\n`;
+      s += shown ? __vdiff(shown, args) : __stringify(args).split('\n').map((l) => `    ${l}`).join('\n');
+      return `${s}\n`;
+    }).join('\n')}`;
+  }
+  return `${msg}\n\nNumber of calls: ${calls.length}\n`;
+}
+function __formatReturns(spy, msg, shown) {
+  const results = spy.mock.results;
+  if (results.length) {
+    msg += `\n\nReceived:\n\n${results.map((r, i) => {
+      let s = `  ${__ordinal(i + 1)} ${spy.getMockName()} call return:\n\n`;
+      s += shown ? __vdiff(shown, r.value) : __stringify(r).split('\n').map((l) => `    ${l}`).join('\n');
+      return `${s}\n`;
+    }).join('\n')}`;
+  }
+  return `${msg}\n\nNumber of calls: ${spy.mock.calls.length}\n`;
+}
+// vitest's `getObjectSubset` count: the properties of `actual` that `subset` does not name.
+function __strippedCount(actual, subset, seen = new WeakSet()) {
+  const isObj = (x) => x != null && typeof x === 'object' && !Array.isArray(x);
+  const keys = (x) => [...Object.keys(x), ...Object.getOwnPropertySymbols(x).filter((s) => Object.getOwnPropertyDescriptor(x, s).enumerable)];
+  if (Array.isArray(actual)) {
+    if (Array.isArray(subset) && subset.length === actual.length) return actual.reduce((n, x, i) => n + __strippedCount(x, subset[i], seen), 0);
+    return 0;
+  }
+  if (actual instanceof Date || !isObj(actual) || !isObj(subset)) return 0;
+  if (deepEqual(actual, subset) || __subsetMatches(actual, subset)) return 0;
+  seen.add(actual);
+  let n = 0;
+  for (const k of keys(actual)) {
+    if (k in subset) {
+      if (!seen.has(actual[k])) n += __strippedCount(actual[k], subset[k], seen);
+    } else if (!seen.has(actual[k])) {
+      n += 1;
+      if (isObj(actual[k])) n += keys(actual[k]).length;
+    }
+  }
+  return n;
+}
+function __subsetMatches(a, e) {
+  if (e instanceof Asymmetric) return e.matches(a);
+  if (e == null || typeof e !== 'object') return deepEqual(a, e);
+  if (Array.isArray(e)) return Array.isArray(a) && a.length === e.length && e.every((x, i) => __subsetMatches(a[i], x));
+  return a != null && typeof a === 'object' && Object.keys(e).every((k) => __subsetMatches(a[k], e[k]));
+}
+
 // @vitest/utils `format(spec, item)` for one placeholder.
 function __formatOne(spec, item) {
   const v = item;

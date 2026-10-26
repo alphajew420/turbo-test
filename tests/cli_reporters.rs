@@ -40,7 +40,7 @@ const FOOTER: &str =
 fn default_text_reporter_and_unknown_fallback() {
     let p = fixture("rep-default");
     let lines = format!(
-        "FAIL  {}  (1 passed, 1 failed)\n        ✗ breaks: expected \"x\" to be \"y\"\nPASS  {}  (1 passed, 0 failed)\nERROR {}  (module errored: Error: top <boom>)\n",
+        "FAIL  {}  (1 passed, 1 failed)\n        ✗ breaks: expected 'x' to be 'y' // Object.is equality\nPASS  {}  (1 passed, 0 failed)\nERROR {}  (module errored: Error: top <boom>)\n",
         String::from("a.test.ts"),
         String::from("b.test.ts"),
         String::from("c.test.ts")
@@ -318,7 +318,7 @@ fn junit_reporter() {
         )),
         "{x}"
     );
-    assert!(x.contains("\">\n      <failure message=\"expected &quot;x&quot; to be &quot;y&quot;\"/>\n    </testcase>\n"), "{x}");
+    assert!(x.contains("\">\n      <failure message=\"expected &apos;x&apos; to be &apos;y&apos; // Object.is equality\"/>\n    </testcase>\n"), "{x}");
     assert!(!x.contains("later"), "skipped tests are omitted: {x}");
     assert!(
         x.contains(&format!(
@@ -346,7 +346,7 @@ fn tap_reporter() {
     assert_eq!(
         r.stdout,
         format!(
-            "TAP version 13\n1..5\nok 1 - adds <&>\nok 2 - later # SKIP\nnot ok 3 - breaks\n  ---\n  message: expected \"x\" to be \"y\"\n  ...\nok 4 - ok\nnot ok 5 - {}\n  ---\n  message: module errored: Error: top <boom>\n  ...\n\n",
+            "TAP version 13\n1..5\nok 1 - adds <&>\nok 2 - later # SKIP\nnot ok 3 - breaks\n  ---\n  message: expected 'x' to be 'y' // Object.is equality\n  ...\nok 4 - ok\nnot ok 5 - {}\n  ---\n  message: module errored: Error: top <boom>\n  ...\n\n",
             String::from("c.test.ts")
         ),
         "{}",
