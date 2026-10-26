@@ -1433,6 +1433,21 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
         // No esbuild project (e.g. standalone fixtures): register self-contained factories
         // directly (no JSX/transform available here).
         for (spec, factory) in &mocks {
+            if factory.is_empty() {
+                // factory-less vi.mock: the runtime's automock of the real module (the same
+                // __automock the module-runner prepass's `vi.mock(spec)` uses).
+                let d = js_string_literal(&dir.to_string_lossy());
+                let s = js_string_literal(spec);
+                let js =
+                    format!("__ttRegisterMock({d}, {s}, __automock(__ttImportActual({d}, {s})))");
+                let tc = std::pin::pin!(v8::TryCatch::new(scope));
+                let tc = &mut tc.init();
+                let code = v8::String::new(tc, &js).unwrap();
+                if let Some(script) = v8::Script::compile(tc, code, None) {
+                    script.run(tc);
+                }
+                continue;
+            }
             if let Some(abs) = resolve_spec(spec, dir) {
                 register_mock(scope, &abs, factory);
             }
@@ -3046,15 +3061,27 @@ fn synth_eval<'s>(
 ) -> Option<v8::Local<'s, v8::Value>> {
     v8::callback_scope!(unsafe scope, context);
     let hash = module.get_identity_hash().get();
-    let (exports_g, names) = REGISTRY.with(|r| {
+    let (exports_g, names, is_mock) = REGISTRY.with(|r| {
         let reg = r.borrow();
         let path = reg.path_by_hash.get(&hash)?.clone();
         let exports = reg.cjs_exports.get(&path)?.clone();
-        Some((exports, reg.cjs_export_names.get(&path).cloned().unwrap_or_default()))
+        // JSON and asset stubs go through the mock table too, but their default is the value
+        let is_mock = reg.mocks.contains_key(&path)
+            && !is_asset(&path)
+            && path.extension().and_then(|e| e.to_str()) != Some("json");
+        let names = reg.cjs_export_names.get(&path).cloned().unwrap_or_default();
+        Some((exports, names, is_mock))
     })?;
     let exports = v8::Local::new(scope, &exports_g);
     let dkey = v8::String::new(scope, "default")?;
-    module.set_synthetic_module_export(scope, dkey, exports)?;
+    // A mock's (factory result's / automock's) own `default` key IS its default export (vitest,
+    // and the module runner's interop); otherwise the whole object is (CJS `module.exports`).
+    let default = v8::Local::<v8::Object>::try_from(exports)
+        .ok()
+        .filter(|o| is_mock && o.has_own_property(scope, dkey.into()).unwrap_or(false))
+        .and_then(|o| o.get(scope, dkey.into()))
+        .unwrap_or(exports);
+    module.set_synthetic_module_export(scope, dkey, default)?;
     if let Ok(obj) = v8::Local::<v8::Object>::try_from(exports) {
         for n in names {
             if n == "default" {

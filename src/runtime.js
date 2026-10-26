@@ -1694,13 +1694,37 @@ function makeSpy(impl) {
   fn.mockName = (n) => { fn.__name = n; return fn; };
   return fn;
 }
-// vitest automock: replace function exports with vi.fn(), recurse into objects, keep primitives.
+// vitest automock (factory-less vi.mock, both loader paths): functions become vi.fn() mocks
+// returning undefined, classes keep mocked statics and prototype methods (so instances get mock
+// methods), objects and class instances are mocked deeply, arrays are emptied, primitives kept.
+// A prototype chain is walked up to (not into) the built-in prototypes (Object, Error, ...).
+function __isBuiltinProto(p) {
+  if (p === Object.prototype || p === Function.prototype) return true;
+  try { return typeof p.constructor === 'function' && /\{\s*\[native code\]\s*\}$/.test(Function.prototype.toString.call(p.constructor)); } catch (e) { return true; }
+}
+function __automockProtoMethods(target, proto) {
+  for (let p = proto; p && !__isBuiltinProto(p); p = Object.getPrototypeOf(p)) {
+    for (const k of Object.getOwnPropertyNames(p)) {
+      if (k === 'constructor' || Object.prototype.hasOwnProperty.call(target, k)) continue;
+      const d = Object.getOwnPropertyDescriptor(p, k);
+      if (typeof d.value === 'function') { const s = makeSpy(); __spies.push(s); target[k] = s; }
+    }
+  }
+}
 function __automock(mod, depth) {
   depth = depth || 0;
   if (typeof mod === 'function') {
     const m = makeSpy(); __spies.push(m);
-    // preserve static members / prototype methods as mocks too (auto-mocked class)
-    if (depth < 3) { for (const k of Object.keys(mod)) { try { m[k] = __automock(mod[k], depth + 1); } catch (e) {} } }
+    if (depth < 3) {
+      // own statics (class static methods are non-enumerable), not the function's built-ins
+      for (const k of Object.getOwnPropertyNames(mod)) {
+        if (k === 'length' || k === 'name' || k === 'prototype' || k === 'caller' || k === 'arguments') continue;
+        try { m[k] = __automock(mod[k], depth + 1); } catch (e) {}
+      }
+      // class / constructor function: `new m()` returns an instance of m.prototype, whose
+      // methods (inherited ones included) are mocks
+      if (mod.prototype && mod.prototype.constructor === mod) __automockProtoMethods(m.prototype, mod.prototype);
+    }
     return m;
   }
   if (Array.isArray(mod)) return [];
@@ -1710,6 +1734,8 @@ function __automock(mod, depth) {
       let v; try { v = mod[k]; } catch (e) { continue; }
       out[k] = depth < 4 ? __automock(v, depth + 1) : v;
     }
+    // a class instance: its prototype methods become mocks too
+    __automockProtoMethods(out, Object.getPrototypeOf(mod));
     return out;
   }
   return mod;
