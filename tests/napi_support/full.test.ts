@@ -375,6 +375,45 @@ describe('errors and exceptions', () => {
   test('no exception pending outside an error', () => {
     expect(a.pending()).toEqual([false, undefined, OK]);
   });
+
+  test('napi_throw_error leaves the exception pending until it is cleared', () => {
+    const [st, before, ex, after, acc] = a.throwPending('parked');
+    expect(st).toBe(OK);
+    expect(before).toBe(true);
+    expect(ex).toBeInstanceOf(Error);
+    expect(ex.message).toBe('parked');
+    expect(after).toBe(false);
+    expect(acc).toBe(OK);
+  });
+
+  test('a napi_call_function that threw leaves its exception pending', () => {
+    const [st, pending, ex, noResult, acc] = a.callPending(() => {
+      throw new TypeError('from the callee');
+    });
+    expect(st).toBe(PENDING_EXCEPTION);
+    expect(pending).toBe(true);
+    expect(ex).toBeInstanceOf(TypeError);
+    expect(ex.message).toBe('from the callee');
+    expect(noResult).toBe(true);
+    expect(acc).toBe(OK);
+    expect(a.callPending(() => 1)).toEqual([OK, false, undefined, false, OK]);
+  });
+
+  test('with an exception pending, calls that can run JS return napi_pending_exception', () => {
+    let ran = false;
+    const r = a.afterThrow(
+      () => {
+        ran = true;
+      },
+      class {},
+    );
+    const ex = r.pop();
+    expect(r.slice(0, 21)).toEqual(Array(21).fill(PENDING_EXCEPTION));
+    expect(r.slice(21)).toEqual(Array(23).fill(OK));
+    expect(ran).toBe(false);
+    // the first exception is the pending one; later throws did not replace it
+    expect(ex.message).toBe('first');
+  });
 });
 
 describe('references', () => {

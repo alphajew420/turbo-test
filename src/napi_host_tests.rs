@@ -147,3 +147,39 @@ fn trampoline_dispatches_through_the_callback_record() {
         assert!(CALLED.load(Ordering::SeqCst));
     });
 }
+
+fn terminate(scope: &mut v8::PinScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
+    scope.terminate_execution();
+}
+
+#[test]
+fn js_call_parks_exceptions_but_not_a_termination() {
+    with_scope(|s| {
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        let recv = unsafe { to_napi(v8::undefined(s).into()) };
+        let mut out: napi_value = std::ptr::null_mut();
+        let term = v8::Function::new(s, terminate).unwrap();
+        let key = v8::String::new(s, "term").unwrap();
+        let global = s.get_current_context().global(s);
+        global.set(s, key.into(), term.into()).unwrap();
+        let js = |s: &mut v8::PinScope, src: &str| {
+            let src = v8::String::new(s, src).unwrap();
+            let f = v8::Script::compile(s, src, None).unwrap().run(s).unwrap();
+            unsafe { to_napi(f) }
+        };
+        // a termination (e.g. a test timeout) inside JS the addon called keeps unwinding: it
+        // fails the call but is not parked as a pending exception to be rethrown later
+        let spin = js(s, "() => { term(); for (;;) {} }");
+        let st = unsafe { napi_call_function(e, recv, spin, 0, std::ptr::null(), &mut out) };
+        s.cancel_terminate_execution();
+        assert_eq!(st, napi_pending_exception);
+        assert!(env.last_exception.is_none());
+        // a JS exception is parked on the env
+        let thrower = js(s, "() => { throw 7 }");
+        let st = unsafe { napi_call_function(e, recv, thrower, 0, std::ptr::null(), &mut out) };
+        assert_eq!(st, napi_pending_exception);
+        let parked = env.last_exception.take().unwrap();
+        assert_eq!(v8::Local::new(s, &parked).int32_value(s), Some(7));
+    });
+}

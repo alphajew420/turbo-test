@@ -502,6 +502,118 @@ static napi_value f_huge(napi_env env, napi_callback_info info) {
     return list(env, 5, it);
 }
 
+/* throwPending(msg): napi_throw_error, then read and clear the pending exception ->
+ * [throw status, pending before, the exception, pending after, OR of the query statuses].
+ * The exception is cleared, so the call returns normally. */
+static napi_value f_throw_pending(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    char *m = cstr(env, arg(env, &a, 0));
+    int st = napi_throw_error(env, NULL, m);
+    free(m);
+    bool before = false, after = true;
+    napi_value ex = NULL;
+    int acc = napi_is_exception_pending(env, &before) |
+              napi_get_and_clear_last_exception(env, &ex) | napi_is_exception_pending(env, &after);
+    napi_value it[5] = {dbl(env, st), boolv(env, before), or_undef(env, ex), boolv(env, after),
+                        dbl(env, acc)};
+    return list(env, 5, it);
+}
+
+/* callPending(fn): call fn, then read and clear any pending exception ->
+ * [call status, pending, the exception, result left NULL, OR of the query statuses]. */
+static napi_value f_call_pending(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value out = NULL;
+    int st = napi_call_function(env, undef(env), arg(env, &a, 0), 0, NULL, &out);
+    bool p = false;
+    napi_value ex = NULL;
+    int acc = napi_is_exception_pending(env, &p) | napi_get_and_clear_last_exception(env, &ex);
+    napi_value it[5] = {dbl(env, st), boolv(env, p), or_undef(env, ex), boolv(env, out == NULL),
+                        dbl(env, acc)};
+    return list(env, 5, it);
+}
+
+/* afterThrow(fn, Ctor): with an exception pending, every napi call that can run JS returns
+ * napi_pending_exception without running (Node's NAPI_PREAMBLE); the others still work.
+ * Returns the statuses in call order, then the (first) exception, cleared at the end. */
+static napi_value f_after_throw(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value fn = arg(env, &a, 0), ctor = arg(env, &a, 1), obj, s, n, t, ab, buf, out;
+    napi_create_object(env, &obj);
+    napi_create_string_utf8(env, "str", NAPI_AUTO_LENGTH, &s);
+    napi_create_double(env, 2, &n);
+    napi_get_boolean(env, true, &t);
+    napi_create_arraybuffer(env, 8, NULL, &ab);
+    napi_create_buffer(env, 2, NULL, &buf);
+    napi_ref r = NULL;
+    napi_create_reference(env, obj, 1, &r);
+    napi_throw_error(env, NULL, "first");
+    int st[48];
+    int k = 0;
+    double d;
+    bool b;
+    uint32_t u;
+    int64_t i64;
+    size_t len;
+    char sb[8];
+    int ty;
+    napi_ref r2;
+    void *data;
+    size_t argc = 0;
+    /* run JS (or may): napi_pending_exception */
+    st[k++] = napi_throw_error(env, NULL, "second");
+    st[k++] = napi_throw(env, obj);
+    st[k++] = napi_call_function(env, obj, fn, 0, NULL, &out);
+    st[k++] = napi_get_named_property(env, obj, "k", &out);
+    st[k++] = napi_set_named_property(env, obj, "k", s);
+    st[k++] = napi_get_element(env, obj, 0, &out);
+    st[k++] = napi_set_element(env, obj, 0, s);
+    st[k++] = napi_get_property_names(env, obj, &out);
+    st[k++] = napi_coerce_to_string(env, obj, &out);
+    st[k++] = napi_create_function(env, "f", NAPI_AUTO_LENGTH, f_status, NULL, &out);
+    st[k++] = napi_define_class(env, "C", NAPI_AUTO_LENGTH, f_status, NULL, 0, NULL, &out);
+    st[k++] = napi_get_array_length(env, obj, &u);
+    st[k++] = napi_create_arraybuffer(env, 1, NULL, &out);
+    st[k++] = napi_create_external_arraybuffer(env, sb, 1, NULL, NULL, &out);
+    st[k++] = napi_create_typedarray(env, 1, 1, ab, 0, &out);
+    st[k++] = napi_create_buffer(env, 1, &data, &out);
+    st[k++] = napi_create_buffer_copy(env, 1, "x", &data, &out);
+    st[k++] = napi_create_external_buffer(env, 1, sb, NULL, NULL, &out);
+    st[k++] = napi_new_instance(env, ctor, 0, NULL, &out);
+    st[k++] = napi_wrap(env, obj, (void *)1, NULL, NULL, NULL);
+    st[k++] = napi_unwrap(env, obj, &data);
+    /* no JS: napi_ok */
+    st[k++] = napi_get_undefined(env, &out);
+    st[k++] = napi_get_null(env, &out);
+    st[k++] = napi_get_global(env, &out);
+    st[k++] = napi_get_boolean(env, true, &out);
+    st[k++] = napi_create_object(env, &out);
+    st[k++] = napi_create_uint32(env, 1, &out);
+    st[k++] = napi_create_double(env, 1, &out);
+    st[k++] = napi_create_string_utf8(env, "x", 1, &out);
+    st[k++] = napi_create_error(env, NULL, s, &out);
+    st[k++] = napi_typeof(env, obj, &ty);
+    st[k++] = napi_is_array(env, obj, &b);
+    st[k++] = napi_is_error(env, obj, &b);
+    st[k++] = napi_get_value_double(env, n, &d);
+    st[k++] = napi_get_value_int64(env, n, &i64);
+    st[k++] = napi_get_value_uint32(env, n, &u);
+    st[k++] = napi_get_value_bool(env, t, &b);
+    st[k++] = napi_get_value_string_utf8(env, s, sb, sizeof sb, &len);
+    st[k++] = napi_get_buffer_info(env, buf, &data, &len);
+    st[k++] = napi_create_reference(env, obj, 1, &r2);
+    st[k++] = napi_get_reference_value(env, r, &out);
+    st[k++] = napi_reference_unref(env, r, &u);
+    st[k++] = napi_delete_reference(env, r);
+    st[k++] = napi_get_cb_info(env, info, &argc, NULL, NULL, NULL);
+    napi_value ex = NULL;
+    napi_get_and_clear_last_exception(env, &ex);
+    napi_value it[49];
+    for (int j = 0; j < k; j++) it[j] = dbl(env, st[j]);
+    it[k] = or_undef(env, ex);
+    return list(env, (size_t)k + 1, it);
+}
+
 static const struct {
     const char *name;
     napi_callback cb;
@@ -546,6 +658,9 @@ static const struct {
     {"createErr", f_create_err},
     {"isError", f_is_error},
     {"pending", f_pending},
+    {"throwPending", f_throw_pending},
+    {"callPending", f_call_pending},
+    {"afterThrow", f_after_throw},
     {"ref", f_ref},
     {"deref", f_deref},
     {"delRef", f_del_ref},
