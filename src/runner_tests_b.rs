@@ -145,6 +145,30 @@ fn collect_named_imports_stays_inside_the_import_statement() {
 }
 
 #[test]
+fn mock_externalizable_skips_partial_and_react_factories_only() {
+    // externalized (the registry intercepts the import)
+    for f in [
+        "",
+        "() => ({ v: 1 })",
+        "() => ({ fn: (x) => (x + 1) })",
+        "factory",
+    ] {
+        assert!(mock_externalizable(f), "{f}");
+    }
+    // partial mocks and React-building factories stay bundled with the test's react
+    for f in [
+        "async (importOriginal) => ({ ...(await importOriginal()), x: 1 })",
+        "async () => ({ ...(await vi.importActual('./m')) })",
+        "() => ({ C: () => <div /> })",
+        "() => ({ C: () => (\n  <div />\n) })",
+        "() => ({ C: () => React.createElement('div') })",
+        "() => { const { jsx } = require('react/jsx-runtime'); return {}; }",
+    ] {
+        assert!(!mock_externalizable(f), "{f}");
+    }
+}
+
+#[test]
 fn collect_named_imports_reads_brace_clauses_for_the_path() {
     let text = r#"import { a, b as c, $d, _e } from "/abs/m.js";
 import{x}from"/abs/m.js";

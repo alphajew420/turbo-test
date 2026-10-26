@@ -1,6 +1,7 @@
-//! Config and mock-graph semantics that follow jest/vitest: a JSON jest config (package.json
+//! Config and mock semantics that follow jest/vitest: a JSON jest config (package.json
 //! `"jest"` block, `jest.config.json`) is read like `jest.config.js`; a factory-less `vi.mock`
-//! stays factory-less whatever code follows it.
+//! stays factory-less whatever code follows it; entry-file mocks intercept on the legacy
+//! TURBO_NO_MR bundle path too.
 #![cfg(unix)]
 
 mod common;
@@ -87,4 +88,60 @@ test('both mocks', () => {
     p.with_esbuild();
     let r = turbo_test(&p.dir, &["one.test.js", "two.test.js"], &[]);
     assert_passes(&r, 2);
+}
+
+#[test]
+fn entry_mocks_intercept_on_the_legacy_bundle_path() {
+    // turbo-test#31 item 15: under TURBO_NO_MR the entry is esbuild-bundled and its mocked
+    // modules were bundled into it, so entry vi.mock / jest.mock never intercepted (relative
+    // modules and packages alike). They are now externalized like setup mocks.
+    let p = Project::new("rc-nomr-entry-mocks");
+    p.with_esbuild();
+    p.file("package.json", r#"{"name":"r15"}"#);
+    p.file(
+        "node_modules/react/package.json",
+        r#"{"name":"react","main":"index.js"}"#,
+    );
+    p.file(
+        "node_modules/react/index.js",
+        "exports.createElement = () => null;\n",
+    );
+    p.file(
+        "node_modules/pkg/package.json",
+        r#"{"name":"pkg","main":"index.js"}"#,
+    );
+    p.file(
+        "node_modules/pkg/index.js",
+        "exports.p = () => 'real-pkg';\n",
+    );
+    p.file("src/rel.js", "export const r = () => 'real-rel';\n");
+    p.file(
+        "src/auto.js",
+        "export function a() { return 'real-auto'; }\n",
+    );
+    p.file(
+        "src/use.js",
+        "import { r } from './rel.js';\nexport const useR = () => r();\n",
+    );
+    p.file(
+        "src/a.test.js",
+        r#"import { r } from './rel.js';
+import { useR } from './use.js';
+import { p } from 'pkg';
+import { a } from './auto.js';
+vi.mock('./rel.js', () => ({ r: () => 'mock-rel' }));
+jest.mock('pkg', () => ({ p: () => 'mock-pkg' }));
+vi.mock('./auto.js');
+test('entry mocks intercept', () => {
+  expect(r()).toBe('mock-rel');
+  expect(useR()).toBe('mock-rel');
+  expect(p()).toBe('mock-pkg');
+  expect(vi.isMockFunction(a)).toBe(true);
+});
+"#,
+    );
+    for env in [&[("TURBO_NO_MR", "1")][..], &[][..]] {
+        let r = turbo_test(&p.dir, &["src/a.test.js"], env);
+        assert_passes(&r, 1);
+    }
 }

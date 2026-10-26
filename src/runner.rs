@@ -1598,6 +1598,16 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
     }
     let bundled = esbuild_bundle(&p, &[]).unwrap_or_else(|| p.clone());
     set_mock_prepass(scope, true);
+    // the factories' relative specifiers (a factory-less mock's automock importActual, and
+    // vi.importActual / importOriginal inside factories) resolve from the entry dir, as on the
+    // module-runner branch above; the bundle itself lives in the cache dir
+    let global = scope.get_current_context().global(scope);
+    if let (Some(k), Some(v)) = (
+        v8::String::new(scope, "__ttDir"),
+        v8::String::new(scope, &dir.to_string_lossy()),
+    ) {
+        global.set(scope, k.into(), v.into());
+    }
     if let Some(module) = load_graph(scope, &bundled) {
         let tc = std::pin::pin!(v8::TryCatch::new(scope));
         let tc = &mut tc.init();
@@ -4689,6 +4699,30 @@ fn evaluate_error(
 }
 
 /// Run a single test file end-to-end and return its pass/fail report.
+/// Whether a mock's target may be externalized from an esbuild bundle (setup mocks; entry mocks
+/// under TURBO_NO_MR) so the mock registry intercepts it. Not for (a) partial mocks (spread the
+/// real module via importOriginal/importActual) and (b) factories that build React elements —
+/// those must use the TEST's react instance, but a prepass/setup bundle has its own react
+/// (dual-react render fail). Both stay un-externalized so the real module bundles with the
+/// test's react. JSX is an arrow body starting with `<` (optionally parenthesized); an arrow
+/// returning a parenthesized object literal (`() => ({ ... })`, the common factory form) is
+/// not React.
+fn mock_externalizable(factory: &str) -> bool {
+    let is_partial = factory.contains("importOriginal") || factory.contains("importActual");
+    let jsx_arrow = factory.match_indices("=>").any(|(at, _)| {
+        let body = factory[at + 2..].trim_start();
+        body.strip_prefix('(')
+            .unwrap_or(body)
+            .trim_start()
+            .starts_with('<')
+    });
+    let builds_react = factory.contains("react/jsx")
+        || factory.contains("createElement")
+        || factory.contains("React.")
+        || jsx_arrow;
+    !is_partial && !builds_react
+}
+
 pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     // Per-file native-DOM lifecycle: reset the thread-local DOM (fresh document per file) and, when
     // debugging (TURBO_RUST_DOM_LOG), dump the missing-member access log — on ANY exit incl. a load
@@ -4726,17 +4760,7 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
             if s.contains('*') || s.contains('?') {
                 continue;
             }
-            // Skip: (a) partial mocks (spread the real module via importOriginal/importActual),
-            // and (b) factories that build React elements — those must use the TEST's react
-            // instance, but a prepass/setup bundle has its own react (dual-react render fail).
-            // For both, leave un-externalized so the real module bundles with the test's react.
-            let is_partial = factory.contains("importOriginal") || factory.contains("importActual");
-            let builds_react = factory.contains("react/jsx")
-                || factory.contains("createElement")
-                || factory.contains("React.")
-                || factory.contains("=> (")
-                || factory.contains("=> <");
-            if is_partial || builds_react {
+            if !mock_externalizable(&factory) {
                 continue;
             }
             if let Some(abs) = resolve_spec(&s, sf_dir) {
@@ -4748,11 +4772,31 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
         }
     }
 
-    // (Entry-file vi.mock is NOT externalized: a React-component mock factory must run in the
-    // TEST's react instance — a separate prepass/setup bundle has its own react (dual-react
-    // render failure) — and a failed externalized mock dangles the whole file. The real module
-    // bundles with the test's single react instead. Fully fixing entry component-mocks needs a
-    // vitest-style per-module runner. Only setup mocks are externalized.)
+    // TURBO_NO_MR (legacy bundle path): the ENTRY file's own mock targets are externalized the
+    // same way (turbo-test#31 item 15). Bundled into the entry, a mocked module was unreachable
+    // by the mock registry, so entry vi.mock/jest.mock never intercepted anything. Externalized
+    // and rewritten to its absolute path, the import resolves through the registry, where
+    // run_entry_mocks' prepass registered the mock before the bundle links. The same
+    // exclusions as for setup mocks apply (see mock_externalizable): React-building and
+    // partial (importOriginal/importActual) factories stay bundled, a documented limitation of
+    // this escape hatch; the default module-runner mocks every module per-module.
+    // (Module-runner mode loads no bundle, so nothing is externalized there.)
+    if !mr_enabled() {
+        let entry_dir = entry_abs.parent().unwrap_or(Path::new("."));
+        let entry_src = std::fs::read_to_string(&entry_abs).unwrap_or_default();
+        for (s, factory) in extract_mocks(&entry_src) {
+            if s.contains('*') || s.contains('?') || !mock_externalizable(&factory) {
+                continue;
+            }
+            let Some(abs) = resolve_spec(&s, entry_dir) else {
+                continue;
+            };
+            mock_targets.entry(spec_basename(&s)).or_insert(abs);
+            if !externals.contains(&s) {
+                externals.push(s);
+            }
+        }
+    }
 
     // Bundle deps with esbuild (Vite-style) so the whole dep tree loads as one clean ESM;
     // fall back to the native per-module loader if esbuild is unavailable or fails.
