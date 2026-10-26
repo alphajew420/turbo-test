@@ -239,6 +239,19 @@ describe('objects and arrays', () => {
   test('napi_get_property_names', () => {
     expect(a.keys({ x: 1, y: 2 })).toEqual(['x', 'y']);
     expect(a.status()).toBe(OK);
+    // the for-in keys: enumerable string keys of the object and its prototype chain (no
+    // symbols, no non-enumerables), integer indices converted to strings
+    const proto = { inherited: 1 };
+    Object.defineProperty(proto, 'hiddenInherited', { value: 1, enumerable: false });
+    const o = Object.create(proto);
+    o.own = 2;
+    o[3] = 'x';
+    o[Symbol('s')] = 1;
+    Object.defineProperty(o, 'hidden', { value: 1, enumerable: false });
+    expect(a.keys(o)).toEqual(['3', 'own', 'inherited']);
+    expect(a.keys([5, 6])).toEqual(['0', '1']);
+    expect(a.keys('ab')).toEqual(['0', '1']);
+    expect(a.status()).toBe(OK);
     throwsToObjectError(() => a.keys(null));
     expect(a.status()).toBe(OBJECT_EXPECTED);
     const p = new Proxy(

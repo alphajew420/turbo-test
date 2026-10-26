@@ -924,8 +924,15 @@ pub unsafe extern "C" fn napi_get_property_names(
 ) -> napi_status {
     js_call(env, |s| {
         let o = to_object(s, obj)?;
+        // as Node: the for-in keys (prototype chain, enumerable, no symbols), indices as strings
+        let args = v8::GetPropertyNamesArgs {
+            mode: v8::KeyCollectionMode::IncludePrototypes,
+            property_filter: v8::PropertyFilter::ONLY_ENUMERABLE | v8::PropertyFilter::SKIP_SYMBOLS,
+            index_filter: v8::IndexFilter::IncludeIndices,
+            key_conversion: v8::KeyConversionMode::ConvertToString,
+        };
         let names = o
-            .get_own_property_names(s, v8::GetPropertyNamesArgs::default())
+            .get_property_names(s, args)
             .ok_or(napi_pending_exception)?;
         put(out, names.into());
         Ok(())
