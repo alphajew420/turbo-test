@@ -1158,6 +1158,17 @@ static napi_value f_core_nulls(napi_env env, napi_callback_info info) {
     return nums(env, sizeof st / sizeof st[0], st);
 }
 
+/* typedArrayOver(buffer, type, length, offset) -> [status, the typed array, exception] */
+static napi_value f_typed_array_over(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value ta = NULL;
+    napi_status st = napi_create_typedarray(env, (int)argd(env, &a, 1), (size_t)argd(env, &a, 2),
+                                            arg(env, &a, 0), (size_t)argd(env, &a, 3), &ta);
+    napi_value exc = take_exception(env);
+    napi_value it[3] = {num(env, st), or_undef(env, ta), exc};
+    return list(env, 3, it);
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -1281,6 +1292,7 @@ static const struct {
     {"externalMemory", f_external_memory},
     {"moduleFileName", f_module_file_name},
     {"coreNulls", f_core_nulls},
+    {"typedArrayOver", f_typed_array_over},
     {"nullEnv", f_null_env},
 };
 

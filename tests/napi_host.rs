@@ -219,7 +219,7 @@ fn every_node_api_family_behaves() {
     );
     let j = json_report(&r);
     assert_eq!(j["numFailedTests"], 0, "{}", r.all());
-    assert_eq!(j["numPassedTests"], 43, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 44, "{}", r.all());
     // napi_fatal_exception reported the error as uncaught (what a throwing timer callback gets)
     assert!(
         r.stderr.contains("uncaught reported as uncaught"),

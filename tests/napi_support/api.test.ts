@@ -462,6 +462,21 @@ describe('arraybuffers, typed arrays, dataviews, buffers', () => {
     expect(api.taInfo(new DataView(ab))[0]).toBe(INVALID_ARG);
   });
 
+  test('napi_create_typedarray over an ArrayBuffer or a SharedArrayBuffer', () => {
+    for (const buffer of [new ArrayBuffer(8), new SharedArrayBuffer(8)]) {
+      const [st, ta, exc] = api.typedArrayOver(buffer, 5, 1, 4);
+      expect([st, exc]).toEqual([OK, undefined]);
+      expect(ta).toBeInstanceOf(Int32Array);
+      expect([ta.buffer === buffer, ta.byteOffset, ta.length]).toEqual([true, 4, 1]);
+      // the same alignment and length checks
+      const [st2, , exc2] = api.typedArrayOver(buffer, 5, 1, 2);
+      expect([st2, exc2.code]).toEqual([GENERIC_FAILURE, 'ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT']);
+      const [st3, , exc3] = api.typedArrayOver(buffer, 5, 2, 4);
+      expect([st3, exc3.code]).toEqual([GENERIC_FAILURE, 'ERR_NAPI_INVALID_TYPEDARRAY_LENGTH']);
+    }
+    expect(api.typedArrayOver({}, 1, 1, 0).slice(0, 2)).toEqual([INVALID_ARG, undefined]);
+  });
+
   test('napi_create_dataview / napi_get_dataview_info', () => {
     const ab = new Uint8Array([1, 2, 3, 4]).buffer;
     const [st, dv, exc] = api.dataView(ab, 2, 1);

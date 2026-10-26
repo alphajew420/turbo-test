@@ -1889,7 +1889,13 @@ pub unsafe extern "C" fn napi_create_typedarray(
     js_call(env, |s| {
         let value = val_arg(arraybuffer)?;
         let out = out_arg(out)?;
-        let ab: v8::Local<v8::ArrayBuffer> = value.try_into().map_err(|_| napi_invalid_arg)?;
+        // as Node: an ArrayBuffer or a SharedArrayBuffer (one JSArrayBuffer in V8, so a
+        // SharedArrayBuffer handle serves where V8's typed array constructors take an
+        // ArrayBuffer)
+        if !(value.is_array_buffer() || value.is_shared_array_buffer()) {
+            return Err(napi_invalid_arg);
+        }
+        let ab: v8::Local<v8::ArrayBuffer> = v8::Local::cast_unchecked(value);
         // napi_typedarray_type codes (Node 26: 0..=11): element size and constructor name.
         let (size, name) = match type_ {
             0 => (1, "Int8Array"),
