@@ -2121,6 +2121,28 @@ fn native_transform_cjs(file: &Path) -> Option<String> {
     Some(code)
 }
 
+/// `native_transform_cjs` for the test file under test locations (location.rs): the same code,
+/// built uncached with the emitter's source map, whose lines follow the mock hoisting and the
+/// shared-`let` prelude so the map stays aligned with the code that runs.
+fn native_transform_cjs_located(file: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(file).ok()?;
+    let legacy_decorators = decorator_metadata_enabled(file) && file_has_decorator(&raw);
+    let emitted = crate::esm_cjs::emit_mapped(file, &raw, legacy_decorators)?;
+    let map = crate::coverage::inline_segments(&emitted)?;
+    let (mut code, mut origins) = hoist_mock_setup_tracked(&await_do_mocks_on_import(emitted));
+    let shared = shared_mock_lets(&raw);
+    if !shared.is_empty() {
+        code = rewrite_shared_lets(&code, &shared);
+        origins.insert(0, None);
+    }
+    let segs = origins
+        .iter()
+        .map(|o| o.and_then(|i| map.get(i).cloned()).unwrap_or_default())
+        .collect();
+    crate::location::set_map(file, segs, &raw);
+    Some(code)
+}
+
 /// Native (oxc) counterpart of `esbuild_bundle_dep_cjs` for node_modules files (P2b). Instead of
 /// bundling a package's relative files into one module (esbuild `--bundle --packages=external`),
 /// transform the SINGLE file ESM→CJS via `esm_cjs::emit` and let the loader resolve its relative +
@@ -2307,14 +2329,26 @@ fn fill_import_meta(code: String) -> String {
 /// "consumers" — incl. the modules being mocked) to AFTER that region. The setup's own decls run
 /// in-module-scope, so the factory shares the test's bindings (push, mockUseAuthInfo, etc.).
 fn hoist_mock_setup(code: &str) -> String {
+    hoist_mock_setup_tracked(code).0
+}
+
+/// `hoist_mock_setup`, also returning for each output line the input line it came from (`None` for
+/// a line it wrote: a mocked require's re-bind).
+fn hoist_mock_setup_tracked(code: &str) -> (String, Vec<Option<usize>>) {
+    let unchanged = || {
+        (
+            code.to_string(),
+            (0..code.split('\n').count()).map(Some).collect(),
+        )
+    };
     if !code.contains(".mock(") {
-        return code.to_string();
+        return unchanged();
     }
     let lines: Vec<&str> = code.lines().collect();
     let is_req = |l: &str| l.starts_with("var import_") && l.contains("require(");
     // contiguous require block
     let Some(req_start) = lines.iter().position(|l| is_req(l)) else {
-        return code.to_string();
+        return unchanged();
     };
     let mut req_end = req_start;
     while req_end + 1 < lines.len() && is_req(lines[req_end + 1]) {
@@ -2328,7 +2362,7 @@ fn hoist_mock_setup(code: &str) -> String {
         .rposition(|l| l.contains(".mock("))
         .unwrap_or(0);
     if last_mock <= req_end {
-        return code.to_string();
+        return unchanged();
     }
     let mut depth = 0i32;
     let mut started = false;
@@ -2454,7 +2488,17 @@ fn hoist_mock_setup(code: &str) -> String {
     if region_end + 1 < lines.len() {
         out.extend_from_slice(&lines[region_end + 1..]);
     }
-    out.join("\n")
+    // an output line that is one of the input's slices came from that line
+    let index: HashMap<usize, usize> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (l.as_ptr() as usize, i))
+        .collect();
+    let origins = out
+        .iter()
+        .map(|l| index.get(&(l.as_ptr() as usize)).copied())
+        .collect();
+    (out.join("\n"), origins)
 }
 
 /// The value of the first string literal (`"..."`, `'...'` or `` `...` ``) in `s`, escape
@@ -3071,6 +3115,11 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
             // (fewer per-token mappings), so coverage.rs under-attributes inner functions/lines —
             // not yet parity.
             if crate::esm_cjs::enabled() && !crate::coverage::enabled() && !prefer_metadata {
+                if crate::location::is_entry(abs) {
+                    if let Some(code) = native_transform_cjs_located(abs) {
+                        return Some(code);
+                    }
+                }
                 if let Some(code) = native_transform_cjs(abs) {
                     return Some(code);
                 }
@@ -3087,6 +3136,9 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
     }
     let raw = std::fs::read_to_string(abs).ok()?;
     if !crate::transform::needs_transform(abs) {
+        if crate::location::is_entry(abs) {
+            crate::location::set_identity(abs);
+        }
         return Some(raw);
     }
     // App `.ts`/`.tsx` files load through this path as ESM (load_graph → maybe_transform), NOT the
@@ -3099,6 +3151,13 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
     let legacy_decorators = !abs.components().any(|c| c.as_os_str() == "node_modules")
         && decorator_metadata_enabled(abs)
         && file_has_decorator(&raw);
+    // The test file under test locations: transform with a source map (no cache).
+    if !legacy_decorators && crate::location::is_entry(abs) {
+        if let Ok((code, mappings)) = crate::transform::transform_mapped(abs, &raw) {
+            crate::location::set_map(abs, crate::coverage::mappings_segments(&mappings), &raw);
+            return Some(code);
+        }
+    }
     // content-addressed disk cache, shared across runs and workers. Key on the legacy-decorator
     // decision so a config/file change can't serve stale (un-lowered) output. The tag changes
     // with the decorator transform (v2: tsc reads type-only imports through a namespace import),
@@ -3581,7 +3640,12 @@ fn load_cjs_inner<'s>(
     let (script, compile_exc) = {
         let tc = std::pin::pin!(v8::TryCatch::new(scope));
         let tc = &mut tc.init();
-        let origin = if crate::coverage::enabled() {
+        // Test locations (location.rs) find the test file's frames by this name too.
+        let located = crate::location::is_entry(abs);
+        if located {
+            crate::location::set_offset(abs, 1);
+        }
+        let origin = if crate::coverage::enabled() || located {
             v8::String::new(tc, &abs.to_string_lossy()).map(|name| script_origin(tc, name))
         } else {
             None
@@ -5123,6 +5187,37 @@ fn native_write(
     }
 }
 
+/// native `__ttCallSite()`: the original `[line, column]` of the innermost stack frame in the test
+/// file (location.rs), or `undefined` — where the runtime's `test(...)` was called from.
+fn native_call_site(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(trace) = v8::StackTrace::current_stack_trace(scope, 64) else {
+        return;
+    };
+    for i in 0..trace.get_frame_count() {
+        let Some(frame) = trace.get_frame(scope, i) else {
+            continue;
+        };
+        let name = frame
+            .get_script_name(scope)
+            .map(|n| n.to_rust_string_lossy(scope))
+            .unwrap_or_default();
+        if let Some((line, col)) =
+            crate::location::resolve(&name, frame.get_line_number(), frame.get_column())
+        {
+            let items = [
+                v8::Integer::new(scope, line as i32).into(),
+                v8::Integer::new(scope, col as i32).into(),
+            ];
+            rv.set(v8::Array::new_with_elements(scope, &items).into());
+            return;
+        }
+    }
+}
+
 /// Re-bind native callbacks into a fresh (snapshot-derived) context.
 /// os.tmpdir() as Node's: TMPDIR, else TMP, else TEMP, else /tmp, without a trailing slash.
 fn node_tmpdir(var: impl Fn(&str) -> Option<String>) -> String {
@@ -5139,6 +5234,7 @@ fn node_tmpdir(var: impl Fn(&str) -> Option<String>) -> String {
 fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "log", native_log);
     bind_fn(scope, global, "__ttWrite", native_write);
+    bind_fn(scope, global, "__ttCallSite", native_call_site);
     bind_fn(scope, global, "__nativeRequire", native_require);
     bind_fn(scope, global, "__ttRegisterMock", native_register_mock);
     bind_fn(scope, global, "__ttImportActual", native_import_actual);
@@ -5224,6 +5320,10 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     }
     if std::env::var("TURBO_TEST_FORBID_ONLY").is_ok() {
         prelude.push_str("globalThis.__TT_FORBID_ONLY=true;");
+    }
+    // --includeTaskLocation / test.includeTaskLocation → record each test's call site
+    if crate::location::enabled() {
+        prelude.push_str("globalThis.__TT_TASK_LOCATION=true;");
     }
     // --passWithNoTests (launcher) → a file with no tests at all passes instead of failing
     if std::env::var("TURBO_PASS_WITH_NO_TESTS").is_ok() {
@@ -5494,6 +5594,8 @@ pub struct TestCase {
     pub message: String,
     /// The failure's error `stack` (else its `message`), as vitest's JSON `failureMessages`.
     pub failure_messages: Vec<String>,
+    /// Where the test was registered (`includeTaskLocation`): 1-based line and column.
+    pub location: Option<(u32, u32)>,
 }
 
 impl TestReport {
@@ -5677,6 +5779,7 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     let _dom_guard = DomGuard;
 
     let entry_abs = std::fs::canonicalize(entry).map_err(|e| format!("{e}"))?;
+    crate::location::begin(&entry_abs);
     // e2e helper tests may import heavy Node-only deps they don't exercise — allow stubbing a
     // failed node_modules load for these files only (see stub_failed_deps).
     ENTRY_LENIENT.with(|c| c.set(entry_abs.components().any(|p| p.as_os_str() == "e2e")));
@@ -6338,6 +6441,7 @@ fn drive_tests_bounded(
                     start_ms: num(scope, "start_ms"),
                     message: text(scope, "message"),
                     failure_messages: string_array(scope, o, "failure_messages"),
+                    location: location_of(scope, o),
                 });
             }
         }
@@ -6350,6 +6454,23 @@ fn drive_tests_bounded(
         suites,
         setup_us: 0.0,
     })
+}
+
+/// A test record's `location` (`[line, column]`), when it has one.
+fn location_of<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    obj: v8::Local<'s, v8::Object>,
+) -> Option<(u32, u32)> {
+    let k = v8::String::new(scope, "location").unwrap();
+    let arr = obj
+        .get(scope, k.into())
+        .and_then(|v| v8::Local::<v8::Array>::try_from(v).ok())?;
+    let at = |i: u32| {
+        arr.get_index(scope, i)
+            .and_then(|v| v.uint32_value(scope))
+            .unwrap_or(0)
+    };
+    Some((at(0), at(1)))
 }
 
 /// The array `obj[key]` as strings (empty when it is not an array).

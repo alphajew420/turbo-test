@@ -209,7 +209,6 @@ const LOCATIONS: [(&str, &str, u64, u64); 12] = [
 ];
 
 #[test]
-#[ignore = "turbo-test#63: fails until the fix"]
 fn json_report_has_vitest_task_locations() {
     // turbo-test#63 item 1: `--includeTaskLocation` was an unsupported flag and the report had no
     // `location`. vitest writes `location: { line, column }` (1-based, UTF-16 columns, the call's

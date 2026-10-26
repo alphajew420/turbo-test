@@ -80,6 +80,32 @@ pub fn transform_with(path: &Path, src: &str, legacy_decorators: bool) -> Result
     Ok(Codegen::new().build(&program).code)
 }
 
+/// `transform` with a source map: the code and the map's `mappings` (test locations,
+/// location.rs).
+pub fn transform_mapped(path: &Path, src: &str) -> Result<(String, String), String> {
+    let allocator = Allocator::default();
+    let source_type = SourceType::from_path(path).map_err(|e| format!("source type: {e:?}"))?;
+    let parsed = Parser::new(&allocator, src, source_type).parse();
+    if !parsed.errors.is_empty() {
+        return Err(format!("parse errors: {:?}", parsed.errors));
+    }
+    let mut program = parsed.program;
+    let scoping = semantic_scoping(&program);
+    let ret = Transformer::new(&allocator, path, &TransformOptions::default())
+        .build_with_scoping(scoping, &mut program);
+    if !ret.errors.is_empty() {
+        return Err(format!("transform errors: {:?}", ret.errors));
+    }
+    let out = Codegen::new()
+        .with_options(oxc_codegen::CodegenOptions {
+            source_map_path: Some(path.to_path_buf()),
+            ..Default::default()
+        })
+        .build(&program);
+    let mappings = out.map.map(|m| m.to_json().mappings).unwrap_or_default();
+    Ok((out.code, mappings))
+}
+
 /// Transform a TS file lowering legacy decorators + `emitDecoratorMetadata` in-process via oxc
 /// — esbuild cannot emit decorator metadata, which NestJS / Mongoose (`@Injectable`, `@Prop`,
 /// `@Controller`) need at runtime: without `design:type` / `design:paramtypes` the class

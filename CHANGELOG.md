@@ -98,6 +98,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   reports them, in every per-test reporter: `-t`-filtered tests and the tests of a
   `describe.skip` block (whose callback is now collected, as in vitest) are skipped, `it.todo` /
   `describe.todo` ones are todo, and a `describe` none of whose tests runs runs no hooks.
+- `--includeTaskLocation` / `test.includeTaskLocation: true` (turbo-test#63 item 1): the JSON
+  report's `assertionResults` carry vitest's `location` (`{ line, column }` of the call that
+  registered the test, in the original source: 1-based, UTF-16 columns). The flag was an
+  unsupported flag. The call site's V8 position is mapped back through the transform's source
+  map (the native emitter's, following the `vi.mock` hoisting; oxc's on the ESM path).
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

@@ -236,6 +236,21 @@ fn vitest_patterns(start_dir: &Path, forced: Option<&Path>) -> Option<Patterns> 
     })
 }
 
+/// Whether config text sets `key: true` (`key\s*:\s*true`, the first `key:` wins).
+fn config_true(text: &str, key: &str) -> bool {
+    let b = text.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(key) {
+        let after = from + rel + key.len();
+        let i = skip_ws(b, after);
+        if i < b.len() && b[i] == b':' {
+            return text[skip_ws(b, i + 1)..].starts_with("true");
+        }
+        from = after;
+    }
+    false
+}
+
 /// Read `test.environment` (node|jsdom|happy-dom) from config text. Mirrors cli.js
 /// `configEnvironment`: `environment\s*:\s*['"`]([a-z-]+)['"`]`, lowercased.
 fn config_environment(text: &str) -> Option<String> {
@@ -1462,6 +1477,14 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
                 forward.push(tt);
             }
         }
+    }
+
+    // `test.includeTaskLocation: true` → test locations in the JSON report, like the
+    // `--includeTaskLocation` flag (which the runner reads itself).
+    if find_config(&cwd, forced.as_deref())
+        .is_some_and(|c| config_true(&c.text, "includeTaskLocation"))
+    {
+        env.push(("TURBO_TASK_LOCATION", "1".to_string()));
     }
 
     // Resolve the test file set: the discovered files, named relative to the process cwd as

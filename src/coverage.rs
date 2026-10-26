@@ -701,6 +701,16 @@ fn decode_inline_map(transformed: &str) -> Option<(GenMap, Segments)> {
     Some(parse_mappings_full(mappings))
 }
 
+/// The per-generated-line segments of `code`'s inline source map (test locations, location.rs).
+pub(crate) fn inline_segments(code: &str) -> Option<Segments> {
+    decode_inline_map(code).map(|(_, segs)| segs)
+}
+
+/// The per-generated-line segments of a source map's `mappings` string.
+pub(crate) fn mappings_segments(mappings: &str) -> Segments {
+    parse_mappings_full(mappings).1
+}
+
 fn parse_mappings_full(mappings: &str) -> (GenMap, Segments) {
     let mut genmap = HashMap::new();
     let mut segs: Segments = Vec::new();

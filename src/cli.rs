@@ -241,6 +241,8 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
                     o.env.push(("TURBO_TEST_NAME_PATTERN", v));
                 }
             }
+            // `--includeTaskLocation`: record each test's location (`location` in the JSON report).
+            "--includeTaskLocation" => o.env.push(("TURBO_TASK_LOCATION", "1".to_string())),
             // `-u` / `--update` — write missing/changed snapshots instead of failing (vitest
             // `--update`). Plumbed to the runtime via env → globalThis.__TT_UPDATE_SNAPSHOTS.
             "-u" | "--update" => o.env.push(("TURBO_UPDATE_SNAPSHOTS", "1".to_string())),
@@ -761,20 +763,23 @@ fn snapshot_summary(did_update: bool) -> String {
 }
 
 /// One `assertionResults` entry, in vitest 4.1.12's key order (`duration` only for a test that
-/// ran).
+/// ran, `location` only under `includeTaskLocation`).
 fn assertion_result(t: &TestCase) -> String {
     let mut full = t.ancestors.clone();
     if !t.title.is_empty() {
         full.push(t.title.clone());
     }
     let ran = t.status == "passed" || t.status == "failed";
+    let location = t.location.map_or(String::new(), |(line, column)| {
+        format!(",\"location\":{{\"line\":{line},\"column\":{column}}}")
+    });
     let duration = if ran {
         format!("\"duration\":{},", js_num(t.duration_ms))
     } else {
         String::new()
     };
     format!(
-        "{{\"ancestorTitles\":{},\"fullName\":{},\"status\":{},\"title\":{},{duration}\"failureMessages\":{},\"meta\":{{}},\"tags\":[]}}",
+        "{{\"ancestorTitles\":{},\"fullName\":{},\"status\":{},\"title\":{},{duration}\"failureMessages\":{}{location},\"meta\":{{}},\"tags\":[]}}",
         json_strs(&t.ancestors),
         json_str(&full.join(" ")),
         json_str(&t.status),

@@ -404,6 +404,11 @@ pub fn emit_with(path: &Path, src: &str, legacy_decorators: bool) -> Option<Stri
     emit_inner(path, src, legacy_decorators, crate::coverage::enabled())
 }
 
+/// `emit_with` that always appends the inline source map (test locations need it, location.rs).
+pub fn emit_mapped(path: &Path, src: &str, legacy_decorators: bool) -> Option<String> {
+    emit_inner(path, src, legacy_decorators, true)
+}
+
 /// `emit_with` with the coverage decision injected: `with_map = true` appends the inline source map.
 fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -> Option<String> {
     let alloc = Allocator::default();

@@ -3027,20 +3027,26 @@ function __defaultTimeout() {
   const n = Number(globalThis.__TT_DEFAULT_TIMEOUT);
   return Number.isFinite(n) && n > 0 ? n : 5000;
 }
+// Collect a test into the current suite. Under `includeTaskLocation` it records where it was
+// registered from (`[line, column]` in the test file, native `__ttCallSite`, #63).
+function __addTest(t) {
+  if (globalThis.__TT_TASK_LOCATION) t.location = globalThis.__ttCallSite();
+  current.tasks.push(t);
+}
 function it(name, a, b) {
   const { fn, o } = __normTest(a, b);
-  current.tasks.push({ name, fn, skip: false, only: false, retry: o.retry || 0, timeout: o.timeout });
+  __addTest({ name, fn, skip: false, only: false, retry: o.retry || 0, timeout: o.timeout });
 }
-it.skip = (name, a, b) => current.tasks.push({ name, fn: __normTest(a, b).fn, skip: true });
-it.todo = (name) => current.tasks.push({ name, fn: () => {}, skip: true, todo: true });
-it.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn, skip: false, only: true, retry: o.retry || 0, timeout: o.timeout }); };
+it.skip = (name, a, b) => __addTest({ name, fn: __normTest(a, b).fn, skip: true });
+it.todo = (name) => __addTest({ name, fn: () => {}, skip: true, todo: true });
+it.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); __addTest({ name, fn, skip: false, only: true, retry: o.retry || 0, timeout: o.timeout }); };
 it.concurrent = it; // accepted; this runner executes a file's tests sequentially
 it.each = (cases, ...targs) => __each(it, cases, targs);
 it.for = (cases, ...targs) => __for(it, cases, targs);
-it.skipIf = (cond) => (name, fn) => current.tasks.push({ name, fn, skip: !!cond, only: false, retry: 0 });
-it.runIf = (cond) => (name, fn) => current.tasks.push({ name, fn, skip: !cond, only: false, retry: 0 });
+it.skipIf = (cond) => (name, fn) => __addTest({ name, fn, skip: !!cond, only: false, retry: 0 });
+it.runIf = (cond) => (name, fn) => __addTest({ name, fn, skip: !cond, only: false, retry: 0 });
 // it.fails: the test PASSES iff its body throws (runSuite inverts the outcome via `fails`).
-it.fails = (name, a, b) => { const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn, skip: false, only: false, retry: o.retry || 0, fails: true }); };
+it.fails = (name, a, b) => { const { fn, o } = __normTest(a, b); __addTest({ name, fn, skip: false, only: false, retry: o.retry || 0, fails: true }); };
 // it.extend({...}) — test-context fixtures (best-effort). vitest passes a merged context object as
 // the test fn's first arg; fixtures defined as plain values or `async ({}, use) => use(value)`
 // functions are resolved here and provided. Returns a new test fn with these fixtures baked in.
@@ -3063,9 +3069,9 @@ it.extend = (fixtures) => {
     return ctx;
   };
   const wrap = (userFn) => async () => { const ctx = await resolveCtx(); return userFn(ctx); };
-  const ext = (name, a, b) => { const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn: wrap(fn), skip: false, only: false, retry: o.retry || 0 }); };
-  ext.skip = (name, a, b) => current.tasks.push({ name, fn: wrap(__normTest(a, b).fn), skip: true });
-  ext.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn: wrap(fn), skip: false, only: true, retry: o.retry || 0 }); };
+  const ext = (name, a, b) => { const { fn, o } = __normTest(a, b); __addTest({ name, fn: wrap(fn), skip: false, only: false, retry: o.retry || 0 }); };
+  ext.skip = (name, a, b) => __addTest({ name, fn: wrap(__normTest(a, b).fn), skip: true });
+  ext.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); __addTest({ name, fn: wrap(fn), skip: false, only: true, retry: o.retry || 0 }); };
   ext.each = (cases, ...targs) => __each(ext, cases, targs);
   ext.for = (cases, ...targs) => __for(ext, cases, targs);
   ext.extend = (more) => it.extend({ ...fixtures, ...more });
@@ -3092,6 +3098,7 @@ function __testRecord(t, chain, status, extra) {
     ancestors: chain.slice(1).map((s) => s.name),
     status,
     duration_ms: 0,
+    location: t.location,
     ...extra,
   };
 }
