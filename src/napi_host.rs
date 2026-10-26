@@ -20,6 +20,7 @@ use std::ptr::NonNull;
 pub type napi_status = i32;
 pub const napi_ok: napi_status = 0;
 pub const napi_invalid_arg: napi_status = 1;
+pub const napi_object_expected: napi_status = 2;
 pub const napi_string_expected: napi_status = 3;
 pub const napi_number_expected: napi_status = 6;
 pub const napi_boolean_expected: napi_status = 7;
@@ -143,6 +144,15 @@ unsafe fn js_call(
         }
     }
     result.err().unwrap_or(napi_ok)
+}
+
+/// ToObject of an object argument, as Node's CHECK_TO_OBJECT: primitives become their wrapper
+/// objects; null / undefined throw a TypeError and the call is napi_object_expected.
+unsafe fn to_object(
+    s: &mut v8::PinScope<'static, 'static>,
+    obj: napi_value,
+) -> Result<v8::Local<'static, v8::Object>, napi_status> {
+    to_local(obj).to_object(s).ok_or(napi_object_expected)
 }
 
 /// Callback info passed to a napi_callback during a function call.
@@ -336,7 +346,8 @@ pub unsafe extern "C" fn napi_coerce_to_string(
     out: *mut napi_value,
 ) -> napi_status {
     js_call(env, |s| {
-        let str_ = to_local(v).to_string(s).ok_or(napi_generic_failure)?;
+        // as Node's CHECK_TO_STRING: a ToString that throws is napi_string_expected
+        let str_ = to_local(v).to_string(s).ok_or(napi_string_expected)?;
         put(out, str_.into());
         Ok(())
     })
@@ -371,7 +382,7 @@ pub unsafe extern "C" fn napi_set_named_property(
     js_call(env, |s| {
         let key = std::ffi::CStr::from_ptr(name).to_string_lossy();
         let k = v8::String::new(s, &key).ok_or(napi_generic_failure)?;
-        let o: v8::Local<v8::Object> = to_local(obj).try_into().map_err(|_| napi_invalid_arg)?;
+        let o = to_object(s, obj)?;
         // V8's Object::Set is Nothing only when it threw (a throwing setter or proxy trap)
         o.set(s, k.into(), to_local(value))
             .ok_or(napi_pending_exception)?;
@@ -389,8 +400,8 @@ pub unsafe extern "C" fn napi_get_named_property(
     js_call(env, |s| {
         let key = std::ffi::CStr::from_ptr(name).to_string_lossy();
         let k = v8::String::new(s, &key).ok_or(napi_generic_failure)?;
-        let o: v8::Local<v8::Object> = to_local(obj).try_into().map_err(|_| napi_invalid_arg)?;
-        put(out, o.get(s, k.into()).ok_or(napi_generic_failure)?);
+        let o = to_object(s, obj)?;
+        put(out, o.get(s, k.into()).ok_or(napi_pending_exception)?);
         Ok(())
     })
 }
@@ -403,7 +414,7 @@ pub unsafe extern "C" fn napi_set_element(
     value: napi_value,
 ) -> napi_status {
     js_call(env, |s| {
-        let o: v8::Local<v8::Object> = to_local(obj).try_into().map_err(|_| napi_invalid_arg)?;
+        let o = to_object(s, obj)?;
         o.set_index(s, index, to_local(value))
             .ok_or(napi_pending_exception)?;
         Ok(())
@@ -895,8 +906,8 @@ pub unsafe extern "C" fn napi_get_element(
     out: *mut napi_value,
 ) -> napi_status {
     js_call(env, |s| {
-        let o: v8::Local<v8::Object> = to_local(obj).try_into().map_err(|_| napi_invalid_arg)?;
-        put(out, o.get_index(s, index).ok_or(napi_generic_failure)?);
+        let o = to_object(s, obj)?;
+        put(out, o.get_index(s, index).ok_or(napi_pending_exception)?);
         Ok(())
     })
 }
@@ -907,10 +918,10 @@ pub unsafe extern "C" fn napi_get_property_names(
     out: *mut napi_value,
 ) -> napi_status {
     js_call(env, |s| {
-        let o: v8::Local<v8::Object> = to_local(obj).try_into().map_err(|_| napi_invalid_arg)?;
+        let o = to_object(s, obj)?;
         let names = o
             .get_own_property_names(s, v8::GetPropertyNamesArgs::default())
-            .ok_or(napi_generic_failure)?;
+            .ok_or(napi_pending_exception)?;
         put(out, names.into());
         Ok(())
     })

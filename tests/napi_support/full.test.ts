@@ -6,11 +6,24 @@ const a = require('./full.node');
 // napi_status codes as src/napi_host.rs defines them.
 const OK = 0;
 const INVALID_ARG = 1;
+const OBJECT_EXPECTED = 2;
 const STRING_EXPECTED = 3;
 const NUMBER_EXPECTED = 6;
 const BOOLEAN_EXPECTED = 7;
 const GENERIC_FAILURE = 9;
 const PENDING_EXCEPTION = 10;
+
+// `f` throws what ToObject(null / undefined) throws
+function throwsToObjectError(f: () => unknown) {
+  let caught: any;
+  try {
+    f();
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(TypeError);
+  expect(caught.message).toBe('Cannot convert undefined or null to object');
+}
 
 describe('module init', () => {
   test('an init returning NULL hands back the exports object it was given', () => {
@@ -112,9 +125,9 @@ describe('values', () => {
         },
       }),
     ).toThrow('toString threw');
-    expect(a.status()).toBe(GENERIC_FAILURE);
+    expect(a.status()).toBe(STRING_EXPECTED);
     expect(() => a.coerce(Symbol('x'))).toThrow(TypeError);
-    expect(a.status()).toBe(GENERIC_FAILURE);
+    expect(a.status()).toBe(STRING_EXPECTED);
   });
 
   test('number / bool getters', () => {
@@ -151,16 +164,22 @@ describe('objects and arrays', () => {
     expect(a.getNamed(o, 'k')).toBe(5);
     expect(a.getNamed(o, 'missing')).toBe(undefined);
     expect(a.status()).toBe(OK);
-    expect(a.setNamed(null, 'k', 1)).toBe(INVALID_ARG);
-    expect(a.getNamed(undefined, 'k')).toBe(undefined);
-    expect(a.status()).toBe(INVALID_ARG);
+    // null / undefined: ToObject throws a TypeError and the call is napi_object_expected
+    throwsToObjectError(() => a.setNamed(null, 'k', 1));
+    expect(a.status()).toBe(OBJECT_EXPECTED);
+    throwsToObjectError(() => a.getNamed(undefined, 'k'));
+    expect(a.status()).toBe(OBJECT_EXPECTED);
+    // other primitives are coerced to their wrapper objects
+    expect(a.getNamed('abc', 'length')).toBe(3);
+    expect(a.getNamed(5, 'toFixed')).toBe(Number.prototype.toFixed);
+    expect(a.setNamed('str', 'k', 1)).toBe(OK);
     const trap = Object.defineProperty({}, 'boom', {
       get() {
         throw new Error('getter threw');
       },
     });
     expect(() => a.getNamed(trap, 'boom')).toThrow('getter threw');
-    expect(a.status()).toBe(GENERIC_FAILURE);
+    expect(a.status()).toBe(PENDING_EXCEPTION);
   });
 
   test('a set that throws reports napi_pending_exception', () => {
@@ -192,16 +211,19 @@ describe('objects and arrays', () => {
     expect(a.getEl(arr, 2)).toBe('x');
     expect(a.getEl(['a', 'b'], 5)).toBe(undefined);
     expect(a.status()).toBe(OK);
-    expect(a.setEl(undefined, 0, 1)).toBe(INVALID_ARG);
-    expect(a.getEl(null, 0)).toBe(undefined);
-    expect(a.status()).toBe(INVALID_ARG);
+    throwsToObjectError(() => a.setEl(undefined, 0, 1));
+    expect(a.status()).toBe(OBJECT_EXPECTED);
+    throwsToObjectError(() => a.getEl(null, 0));
+    expect(a.status()).toBe(OBJECT_EXPECTED);
+    expect(a.getEl('xyz', 1)).toBe('y');
+    expect(a.setEl(5, 0, 1)).toBe(OK);
     const trap = Object.defineProperty([], 0, {
       get() {
         throw new Error('index getter threw');
       },
     });
     expect(() => a.getEl(trap, 0)).toThrow('index getter threw');
-    expect(a.status()).toBe(GENERIC_FAILURE);
+    expect(a.status()).toBe(PENDING_EXCEPTION);
 
     expect(a.isArray([1])).toBe(true);
     expect(a.isArray({ length: 1 })).toBe(false);
@@ -214,8 +236,8 @@ describe('objects and arrays', () => {
   test('napi_get_property_names', () => {
     expect(a.keys({ x: 1, y: 2 })).toEqual(['x', 'y']);
     expect(a.status()).toBe(OK);
-    expect(a.keys(null)).toBe(undefined);
-    expect(a.status()).toBe(INVALID_ARG);
+    throwsToObjectError(() => a.keys(null));
+    expect(a.status()).toBe(OBJECT_EXPECTED);
     const p = new Proxy(
       {},
       {
@@ -225,7 +247,7 @@ describe('objects and arrays', () => {
       },
     );
     expect(() => a.keys(p)).toThrow('ownKeys threw');
-    expect(a.status()).toBe(GENERIC_FAILURE);
+    expect(a.status()).toBe(PENDING_EXCEPTION);
   });
 });
 
