@@ -264,8 +264,8 @@ pub unsafe extern "C" fn napi_create_string_utf8(
     } else {
         std::slice::from_raw_parts(str_ as *const u8, len)
     };
-    let text = std::str::from_utf8(bytes).unwrap_or("");
-    match v8::String::new(s, text) {
+    // V8's String::NewFromUtf8 (what Node uses) replaces invalid sequences with U+FFFD.
+    match v8::String::new_from_utf8(s, bytes, v8::NewStringType::Normal) {
         Some(v) => {
             put(out, v.into());
             napi_ok

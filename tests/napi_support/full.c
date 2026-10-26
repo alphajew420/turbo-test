@@ -96,6 +96,20 @@ static napi_value f_basics(napi_env env, napi_callback_info info) {
     return list(env, 13, it);
 }
 
+/* Strings made from invalid UTF-8 (each sequence takes the replacement path), then the OR of
+ * the creation statuses. */
+static napi_value f_bad_utf8(napi_env env, napi_callback_info info) {
+    (void)info;
+    static const char *const SRC[] = {"a\xff" "b", "\xc3", "x\xe2\x82", "\xed\xa0\x80" "z",
+                                      "\xf0\x9f\x98\x80\xc0\xaf"};
+    napi_value it[6];
+    int acc = 0;
+    for (int i = 0; i < 5; i++)
+        acc |= napi_create_string_utf8(env, SRC[i], strlen(SRC[i]), &it[i]);
+    it[5] = dbl(env, acc);
+    return list(env, 6, it);
+}
+
 static napi_value f_typeof(napi_env env, napi_callback_info info) {
     Args a = args(env, info);
     int t = -1;
@@ -655,6 +669,7 @@ static const struct {
 } FNS[] = {
     {"status", f_status},
     {"basics", f_basics},
+    {"badUtf8", f_bad_utf8},
     {"typeOf", f_typeof},
     {"strInfo", f_strinfo},
     {"strStatus", f_str_status},

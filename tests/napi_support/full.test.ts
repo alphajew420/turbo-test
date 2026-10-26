@@ -39,6 +39,18 @@ describe('values', () => {
     expect(acc).toBe(OK);
   });
 
+  test('napi_create_string_utf8 replaces invalid UTF-8 with U+FFFD', () => {
+    const points = (s: string) => [...s].map((c) => c.codePointAt(0));
+    const [lone, cut2, cut3, surrogate, overlong, acc] = a.badUtf8();
+    expect(points(lone)).toEqual([0x61, 0xfffd, 0x62]);
+    expect(points(cut2)).toEqual([0xfffd]);
+    // a truncated sequence is one replacement (its maximal subpart), the rest are per byte
+    expect(points(cut3)).toEqual([0x78, 0xfffd]);
+    expect(points(surrogate)).toEqual([0xfffd, 0xfffd, 0xfffd, 0x7a]);
+    expect(points(overlong)).toEqual([0x1f600, 0xfffd, 0xfffd]);
+    expect(acc).toBe(OK);
+  });
+
   test('napi_typeof', () => {
     expect(a.typeOf(undefined)).toBe(0);
     expect(a.typeOf(null)).toBe(1);
