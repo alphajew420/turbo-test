@@ -46,6 +46,7 @@ pub fn spec(name: &str) -> &'static str {
         "init.test.ts" => include_str!("init.test.ts"),
         "init_lock.test.ts" => include_str!("init_lock.test.ts"),
         "reentry.test.ts" => include_str!("reentry.test.ts"),
+        "reload.test.ts" => include_str!("reload.test.ts"),
         "selfreg.test.ts" => include_str!("selfreg.test.ts"),
         "refs.test.ts" => include_str!("refs.test.ts"),
         "addons.test.ts" => include_str!("addons.test.ts"),

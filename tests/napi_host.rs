@@ -299,10 +299,12 @@ fn self_registered_modules_load() {
     compile_addon(&p, "selfreg");
     p.file("a.test.ts", spec("selfreg.test.ts"));
     p.file("b.test.ts", spec("selfreg.test.ts"));
+    // dropped from require.cache, it is loaded again (turbo-test#47)
+    p.file("reload.test.ts", spec("reload.test.ts"));
     let r = turbo_test(&p.dir, &["--reporter", "json"], &[("TURBO_JOBS", "1")]);
     let j = json_report(&r);
     assert_eq!(j["numFailedTests"], 0, "{}", r.all());
-    assert_eq!(j["numPassedTests"], 2, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 3, "{}", r.all());
 }
 
 /// napi_get_version (10) and napi_get_node_version (the Node.js version process.versions.node

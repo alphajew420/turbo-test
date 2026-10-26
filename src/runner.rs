@@ -3773,9 +3773,11 @@ fn native_require(
     // mocked? A registered mock is served from its cjs_exports below. Its exports stay while it
     // is registered (invalidate_importers never evicts a mocked module, turbo-test#31 item 2);
     // a mocks entry without them would load the real module rather than serve an empty `{}`.
+    // (an entry the test put into require.cache is served like a mock)
+    let put = CACHE_PUT.with(|c| c.borrow().contains(&abs));
     let mocked = REGISTRY.with(|r| {
         let reg = r.borrow();
-        reg.mocks.contains_key(&abs) && reg.cjs_exports.contains_key(&abs)
+        (put || reg.mocks.contains_key(&abs)) && reg.cjs_exports.contains_key(&abs)
     });
     if mocked {
         // served below
@@ -4025,6 +4027,8 @@ fn native_reset_modules(
 thread_local! {
     /// The CJS modules executing on this thread, outermost first: Node's require stack.
     static REQUIRE_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    /// The paths whose require.cache entry the test put there: require() serves them as is.
+    static CACHE_PUT: RefCell<std::collections::HashSet<PathBuf>> = RefCell::default();
 }
 
 /// Throw Node's MODULE_NOT_FOUND error for `spec` required by `importer` (runtime.js
@@ -4076,6 +4080,58 @@ fn native_require_resolve(
     };
     if let Some(r) = resolved {
         rv.set(v8::String::new(scope, &r).unwrap().into());
+    }
+}
+
+/// require.cache, as Node's Module._cache: the loaded modules by path. `__ttCache(op, path,
+/// value)`: "keys" -> the paths of the modules loaded from files; "get" -> a module's exports
+/// (undefined when it is not loaded); "delete" -> drop it, so the next require() loads it
+/// again (a mock stays registered); "set" -> require() of the path gives `value`.
+fn native_require_cache(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let op = args.get(0).to_rust_string_lossy(scope);
+    let path = PathBuf::from(args.get(1).to_rust_string_lossy(scope));
+    match op.as_str() {
+        "keys" => {
+            let keys: Vec<PathBuf> = REGISTRY.with(|r| {
+                let reg = r.borrow();
+                let mut keys: Vec<PathBuf> = reg
+                    .cjs_exports
+                    .keys()
+                    .filter(|p| p.is_absolute())
+                    .cloned()
+                    .collect();
+                keys.sort();
+                keys
+            });
+            let keys: Vec<v8::Local<v8::Value>> = keys
+                .iter()
+                .map(|p| v8::String::new(scope, &p.to_string_lossy()).unwrap().into())
+                .collect();
+            rv.set(v8::Array::new_with_elements(scope, &keys).into());
+        }
+        "get" => {
+            if let Some(g) = REGISTRY.with(|r| r.borrow().cjs_exports.get(&path).cloned()) {
+                rv.set(v8::Local::new(scope, &g));
+            }
+        }
+        "delete" => REGISTRY.with(|r| {
+            CACHE_PUT.with(|c| c.borrow_mut().remove(&path));
+            let mut reg = r.borrow_mut();
+            reg.cjs_exports.remove(&path);
+            reg.real_exports.remove(&path);
+            reg.cjs_synth_by_path.remove(&path);
+            reg.cjs_export_names.remove(&path);
+            reg.esm_by_path.remove(&path);
+        }),
+        _ => {
+            let value = v8::Global::new(scope, args.get(2));
+            REGISTRY.with(|r| r.borrow_mut().cjs_exports.insert(path.clone(), value));
+            CACHE_PUT.with(|c| c.borrow_mut().insert(path));
+        }
     }
 }
 
@@ -4615,6 +4671,7 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "__ttResolveSpec", native_resolve_spec);
     bind_fn(scope, global, "__ttRequireResolve", native_require_resolve);
     bind_fn(scope, global, "__ttRequireStack", native_require_stack);
+    bind_fn(scope, global, "__ttCache", native_require_cache);
     bind_fn(scope, global, "__fs_existsSync", fs_exists_sync);
     bind_fn(scope, global, "__fs_readFileSync", fs_read_file_sync);
     bind_fn(scope, global, "__fs_writeFileSync", fs_write_file_sync);

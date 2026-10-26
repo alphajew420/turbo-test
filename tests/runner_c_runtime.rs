@@ -534,3 +534,49 @@ fn require_resolve_follows_node() {
     let r = turbo_test(&p.dir, &[], &[]);
     assert_passes(&r, 2);
 }
+
+/// turbo-test#47: require.cache is the shared module cache (Node's Module._cache): entries by
+/// path, and deleting one makes the next require() load the module again. The spec passes under
+/// vitest 4.1.12.
+const REQUIRE_CACHE_TEST: &str = r#"import { test, expect } from 'vitest';
+import * as fs from 'fs';
+
+// expected values: vitest 4.1.12 (Node's require.cache)
+const dir = new URL('.', import.meta.url).pathname;
+fs.writeFileSync(dir + 'cache-inj.js', "module.exports = 'real';");
+fs.writeFileSync(dir + 'cache-m.js', 'globalThis.__cacheRuns = (globalThis.__cacheRuns || 0) + 1; module.exports = { run: globalThis.__cacheRuns };');
+
+test('require.cache holds the loaded module; deleting it loads the module again', () => {
+  const a = require('./cache-m.js');
+  const key = require.resolve('./cache-m.js');
+  const entry = require.cache[key]!;
+  expect([entry.exports === a, entry.id, entry.filename, entry.loaded]).toEqual([true, key, key, true]);
+  expect(require.cache[key]).toBe(entry);
+  expect(key in require.cache).toBe(true);
+  expect(Object.keys(require.cache)).toContain(key);
+  expect(require('./cache-m.js')).toBe(a);
+  expect(delete require.cache[key]).toBe(true);
+  expect([key in require.cache, require.cache[key]]).toEqual([false, undefined]);
+  const b = require('./cache-m.js');
+  expect(b).not.toBe(a);
+  expect(b.run).toBe(a.run + 1);
+  expect(require.cache[key]!.exports).toBe(b);
+});
+
+test('a module put into require.cache is what require() gives', () => {
+  const key = require.resolve('./cache-inj.js');
+  require.cache[key] = { exports: 'injected' } as any;
+  expect(require('./cache-inj.js')).toBe('injected');
+  require.cache[key]!.exports = 'replaced';
+  expect(require('./cache-inj.js')).toBe('replaced');
+});
+"#;
+
+#[test]
+fn require_cache_deletion_loads_the_module_again() {
+    let p = Project::new("rc-require-cache");
+    p.with_esbuild();
+    p.file("cache.test.ts", REQUIRE_CACHE_TEST);
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_passes(&r, 2);
+}

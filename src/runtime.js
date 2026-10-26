@@ -1800,6 +1800,38 @@ globalThis.__ttModuleNotFound = (spec, importer) => {
   e.requireStack = stack;
   return e;
 };
+// require.cache, shared by every require (Node's Module._cache): a module loaded from a file,
+// by its path; deleting one makes the next require() load it again
+const __requireCacheEntries = new Map();
+function __requireCacheEntry(path) {
+  if (globalThis.__ttCache('get', path) === undefined) { __requireCacheEntries.delete(path); return undefined; }
+  let e = __requireCacheEntries.get(path);
+  if (!e) {
+    e = { id: path, filename: path, loaded: true, children: [], paths: [] };
+    Object.defineProperty(e, 'exports', {
+      get: () => globalThis.__ttCache('get', path),
+      set: (v) => globalThis.__ttCache('set', path, v),
+      enumerable: true,
+      configurable: true,
+    });
+    __requireCacheEntries.set(path, e);
+  }
+  return e;
+}
+const __requireCache = new Proxy({}, {
+  get: (_t, k) => (typeof k === 'string' ? __requireCacheEntry(k) : undefined),
+  has: (_t, k) => typeof k === 'string' && __requireCacheEntry(k) !== undefined,
+  set: (_t, k, v) => { if (typeof k === 'string') globalThis.__ttCache('set', k, v && v.exports); return true; },
+  deleteProperty: (_t, k) => {
+    if (typeof k === 'string') { globalThis.__ttCache('delete', k); __requireCacheEntries.delete(k); }
+    return true;
+  },
+  ownKeys: () => globalThis.__ttCache('keys'),
+  getOwnPropertyDescriptor: (_t, k) => {
+    const e = typeof k === 'string' ? __requireCacheEntry(k) : undefined;
+    return e && { value: e, writable: true, enumerable: true, configurable: true };
+  },
+});
 globalThis.__mkRequire = (dir, isEsm, importer) => {
   const req = (spec) => globalThis.__nativeRequire(dir, spec, isEsm, importer);
   // as Node: the resolved path (a builtin stays its name); MODULE_NOT_FOUND when nothing resolves
@@ -1808,7 +1840,7 @@ globalThis.__mkRequire = (dir, isEsm, importer) => {
     if (r === undefined) throw globalThis.__ttModuleNotFound(String(spec), importer);
     return r;
   };
-  req.cache = {};
+  req.cache = __requireCache;
   req.extensions = {};
   req.main = undefined;
   return req;
