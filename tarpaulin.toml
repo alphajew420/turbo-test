@@ -1,0 +1,24 @@
+# Line-coverage gate for the turbo-test Rust crate (the runner, the launcher/CLI, the
+# Node-API host, transforms, coverage reporting and the milestone spike binaries).
+# Run: `cargo tarpaulin` (reads this file). CI: the `coverage` job in .github/workflows/ci.yml.
+#
+# Many tests drive the real CLI as a subprocess (tests/cli_*.rs spawn
+# CARGO_BIN_EXE_turbo-test against fixture projects). Those child processes are built
+# with the same LLVM instrumentation and write their own .profraw files; `objects` makes
+# tarpaulin load the coverage maps of those executables so bin-only code is attributed.
+[turbo-test]
+engine = "Llvm"
+target-dir = "target/cov"
+skip-clean = true
+timeout = "600s"
+objects = [
+    "target/cov/debug/turbo-test",
+    "target/cov/debug/m0-spike",
+    "target/cov/debug/m1-esm",
+    "target/cov/debug/m1-cjs",
+    "target/cov/debug/m1-transform",
+    "target/cov/debug/m5-affected",
+]
+out = ["Stdout", "Json"]
+output-dir = "target/cov/report"
+fail-under = 99

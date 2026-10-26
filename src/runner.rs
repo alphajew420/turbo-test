@@ -4965,3 +4965,12 @@ mod env_pragma_tests {
         assert_eq!(file_env_pragma("import { it } from 'vitest';"), None);
     }
 }
+
+// Unit tests for the runner's helpers, split by source region (kept in their own files so
+// they are rustfmt-clean without reformatting this file).
+#[cfg(test)]
+#[path = "runner_tests_a.rs"]
+mod tests_a;
+#[cfg(test)]
+#[path = "runner_tests_b.rs"]
+mod tests_b;
