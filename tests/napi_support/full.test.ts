@@ -334,13 +334,15 @@ describe('functions', () => {
     };
     expect(a.call(obj.get, obj)).toBe(7);
     expect(a.call(() => 'no args', undefined)).toBe('no args');
+    // a NULL recv is napi_invalid_arg and nothing is called
+    let ran = false;
     expect(
-      a.callNullRecv(function (this: unknown) {
-        'use strict';
-        return [this, [...arguments]];
-      }, 'p', 'q'),
-    ).toEqual([undefined, ['p', 'q']]);
-    expect(a.status()).toBe(OK);
+      a.callNullRecv(() => {
+        ran = true;
+      }, 'p'),
+    ).toBe(undefined);
+    expect(a.status()).toBe(INVALID_ARG);
+    expect(ran).toBe(false);
     expect(a.call(123, null)).toBe(undefined);
     expect(a.status()).toBe(INVALID_ARG);
     expect(() =>

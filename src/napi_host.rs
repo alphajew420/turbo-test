@@ -604,16 +604,16 @@ pub unsafe extern "C" fn napi_call_function(
     out: *mut napi_value,
 ) -> napi_status {
     js_call(env, |s| {
+        // as Node (CHECK_ARG(env, recv)): a receiver is required; an addon passes `undefined`
+        if recv.is_null() {
+            return Err(napi_invalid_arg);
+        }
         let f: v8::Local<v8::Function> = to_local(func).try_into().map_err(|_| napi_invalid_arg)?;
         let args: Vec<v8::Local<v8::Value>> = (0..argc).map(|i| to_local(*argv.add(i))).collect();
-        let recv_local = if recv.is_null() {
-            v8::undefined(s).into()
-        } else {
-            to_local(recv)
-        };
         put(
             out,
-            f.call(s, recv_local, &args).ok_or(napi_pending_exception)?,
+            f.call(s, to_local(recv), &args)
+                .ok_or(napi_pending_exception)?,
         );
         Ok(())
     })
