@@ -6,20 +6,38 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 ## [Unreleased]
 
 ### Changed
-- V8: depend on the published registry crate `turbo-surf-v8 =150.4.0` (V8 15.0)
-  instead of the vendored `vendor/rusty_v8` 149.3.0 path crate, and move turbo-dom
-  0.5.7 -> 0.5.8. This is the first step of the turbo-dom consolidation, isolating
-  the engine/DOM bump from the later binding move. No source changes were needed.
-  Cargo, npm and fixtures/compat results are identical per test to 0.4.8. The
-  vendored tree and its tooling stay until the consolidation removes them.
+- turbo-dom consolidation: the browser binding and the V8 fork moved to
+  [turbo-dom](https://github.com/miaskiewicz/turbo-dom). The rtdom <-> V8 binding
+  (`src/browser_env*`, its tests, probes and Chrome controls: 398 files) is now the
+  `turbo-dom-browser-env` 0.6.0 crate, and the runner calls
+  `turbo_dom_browser_env::browser_env::{install, enabled, reset}`. V8 is turbo-dom's
+  rusty_v8 fork `turbo-dom-v8 ~150.4` (V8 15.0), replacing the registry crate
+  `turbo-surf-v8 =150.4.0` the runner had just moved to from the vendored 149.3.0
+  tree. The fork carries the interceptor `ShouldThrowOnError` fix, so strict-mode
+  writes through DOM interceptors report the caller's mode. Dependencies only the
+  binding used (url, psl, lightningcss, cssparser, turbo-dom, dev sha2) are gone.
+  Until the turbo-dom crates are published, `[patch.crates-io]` resolves them from
+  git; the section is removed before release (RELEASING.md).
+- Chrome-control scripts in `scripts/` now read and write the binding's probes and
+  controls in turbo-dom-browser-env's `src/` (`$ENV_SRC` in their usage text).
+- Results: every remaining Rust test, `npm test` and fixtures/compat are identical per
+  test; the 350 binding tests now run (identically) in turbo-dom-browser-env.
 
-### Release procedure
+### Tests
+- `tests/interceptor_should_throw.rs` is no longer ignored: its 4 tests (consumer copies
+  of turbo-dom-v8's) pass against the fork. `release_v8_teardown.rs` and
+  `weak_teardown.rs` stay as consumer checks.
+- `scripts/check-single-v8.sh` (CI build job): exactly one `turbo-dom-v8`, and no `v8`,
+  `v8x` or `turbo-surf-v8`, in the resolved build graph.
 
-- Determine missing V8 dependency versions through the official registry API,
-  preserving errors for denied existing archives and exact payload checks.
-- Add a manual, commit-guarded recovery for the immutable v0.4.7 tagged source.
-  It publishes only the reviewed V8 dependency before the original tagged
-  pipeline resumes; the product version, release tag and runtime stay unchanged.
+### Removed
+- `vendor/` (the vendored rusty_v8 149.3.0 fork, its patch, source pins and the
+  update/release/test scripts, `vendor/RUSTY_V8.md`): the fork's patches, pins and
+  generator now live in turbo-dom's `crates/turbo-dom-v8`.
+- CI: the tag-only `publish-v8` job and the manual `recover-v047-v8.yml` recovery
+  workflow (both published or verified `turbo-surf-v8` 149.3.0). This also drops the
+  unreleased registry-API absence check and v0.4.7 recovery procedure that lived in
+  those scripts; turbo-test publishes no V8 crate any more.
 
 ## [0.4.8] - 2026-10-25 — Chrome-parity batch for turbo-surf#28
 

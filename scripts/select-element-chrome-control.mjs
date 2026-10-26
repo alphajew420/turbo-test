@@ -1,6 +1,9 @@
 // Capture an authored probe in an independently installed Chrome over a raw CDP pipe.
-// Usage: node scripts/select-element-chrome-control.mjs --probe src/x_probe.js --cases src/x_cases.json
-//          --out src/x_chrome156.json [--chrome /path/to/Chrome]
+// Usage: node scripts/select-element-chrome-control.mjs --probe $ENV_SRC/x_probe.js --cases $ENV_SRC/x_cases.json
+//          --out $ENV_SRC/x_chrome156.json [--chrome /path/to/Chrome]
+// $ENV_SRC is turbo-dom-browser-env's source directory, where the binding's probes,
+// cases and Chrome controls live (miaskiewicz/turbo-dom crates/turbo-dom-browser-env/src,
+// e.g. ../turbo-dom/crates/turbo-dom-browser-env/src from this checkout).
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

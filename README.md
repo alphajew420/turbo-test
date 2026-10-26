@@ -40,7 +40,13 @@ vitest. There is **no environment to install or configure** — the Rust DOM shi
 
 ## Native DOM lifecycle controls
 
-The development binding keeps constructed shadow stylesheet lists during
+The DOM binding is [turbo-dom-browser-env](https://github.com/miaskiewicz/turbo-dom/tree/main/crates/turbo-dom-browser-env)
+(the rtdom <-> V8 browser environment, built in the
+[turbo-dom](https://github.com/miaskiewicz/turbo-dom) workspace and linked into the
+binary); its probes, Chrome controls and their regression tests live in that crate's
+`src/`, referred to as `$ENV_SRC` below (e.g. `../turbo-dom/crates/turbo-dom-browser-env/src`).
+
+The binding keeps constructed shadow stylesheet lists during
 same-document adoption and disconnect/reconnect, and clears them during
 cross-document adoption before custom-element adopted callbacks. Retained
 `adoptedStyleSheets` arrays keep their identity. Internal adoption reads private
@@ -73,27 +79,26 @@ of manufacturing numeric values.
 Measured Chrome155 button UA declarations reset its normal Arial 13.3333px font,
 spacing and border widths before author CSS is applied. Universal and inline
 styles, `font:inherit`, `initial` and measured `revert` behavior are covered by
-`src/computed_button_ua_probe.js` and its source-bound Chrome control. Recollect
+`$ENV_SRC/computed_button_ua_probe.js` and its source-bound Chrome control. Recollect
 that control with the same command below and
-`--probe src/computed_button_ua_probe.js`; select the intended Chrome executable with
+`--probe $ENV_SRC/computed_button_ua_probe.js`; select the intended Chrome executable with
 `--chrome /absolute/path/to/Chrome`.
 Recollect a lifecycle control with the sibling turbo-surf CDP
 collector and a current Node version that provides WebSocket:
 Computed author declarations retain parsed `!important` priority through shorthand
 expansion and inline overrides. The source-bound
-`src/computed_border_priority_probe.js` control covers nine border cascade cases;
+`$ENV_SRC/computed_border_priority_probe.js` control covers nine border cascade cases;
 the native-layout/client metrics columns are validated by turbo-surf separately.
 
 ```bash
 node scripts/dom-lifecycle-chrome-control.mjs \
   --runner ../turbo-surf/harness/detection/chrome-cdp-trace.mjs \
-  --probe src/css_adoption_lifecycle_probe.js \
+  --probe $ENV_SRC/css_adoption_lifecycle_probe.js \
   --out /tmp/css-adoption-control.json
 ```
 
 These are bounded behavior controls; broader XML parsing and complete browser
-lifecycle conformance remain separate work. The development public DOM revision
-is available from the published turbo-dom 0.5.8 registry floor.
+lifecycle conformance remain separate work.
 
 ## Benchmarks
 
@@ -187,8 +192,8 @@ npx turbo-test            # discovers *.spec.* too; reads jest config when no vi
 
 - **Transform** — per-module oxc/esbuild → CJS; node_modules bundled once per package (Vite-style),
   cached on disk (99% hit on warm runs).
-- **DOM** — [turbo-dom](https://www.npmjs.com/package/@miaskiewicz/turbo-dom) via a Node-API host
-  (native html5ever parser + lazy copy-on-write DOM). Per-file env setup ~1–2 ms.
+- **DOM** — [turbo-dom](https://crates.io/crates/turbo-dom)'s native `rtdom` (html5ever parser),
+  bound directly to V8 by the turbo-dom-browser-env crate. Per-file env setup ~1–2 ms.
 - **Mocks** — `vi.mock` (sync + async factories), hoisting, `vi.spyOn`, `vi.fn`, `vi.hoisted`,
   `importActual`, jest-dom matchers — all supported.
 - **Parallelism** — work-stealing across `--jobs` workers; duration-aware slowest-first ordering.

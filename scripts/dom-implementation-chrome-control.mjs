@@ -8,6 +8,12 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// The probe lives with the binding in turbo-dom-browser-env (miaskiewicz/turbo-dom
+// crates/turbo-dom-browser-env/src); default to a sibling turbo-dom checkout.
+const envSrc = resolve(
+  process.env.TURBO_DOM_BROWSER_ENV_SRC ??
+    join(root, "../turbo-dom/crates/turbo-dom-browser-env/src"),
+);
 const { values } = parseArgs({
   options: {
     runner: { type: "string" },
@@ -33,7 +39,7 @@ try {
       waitMs: 25,
       disableExtensions: true,
       steps: [],
-      probes: [join(root, "src/dom_implementation_probe.js")],
+      probes: [join(envSrc, "dom_implementation_probe.js")],
       ...(values.chrome ? { chromePath: resolve(values.chrome) } : {}),
     }),
   );
