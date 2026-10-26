@@ -218,3 +218,43 @@ fn snapshot_modes_obsolete_snapshots_and_file_snapshots_follow_vitest() {
     );
     assert!(!snap.exists());
 }
+
+#[test]
+#[ignore = "turbo-test#73: fails until the fix"]
+fn inline_snapshots_are_written_back_as_vitest_writes_them() {
+    // turbo-test#73: a new inline snapshot passed without being written, and -u could not update
+    // one. vitest 4.1.12 writes them into the test file: `inline.new.ts` is the file after a
+    // plain run of `inline.test.ts` (its changed ones fail), `inline.updated.ts` after -u.
+    let source = include_str!("data/snapshots/inline.test.ts");
+    for esbuild in [false, true] {
+        let p = Project::new("rc-inline-snapshots");
+        if esbuild {
+            p.with_esbuild();
+        }
+        p.file("package.json", r#"{ "type": "module" }"#);
+        p.file("i.test.ts", source);
+        let read = || std::fs::read_to_string(p.path("i.test.ts")).unwrap();
+        let r = turbo_test(&p.dir, &["i.test.ts"], &[]);
+        assert_eq!(r.code, Some(1), "{}", r.all());
+        assert!(
+            r.stdout
+                .contains("✗ inline > changed: Snapshot `inline > changed 1` mismatched"),
+            "{}",
+            r.all()
+        );
+        assert_eq!(
+            read(),
+            include_str!("data/snapshots/inline.new.ts"),
+            "esbuild={esbuild}"
+        );
+        let r = turbo_test(&p.dir, &["-u", "i.test.ts"], &[]);
+        assert_eq!(r.code, Some(0), "{}", r.all());
+        assert_eq!(
+            read(),
+            include_str!("data/snapshots/inline.updated.ts"),
+            "esbuild={esbuild}"
+        );
+        // the written snapshots pass
+        assert_eq!(turbo_test(&p.dir, &["i.test.ts"], &[]).code, Some(0));
+    }
+}
