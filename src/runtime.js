@@ -2264,17 +2264,67 @@ function __ttPrepassKey(spec) {
   const dir = globalThis.__ttDir || globalThis.__ttEntryDir;
   return (dir && globalThis.__ttResolveSpec(dir, String(spec))) || '\0' + String(spec);
 }
-function __ttMock(spec, factory, vitest) {
+// Pending async vi.doMock / jest.doMock factories, by the module's mock-registry key (its
+// resolved path, `?query` kept): each is registered once its factory settles, and an import() of
+// the module waits for that first (vitest awaits the factory; turbo-test#42 item 6). A later
+// mock / unmock of the module drops its entry, so the stale factory never registers.
+const __ttDoMockWaits = new Map();
+globalThis.__ttDoMockWaits = __ttDoMockWaits;
+function __ttDoMockKey(dir, spec) {
+  return (__ttDoMockWaits.size && dir && globalThis.__ttResolveSpec(dir, String(spec))) || undefined;
+}
+// The pending registration an import() of `spec` from `dir` must wait for, if any (the ESM
+// loader's import() asks it) ...
+globalThis.__ttImportWait = (dir, spec) => {
+  const k = __ttDoMockKey(dir, spec);
+  return k && __ttDoMockWaits.get(k);
+};
+// ... and the promise the module-runner's lowered import() chains its require() on:
+// Promise.resolve() when nothing is pending, so the timing is unchanged.
+globalThis.__ttImportReady = (dir, spec) => globalThis.__ttImportWait(dir, spec) || Promise.resolve();
+// Register `exports` as the mock of `spec` from `dir` now; false when it cannot be (no loader
+// registry yet).
+function __ttRegisterMockNow(dir, spec, exports, key) {
+  // An error stand-in replaces (never merges into) a module already registered under this
+  // isolate; a later working factory for the same spec replaces the stand-in the same way.
+  if (__ttMockErrors.has(exports) || __ttMockErrorSpecs.has(key)) {
+    globalThis.vi.unmock(spec);
+    if (__ttMockErrors.has(exports)) __ttMockErrorSpecs.add(key); else __ttMockErrorSpecs.delete(key);
+  }
+  try { globalThis.__ttRegisterMock(dir, String(spec), exports); return true; } catch (e) { return false; }
+}
+// An async doMock factory's result: registered once it settles (a rejection registers the
+// factory-error stand-in), unless a later mock / unmock of the module came first.
+function __ttAwaitDoMock(dir, spec, exports, key, vitest) {
+  const k = dir && globalThis.__ttResolveSpec(dir, String(spec));
+  if (!k) return false;
+  const done = Promise.resolve(exports).then(
+    (v) => __ttStrictMock(v, key, String(spec)),
+    (e) => __ttFactoryErrorMock(e, vitest),
+  ).then((v) => {
+    if (__ttDoMockWaits.get(k) !== done) return;
+    __ttDoMockWaits.delete(k);
+    if (!__ttRegisterMockNow(dir, spec, v, key)) {
+      (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports: v, vitest, key });
+    }
+  });
+  __ttDoMockWaits.set(k, done);
+  return true;
+}
+function __ttMock(spec, factory, vitest, isDoMock) {
   let exports;
   const key = (globalThis.__ttDir || '') + '\0' + String(spec);
-  if (!globalThis.__ttMockPrepass) {
-    if (vitest) __ttLenientMockKeys.delete(key); else __ttLenientMockKeys.add(key);
-    if (__ttPrepassMocks.size && __ttPrepassMocks.delete(__ttPrepassKey(spec))) return;
-  }
   // The calling module's dir: the module-runner's __ttDir, else (ESM graph, where modules have
   // none) the entry file's dir, so a runtime vi.doMock registers immediately and a later import()
   // of the module sees it.
   const dir = globalThis.__ttDir || globalThis.__ttEntryDir;
+  if (!globalThis.__ttMockPrepass) {
+    if (vitest) __ttLenientMockKeys.delete(key); else __ttLenientMockKeys.add(key);
+    if (__ttPrepassMocks.size && __ttPrepassMocks.delete(__ttPrepassKey(spec))) return;
+    // this mock supersedes a still-pending async doMock of the module
+    const pending = __ttDoMockKey(dir, spec);
+    if (pending) __ttDoMockWaits.delete(pending);
+  }
   // vitest passes `importOriginal` (a fn returning the real module, as a Promise) as the
   // factory's first arg — `vi.mock('x', async (importOriginal) => ({...await importOriginal(), y}))`.
   const importOriginal = () => Promise.resolve(globalThis.__ttImportActual(dir, String(spec)));
@@ -2298,19 +2348,14 @@ function __ttMock(spec, factory, vitest) {
   // queue for __resolvePendingMocks (run_entry_mocks prepass / drain).
   if (globalThis.__ttMockPrepass) __ttPrepassMocks.add(__ttPrepassKey(spec));
   if (exports && typeof exports.then === 'function') {
+    // a doMock (not hoisted: it applies to later imports) waits on its own; a hoisted vi.mock is
+    // awaited by the loader's resolve + drain
+    if (isDoMock && !globalThis.__ttMockPrepass && globalThis.__ttRegisterMock && __ttAwaitDoMock(dir, spec, exports, key, vitest)) return;
     (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest, key });
     return;
   }
   if (factory !== undefined) exports = __ttStrictMock(exports, key, String(spec));
-  if (globalThis.__ttRegisterMock && dir) {
-    // An error stand-in replaces (never merges into) a module already registered under this
-    // isolate; a later working factory for the same spec replaces the stand-in the same way.
-    if (__ttMockErrors.has(exports) || __ttMockErrorSpecs.has(key)) {
-      globalThis.vi.unmock(spec);
-      if (__ttMockErrors.has(exports)) __ttMockErrorSpecs.add(key); else __ttMockErrorSpecs.delete(key);
-    }
-    try { globalThis.__ttRegisterMock(dir, String(spec), exports); return; } catch (e) {}
-  }
+  if (globalThis.__ttRegisterMock && dir && __ttRegisterMockNow(dir, spec, exports, key)) return;
   (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest, key });
 }
 globalThis.vi = {
@@ -2335,10 +2380,12 @@ globalThis.vi = {
   mock: (spec, factory) => __ttMock(spec, factory, true),
   unmock: (spec) => {
     if (globalThis.__pendingMocks) globalThis.__pendingMocks = globalThis.__pendingMocks.filter((m) => m.spec !== String(spec));
+    const pending = __ttDoMockKey(globalThis.__ttDir || globalThis.__ttEntryDir, spec);
+    if (pending) __ttDoMockWaits.delete(pending);
     const dir = globalThis.__ttDir || globalThis.__cwd;
     if (globalThis.__ttUnmock && dir) { try { globalThis.__ttUnmock(dir, String(spec)); } catch (e) {} }
   },
-  doMock: (spec, factory) => globalThis.vi.mock(spec, factory),
+  doMock: (spec, factory) => __ttMock(spec, factory, true, true),
   doUnmock: (spec) => globalThis.vi.unmock(spec),
   clearAllMocks: () => { __spies.forEach((s) => s.mockClear()); },
   resetAllMocks: () => { __spies.forEach((s) => s.mockReset()); },
@@ -2504,7 +2551,7 @@ globalThis.jest = {
   spyOn: (obj, key) => globalThis.vi.spyOn(obj, key),
   mock: (spec, factory) => __ttMock(spec, factory, false),
   unmock: (spec) => globalThis.vi.unmock(spec),
-  doMock: (spec, factory) => __ttMock(spec, factory, false),
+  doMock: (spec, factory) => __ttMock(spec, factory, false, true),
   dontMock: (spec) => globalThis.vi.unmock(spec),
   mocked: (item) => globalThis.vi.mocked(item),
   clearAllMocks: () => globalThis.vi.clearAllMocks(),
@@ -2814,6 +2861,7 @@ globalThis.__ttResetForNextFile = () => {
   // mock-prepass scratch (turbo-test specific) — must be empty before the next file hoists.
   globalThis.__pendingMocks = [];
   __ttPrepassMocks.clear();
+  __ttDoMockWaits.clear();
   globalThis.__hoistedCache = [];
   globalThis.__hoistedIdx = 0;
   // Bump the timer generation: the prior file's leaked timers (now gen < __loop.gen) get dropped,

@@ -1903,7 +1903,7 @@ fn native_transform_cjs(file: &Path) -> Option<String> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
     file.extension().and_then(|e| e.to_str()).unwrap_or("").hash(&mut h);
-    "native-cjs-v3".hash(&mut h);
+    "native-cjs-v4".hash(&mut h); // v4: await_do_mocks_on_import
     // Legacy-decorator lowering happens inside esm_cjs::emit when the project enables
     // experimentalDecorators/emitDecoratorMetadata AND this file uses a decorator. Without it the
     // native emitter leaves `@Decorator` syntax intact (→ "Unexpected token 'export'") or lowers
@@ -1921,7 +1921,7 @@ fn native_transform_cjs(file: &Path) -> Option<String> {
     }
     CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
     let emitted = crate::esm_cjs::emit_with(file, &raw, legacy_decorators)?;
-    let mut code = hoist_mock_setup(&emitted);
+    let mut code = hoist_mock_setup(&await_do_mocks_on_import(emitted));
     let shared = shared_mock_lets(&raw);
     if !shared.is_empty() {
         code = rewrite_shared_lets(&code, &shared);
@@ -1968,8 +1968,9 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
     file.extension().and_then(|e| e.to_str()).unwrap_or("").hash(&mut h);
-    // v2: `import.meta` is filled in (fill_import_meta) instead of esbuild's empty object
-    "mr-cjs-v2".hash(&mut h);
+    // v2: `import.meta` is filled in (fill_import_meta) instead of esbuild's empty object;
+    // v3: import() waits for a pending async vi.doMock (await_do_mocks_on_import)
+    "mr-cjs-v3".hash(&mut h);
     // esbuild can't emit decorator metadata. By default we DON'T pay that cost — only when a
     // decorator file actually threw at load (Mongoose @Prop / Sequelize @Column read design:type
     // at class-definition) does the loader retry with `prefer_metadata`, routing it through the
@@ -2007,8 +2008,8 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
             .and_then(|r| r.ok())
         });
         if let Some(cjs) = meta_esm.and_then(|esm| esbuild_format_cjs(&root, &esm)) {
-            let mut code = fill_import_meta(postprocess_mr_cjs(cjs));
-            code = hoist_mock_setup(&code);
+            let code = await_do_mocks_on_import(fill_import_meta(postprocess_mr_cjs(cjs)));
+            let mut code = hoist_mock_setup(&code);
             let shared = shared_mock_lets(&raw);
             if !shared.is_empty() {
                 code = rewrite_shared_lets(&code, &shared);
@@ -2050,7 +2051,8 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let mut code = fill_import_meta(postprocess_mr_cjs(String::from_utf8(out.stdout).ok()?));
+    let code = postprocess_mr_cjs(String::from_utf8(out.stdout).ok()?);
+    let mut code = await_do_mocks_on_import(fill_import_meta(code));
     // vitest-style vi.mock hoisting: move consumer requires below the vi.mock setup so the mock
     // is registered (immediately, in this module's scope) before the mocked module loads.
     code = hoist_mock_setup(&code);
@@ -2618,6 +2620,38 @@ fn postprocess_mr_cjs(mut code: String) -> String {
         "var __toESM = (m) => (m && m.__esModule ? m : (m && (typeof m === \"object\" || typeof m === \"function\") && !(\"default\" in m) && Object.defineProperty(m, \"default\", { value: m, configurable: true }), m)); var __toESM_unused = ",
     );
     code
+}
+
+/// The module-runner's lowered `import()` (esbuild's and esm_cjs's
+/// `Promise.resolve().then(() => __toESM(require(SPEC)))`) waits for a pending async vi.doMock
+/// factory of its module, as vitest awaits it (turbo-test#42 item 6):
+/// `__ttImportReady(__dirname, SPEC)` (runtime.js) takes the place of `Promise.resolve()` for a
+/// literal SPEC or esm_cjs's already-evaluated `__tt_spec`. It is `Promise.resolve()` itself
+/// while nothing is pending, so the timing is unchanged. `__dirname` is the CJS wrapper's.
+fn await_do_mocks_on_import(code: String) -> String {
+    const LOWERED: &str = "Promise.resolve().then(() => __toESM(require(";
+    if !code.contains(LOWERED) {
+        return code;
+    }
+    let mut out = String::with_capacity(code.len() + 64);
+    let mut rest = code.as_str();
+    while let Some(at) = rest.find(LOWERED) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + LOWERED.len()..];
+        let literal = js_string_literal_at(rest).and_then(|(_, len)| len);
+        let spec = match literal {
+            Some(len) => Some(&rest[..len]),
+            None => rest.starts_with("__tt_spec)").then_some("__tt_spec"),
+        };
+        match spec {
+            Some(spec) => out.push_str(&format!(
+                "__ttImportReady(__dirname, {spec}).then(() => __toESM(require("
+            )),
+            None => out.push_str(LOWERED),
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Module-runner: is it enabled? (default on; TURBO_NO_MR disables → legacy bundle path)
@@ -4237,6 +4271,60 @@ fn dynamic_import_callback<'s>(
     resource_name: v8::Local<'s, v8::Value>,
     specifier: v8::Local<'s, v8::String>,
     _import_attributes: v8::Local<'s, v8::FixedArray>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    // vitest awaits a vi.doMock's async factory before an import() of its module resolves
+    // (turbo-test#42 item 6): while one is pending (runtime.js __ttImportWait), the import runs
+    // once it is registered
+    if let Some(wait) = do_mock_wait(scope, resource_name, specifier) {
+        let data = v8::Array::new_with_elements(scope, &[resource_name, specifier.into()]);
+        let then = v8::Function::builder(import_after_do_mock)
+            .data(data.into())
+            .build(scope)?;
+        return wait.then(scope, then);
+    }
+    dynamic_import(scope, resource_name, specifier)
+}
+
+/// The pending async vi.doMock registration an import() of `specifier` from the module
+/// `resource_name` waits for (runtime.js __ttImportWait), if any.
+fn do_mock_wait<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    resource_name: v8::Local<'s, v8::Value>,
+    specifier: v8::Local<'s, v8::String>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    let global = scope.get_current_context().global(scope);
+    let key = v8::String::new(scope, "__ttImportWait")?;
+    let wait: v8::Local<v8::Function> = global.get(scope, key.into())?.try_into().ok()?;
+    let referrer = resource_name.to_rust_string_lossy(scope);
+    let dir = Path::new(&referrer)
+        .parent()?
+        .to_string_lossy()
+        .into_owned();
+    let dir = v8::String::new(scope, &dir)?;
+    let undefined = v8::undefined(scope).into();
+    let pending = wait.call(scope, undefined, &[dir.into(), specifier.into()])?;
+    pending.try_into().ok()
+}
+
+/// The deferred import() of dynamic_import_callback: `[resource_name, specifier]` is its data.
+fn import_after_do_mock(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let data = v8::Local::<v8::Array>::try_from(args.data()).ok();
+    let parts = data.and_then(|d| Some((d.get_index(scope, 0)?, d.get_index(scope, 1)?)));
+    let parts = parts.and_then(|(r, s)| Some((r, v8::Local::<v8::String>::try_from(s).ok()?)));
+    if let Some(promise) = parts.and_then(|(r, s)| dynamic_import(scope, r, s)) {
+        rv.set(promise.into());
+    }
+}
+
+/// import() of `specifier` from the module `resource_name`: a promise for its namespace.
+fn dynamic_import<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    resource_name: v8::Local<'s, v8::Value>,
+    specifier: v8::Local<'s, v8::String>,
 ) -> Option<v8::Local<'s, v8::Promise>> {
     let resolver = v8::PromiseResolver::new(scope)?;
     let promise = resolver.get_promise(scope);

@@ -117,6 +117,26 @@ vi.mock("./open\""#;
 }
 
 #[test]
+fn lowered_imports_wait_for_pending_async_do_mocks() {
+    // turbo-test#42 item 6: a literal (esbuild, esm_cjs) or esm_cjs's evaluated `__tt_spec`
+    // asks __ttImportReady; any other computed specifier keeps Promise.resolve()
+    let code = r#"const a = Promise.resolve().then(() => __toESM(require("./a\")b")));
+const b = ((__tt_spec) => Promise.resolve().then(() => __toESM(require(__tt_spec))))(x);
+const c = Promise.resolve().then(() => __toESM(require(dir + "/c")));
+const d = Promise.resolve().then(() => __toESM(require('./d')));"#;
+    assert_eq!(
+        await_do_mocks_on_import(code.to_string()),
+        r#"const a = __ttImportReady(__dirname, "./a\")b").then(() => __toESM(require("./a\")b")));
+const b = ((__tt_spec) => __ttImportReady(__dirname, __tt_spec).then(() => __toESM(require(__tt_spec))))(x);
+const c = Promise.resolve().then(() => __toESM(require(dir + "/c")));
+const d = __ttImportReady(__dirname, './d').then(() => __toESM(require('./d')));"#
+    );
+    // nothing lowered: unchanged
+    let plain = "const e = require('./e');".to_string();
+    assert_eq!(await_do_mocks_on_import(plain.clone()), plain);
+}
+
+#[test]
 fn extract_do_mocks_reads_only_do_mock_calls() {
     let src = "vi.mock('./a', () => 1);\nvi.doMock('./b', () => 2);\njest.doMock(\"./c\");\nvi.doMock(dyn, f);";
     assert_eq!(
