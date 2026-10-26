@@ -288,7 +288,7 @@ import { md } from 'metadep';
 test('app CJS with top-level return', () => expect(require('./helper.js').v).toBe(7));
 test('dep CJS with top-level return', () => expect(require('odd').o).toBe(8));
 test('import.meta in app + dep', () => { expect(m).toBe('object'); expect(md).toBe('object'); });
-test('a dep no transform can load', () => expect(() => require('broken')).toThrow('failed to load broken'));
+test('a dep no transform can load', () => expect(() => require('broken')).toThrow("Unexpected token ';'"));
 "#,
     );
     p.file(

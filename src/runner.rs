@@ -2955,7 +2955,9 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
     let code = v8::String::new(scope, &wrapped)?;
     // Under --coverage, give the script an origin named after the file so V8's precise-coverage
     // report carries a URL we can map back to source. Off by default (origin None) — zero change.
-    let script = {
+    // (compiled script, the compile error when neither the native output nor the esbuild retry
+    // compiles: re-thrown below, outside this TryCatch, as the load's cause)
+    let (script, compile_exc) = {
         let tc = std::pin::pin!(v8::TryCatch::new(scope));
         let tc = &mut tc.init();
         let origin = if crate::coverage::enabled() {
@@ -2974,7 +2976,7 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
             }
         };
         match compiled {
-            Some(s) => Some(v8::Global::new(tc, s)),
+            Some(s) => (Some(v8::Global::new(tc, s)), None),
             None => {
                 // The native (oxc) emitter can occasionally produce JS that V8 rejects at compile —
                 // a transform edge the esbuild path handles cleanly. Because it fails at COMPILE
@@ -2983,6 +2985,7 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
                 // hard-load-erroring. esbuild is the proven fallback (same output read_transformed
                 // uses when native is disabled), so a file that only the native path mangled now
                 // loads; a genuinely-broken source still fails (esbuild can't compile it either).
+                let native_err = tc.exception().map(|e| v8::Global::new(tc, e));
                 let native_exc =
                     tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_default();
                 let fb = esbuild_cjs_fallback(abs, prefer_metadata).and_then(|src| {
@@ -2995,11 +2998,17 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
                 });
                 if fb.is_none() {
                     eprintln!("  cjs compile failed: {} :: {native_exc}", abs.display());
+                    (None, native_err)
+                } else {
+                    (fb, None)
                 }
-                fb
             }
         }
     };
+    if let Some(e) = compile_exc {
+        let e = v8::Local::new(scope, &e);
+        scope.throw_exception(e);
+    }
     let script = v8::Local::new(scope, &script?);
     let wrapper = v8::Local::<v8::Function>::try_from(script.run(scope)?).ok()?;
 
@@ -3029,7 +3038,8 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
     // mark in-progress (with its module object) so a circular require() returns live exports
     let module_global = v8::Global::new(scope, module_obj);
     REGISTRY.with(|r| r.borrow_mut().loading.insert(abs.to_path_buf(), module_global));
-    let call_res = {
+    // (body result, the body's exception: re-thrown below unless the decorator retry runs)
+    let (call_res, body_exc) = {
         let tc = std::pin::pin!(v8::TryCatch::new(scope));
         let tc = &mut tc.init();
         let r = wrapper.call(
@@ -3045,7 +3055,12 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
                 stk.lines().take(4).collect::<Vec<_>>().join(" | ")
             );
         }
-        r
+        let exc = if r.is_none() {
+            tc.exception().map(|e| v8::Global::new(tc, e))
+        } else {
+            None
+        };
+        (r, exc)
     };
     REGISTRY.with(|r| r.borrow_mut().loading.remove(abs));
     if let (Some(k), Some(prev)) = (v8::String::new(scope, "__ttDir"), prev_dir) {
@@ -3064,6 +3079,12 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
             && std::fs::read_to_string(abs).map(|s| file_has_decorator(&s)).unwrap_or(false)
         {
             return load_cjs_inner(scope, abs, drain_mocks, true);
+        }
+        // Re-throw the module's own error (Node/vitest: `require()` / the importing module /
+        // the entry load fail with it), instead of a generic "failed to load" with no cause.
+        if let Some(e) = body_exc {
+            let e = v8::Local::new(scope, &e);
+            scope.throw_exception(e);
         }
         return None;
     }
@@ -3458,7 +3479,18 @@ fn native_require(
         }
     } else if mr_enabled() || detect_kind(&abs) == Kind::Cjs {
         // MR: load everything as CJS (esbuild --format=cjs) so imports are live + mockable.
-        if load_cjs(scope, &abs, true).is_none() {
+        let (loaded, cause) = {
+            let tc = std::pin::pin!(v8::TryCatch::new(scope));
+            let tc = &mut tc.init();
+            let ok = load_cjs(tc, &abs, true).is_some();
+            let cause = if ok {
+                None
+            } else {
+                tc.exception().map(|e| v8::Global::new(tc, e))
+            };
+            (ok, cause)
+        };
+        if !loaded {
             // A node_modules dep that can't load in the shimmed env -> stub it (don't crash the
             // importer). App modules still hard-fail (a real bug there must surface).
             if abs.to_string_lossy().contains("/node_modules/") && stub_failed_deps()
@@ -3466,7 +3498,15 @@ fn native_require(
             {
                 // fall through to return the stub
             } else {
-                throw(scope, &format!("failed to load {spec}"));
+                // The module's own error (body throw, compile error) propagates, as in Node; a
+                // load that failed without one (unreadable / untransformable) gets a generic error.
+                match cause {
+                    Some(e) => {
+                        let e = v8::Local::new(scope, &e);
+                        scope.throw_exception(e);
+                    }
+                    None => throw(scope, &format!("failed to load {spec}")),
+                }
                 return;
             }
         }
@@ -3887,7 +3927,11 @@ fn dynamic_import_callback<'s>(
         return Some(promise);
     };
 
-    // load + instantiate + evaluate the target, then resolve with its namespace
+    // load + instantiate + evaluate the target, then resolve with its namespace. A load that
+    // throws (the module body, a compile error) rejects with that error, caught here so it is
+    // not left pending on the host callback.
+    let tc = std::pin::pin!(v8::TryCatch::new(scope));
+    let scope = &mut tc.init();
     let ns = (|| {
         if !is_builtin {
             // Module-runner: load app modules via the CJS transform path (live bindings, mocks,
@@ -3920,8 +3964,13 @@ fn dynamic_import_callback<'s>(
             resolver.resolve(scope, ns);
         }
         None => {
-            let err = v8::String::new(scope, &format!("dynamic import failed: {spec}"))?;
-            let exc = v8::Exception::error(scope, err);
+            let exc = match scope.exception() {
+                Some(e) => e,
+                None => {
+                    let err = v8::String::new(scope, &format!("dynamic import failed: {spec}"))?;
+                    v8::Exception::error(scope, err)
+                }
+            };
             resolver.reject(scope, exc);
         }
     }

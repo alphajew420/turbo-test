@@ -113,7 +113,7 @@ fn module_runner_reuse_with_setup_mocks_remocks_dom_and_fresh_retry() {
     assert!(
         r.stdout
             .lines()
-            .any(|l| l.starts_with("ERROR") && l.ends_with("a7.test.ts  (entry load failed)")),
+            .any(|l| l.starts_with("ERROR") && l.ends_with("a7.test.ts  (Error: a7 boom)")),
         "{}",
         r.all()
     );

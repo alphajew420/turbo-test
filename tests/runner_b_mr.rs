@@ -185,7 +185,7 @@ describe('native require', () => {
   });
   it('packages', () => {
     expect(require('fakepkg').pkg).toBe('fake');
-    expect(() => require('badpkg')).toThrow('failed to load badpkg');
+    expect(() => require('badpkg')).toThrow('pkg boom');
   });
   it('a broken native addon throws', () => {
     expect(() => require('./src/addon.node')).toThrow(/^native addon .*addon\.node: /);
@@ -225,9 +225,9 @@ fn cjs_loader_diagnostics_for_unreadable_unparsable_and_throwing_modules() {
         "diag.test.ts",
         r#"test('load failures', () => {
   expect(() => require('./badutf.cjs')).toThrow('failed to load ./badutf.cjs');
-  expect(() => require('./syntax.cjs')).toThrow('failed to load ./syntax.cjs');
-  expect(() => require('./throws.cjs')).toThrow('failed to load ./throws.cjs');
-  expect(() => require('./rx')).toThrow('failed to load ./rx');
+  expect(() => require('./syntax.cjs')).toThrow("Unexpected token ';'");
+  expect(() => require('./throws.cjs')).toThrow('body boom');
+  expect(() => require('./rx')).toThrow('Invalid regular expression');
 });
 "#,
     );
@@ -288,9 +288,9 @@ fn decorator_file_that_throws_is_retried_once_with_metadata() {
     p.file(
         "d.test.ts",
         r#"test('retry', () => {
-  expect(() => require('./deco')).toThrow('failed to load ./deco');
+  expect(() => require('./deco')).toThrow('deco boom');
   expect(globalThis.__decoLoads).toBe(2);
-  expect(() => require('./plain')).toThrow('failed to load ./plain');
+  expect(() => require('./plain')).toThrow('plain boom');
   expect(globalThis.__plainLoads).toBe(1);
 });
 "#,
@@ -332,7 +332,7 @@ fn e2e_entries_stub_broken_node_modules_unless_disabled() {
   });
   it('stubs an addon', () => { expect(typeof require('../src/addon.node')).toBe('function'); });
   it('app modules still fail', () => {
-    expect(() => require('../src/throws.cjs')).toThrow('failed to load ../src/throws.cjs');
+    expect(() => require('../src/throws.cjs')).toThrow('body boom');
   });
 });
 "#,
@@ -342,8 +342,8 @@ fn e2e_entries_stub_broken_node_modules_unless_disabled() {
     let strict = turbo_test(&p.dir, &[], &[("TURBO_NO_STUB_FAIL", "1")]);
     assert_eq!(strict.code, Some(1), "{}", strict.all());
     for msg in [
-        "stubs a failing package: failed to load badpkg",
-        "stubs unresolvable requires from node_modules: failed to load needsmissing",
+        "stubs a failing package: pkg boom",
+        "stubs unresolvable requires from node_modules: cannot resolve ./nope-sibling",
         "stubs an addon: native addon ",
     ] {
         assert!(strict.stdout.contains(msg), "{msg}\n{}", strict.all());

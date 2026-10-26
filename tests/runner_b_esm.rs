@@ -46,7 +46,7 @@ describe('g', () => {
     const p = await import('node:path'); expect(typeof p.join).toBe('function');
     const v = await import('vitest'); expect(typeof v.vi.fn).toBe('function');
     await expect(import('./missing.mjs')).rejects.toThrow('dynamic import cannot resolve ./missing.mjs');
-    await expect(import('./bad.mjs')).rejects.toThrow('dynamic import failed: ./bad.mjs');
+    await expect(import('./bad.mjs')).rejects.toThrow("Unexpected token '='");
   });
 });
 "#,
