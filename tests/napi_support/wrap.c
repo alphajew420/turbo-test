@@ -168,13 +168,29 @@ static napi_value f_finalized(napi_env env, napi_callback_info info) {
     return list(env, g_log_n, g_log);
 }
 
-/* At env teardown: deletes the wrap's reference, tries to run JS and reports to stderr. */
+/* A strong reference taken at module init (to an object holding 7 under "seven"). */
+static napi_ref g_strong;
+
+/* At env teardown: reads its own reference and the strong one, makes values, deletes its own
+ * reference, tries to run JS and reports to stderr (a value is reported by its typeof). */
 static void fin_teardown(napi_env env, void *data, void *hint) {
     int id = (int)(intptr_t)data;
+    napi_value own = NULL, strong = NULL, obj = NULL, seven = NULL;
+    int own_ty = -1, strong_ty = -1, obj_ty = -1;
+    int own_st = napi_get_reference_value(env, g_ref[id], &own);
+    if (own) napi_typeof(env, own, &own_ty);
+    int strong_st = napi_get_reference_value(env, g_strong, &strong);
+    if (strong) napi_typeof(env, strong, &strong_ty);
+    int create = napi_create_object(env, &obj);
+    if (obj) napi_typeof(env, obj, &obj_ty);
+    int get = napi_get_named_property(env, strong, "seven", &seven);
     int del = napi_delete_reference(env, g_ref[id]);
     int call = napi_call_function(env, NULL, NULL, 0, NULL, NULL);
-    fprintf(stderr, "wrap teardown finalizer: id=%d hint=%d delete_reference=%d call_function=%d\n",
-            id, (int)(intptr_t)hint, del, call);
+    fprintf(stderr,
+            "wrap teardown finalizer: id=%d hint=%d own_ref=%d:%d strong_ref=%d:%d "
+            "create_object=%d:%d get_named_property=%d delete_reference=%d call_function=%d\n",
+            id, (int)(intptr_t)hint, own_st, own_ty, strong_st, strong_ty, create, obj_ty, get,
+            del, call);
 }
 /* wrapTeardown(obj, id): wrap with fin_teardown, taking the result reference -> status. */
 static napi_value f_wrap_teardown(napi_env env, napi_callback_info info) {
@@ -182,6 +198,15 @@ static napi_value f_wrap_teardown(napi_env env, napi_callback_info info) {
     args3(env, info, argv, &self);
     int id = (int)argn(env, argv[1]);
     return num(env, napi_wrap(env, argv[0], ptr(id), fin_teardown, ptr(id + 100), &g_ref[id]));
+}
+/* finalizerTeardown(obj, id): napi_add_finalizer with fin_teardown, taking the result reference
+ * -> status. */
+static napi_value f_finalizer_teardown(napi_env env, napi_callback_info info) {
+    napi_value argv[3], self;
+    args3(env, info, argv, &self);
+    int id = (int)argn(env, argv[1]);
+    return num(env,
+               napi_add_finalizer(env, argv[0], ptr(id), fin_teardown, ptr(id + 100), &g_ref[id]));
 }
 
 static const struct {
@@ -200,6 +225,7 @@ static const struct {
     {"refValue", f_ref_value},
     {"finalized", f_finalized},
     {"wrapTeardown", f_wrap_teardown},
+    {"finalizerTeardown", f_finalizer_teardown},
 };
 
 napi_value napi_register_module_v1(napi_env env, napi_value exports) {
@@ -211,6 +237,10 @@ napi_value napi_register_module_v1(napi_env env, napi_value exports) {
     /* the method goes on the prototype by hand (napi_create_function: no receiver signature, so
      * calling it on another object reaches napi_unwrap); objectwrap.c defines a class from
      * property descriptors */
+    napi_value strong;
+    napi_create_object(env, &strong);
+    napi_set_named_property(env, strong, "seven", num(env, 7));
+    napi_create_reference(env, strong, 1, &g_strong);
     napi_value cls, proto, inc;
     napi_define_class(env, "Counter", NAPI_AUTO_LENGTH, counter_ctor, NULL, 0, NULL, &cls);
     napi_get_named_property(env, cls, "prototype", &proto);

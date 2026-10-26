@@ -146,9 +146,11 @@ fn objects_carry_type_tags_and_finalizers() {
     assert_eq!(j["numPassedTests"], 7, "{}", r.all());
 }
 
-/// Objects still wrapped when the addon's env is torn down (the file's isolate is disposed) have
-/// their finalizers run then, newest first, as Node does at exit: references can still be
-/// deleted, JS cannot run (napi_pending_exception).
+/// Objects still wrapped (or with a napi_add_finalizer finalizer) when the addon's env is torn
+/// down (the file's isolate is disposed) have their finalizers run then, newest first and
+/// interleaved, as Node does at exit: in a handle scope, so value calls work (a strong reference
+/// still has its value, the record's own reference has none, values can be created), while JS
+/// cannot run (napi_pending_exception). The expected lines are Node 26's.
 #[test]
 fn wrap_finalizers_run_at_env_teardown() {
     let p = project("napi-wrap-teardown");
@@ -162,13 +164,12 @@ fn wrap_finalizers_run_at_env_teardown() {
         .lines()
         .filter(|l| l.starts_with("wrap teardown finalizer:"))
         .collect();
-    assert_eq!(
-        lines,
-        [
-            "wrap teardown finalizer: id=42 hint=142 delete_reference=0 call_function=10",
-            "wrap teardown finalizer: id=41 hint=141 delete_reference=0 call_function=10",
-        ],
-        "{}",
-        r.all()
-    );
+    let line = |id: u32| {
+        format!(
+            "wrap teardown finalizer: id={id} hint={} own_ref=0:-1 strong_ref=0:6 \
+             create_object=0:6 get_named_property=10 delete_reference=0 call_function=10",
+            id + 100
+        )
+    };
+    assert_eq!(lines, [line(42), line(43), line(41)], "{}", r.all());
 }

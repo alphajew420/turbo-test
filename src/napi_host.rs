@@ -84,7 +84,7 @@ pub enum napi_valuetype {
 /// by its isolate (`AddonEnvs`). `scope` points at the live rusty_v8 scope for the current
 /// native call (the only window during which napi value calls happen).
 pub struct Env {
-    pub isolate: *mut v8::Isolate,
+    pub isolate: v8::UnsafeRawIsolatePtr,
     pub scope: *mut c_void, // *mut v8::PinScope<'static,'static>, valid only during a call
     pub context: v8::Global<v8::Context>,
     pub last_exception: Option<v8::Global<v8::Value>>,
@@ -95,19 +95,19 @@ pub struct Env {
     /// The live finalizer records of this env (napi_wrap, napi_add_finalizer), by creation order.
     pub finalizers: std::collections::BTreeMap<u64, *mut Finalizer>,
     pub next_finalizer: u64,
+    /// The env is being torn down: napi value calls work, JS cannot run (Node's
+    /// !can_call_into_js()).
+    pub tearing_down: bool,
 }
 
 impl Drop for Env {
     /// Env teardown (the isolate is being disposed). As Node's napi_env__::DeleteMe, the
-    /// finalizers still pending (napi_wrap, napi_add_finalizer) run now, newest first. No JS can
-    /// run any more: there is no scope, so a call that could run JS is napi_pending_exception
-    /// (`js_call`), and only the scope-free calls (references, napi_delete_reference) are usable.
+    /// finalizers still pending (napi_wrap, napi_add_finalizer) run now, newest first.
     fn drop(&mut self) {
         let env: napi_env = self;
         unsafe {
-            (*env).scope = std::ptr::null_mut();
-            while let Some((_, fin)) = (*env).finalizers.pop_last() {
-                run_finalizer(env, &Box::from_raw(fin));
+            if !(*env).finalizers.is_empty() {
+                teardown_finalizers(env);
             }
         }
         for &f in &self.fns {
@@ -116,12 +116,37 @@ impl Drop for Env {
     }
 }
 
+/// Run the env's remaining finalizers, newest first, the way Node runs them at teardown: in a
+/// handle scope of the env's context, so value calls (references, creating values) work, but
+/// with JS disabled, so a call that could run JS is napi_pending_exception (`js_call`). The
+/// isolate is mid-disposal (OwnedIsolate::drop has exited it before dropping its slots, the env
+/// included) but not yet disposed: it is entered again for the scope.
+unsafe fn teardown_finalizers(env: napi_env) {
+    let isolate = &mut v8::Isolate::from_raw_isolate_ptr((*env).isolate);
+    isolate.enter();
+    {
+        v8::scope!(let hs, isolate);
+        let context = v8::Local::new(hs, &(*env).context);
+        let cs: &mut v8::PinScope = &mut v8::ContextScope::new(hs, context);
+        (*env).scope = cs as *mut v8::PinScope as *mut c_void;
+        (*env).tearing_down = true;
+        while let Some((_, fin)) = (*env).finalizers.pop_last() {
+            run_finalizer(env, &Box::from_raw(fin));
+        }
+        (*env).scope = std::ptr::null_mut();
+    }
+    isolate.exit();
+}
+
 /// A napi_ref: napi_create_reference holds its value strongly; the reference napi_wrap and
 /// napi_add_finalizer hand back is weak (as Node's, refcount 0), so it does not keep the object
 /// alive.
 pub enum Ref {
     Strong(v8::Global<v8::Value>),
     Weak(v8::Weak<v8::Value>),
+    /// The weak reference of a finalizer record whose finalizer has run (or is running): it has
+    /// no value any more, as Node's Reference::Finalize resets it first.
+    Cleared,
 }
 
 /// A native pointer tied to a JS object's lifetime, with its optional finalizer, which runs
@@ -136,6 +161,8 @@ pub struct Finalizer {
     hint: *mut c_void,
     /// Weak handle on the object; its GC finalizer (`finalizer_collected`) frees this record.
     weak: Option<v8::Weak<v8::Object>>,
+    /// The id of the result reference napi_wrap / napi_add_finalizer handed back (0: none).
+    own_ref: usize,
 }
 
 /// Run `fin`'s finalizer (if any) in the env's current scope: addon code, so under the lock.
@@ -143,6 +170,14 @@ pub struct Finalizer {
 /// dropped (Node reports it as an uncaught exception; there is no JS caller to throw it to).
 unsafe fn run_finalizer(env: napi_env, fin: &Finalizer) {
     if let Some(cb) = fin.finalize {
+        // as Node's Reference::Finalize: the record's own reference loses its value first (a
+        // deleted one stays deleted)
+        let refs = &mut (*env).refs;
+        if let Some(slot) = refs.get_mut(fin.own_ref.wrapping_sub(1)) {
+            if slot.is_some() {
+                *slot = Some(Ref::Cleared);
+            }
+        }
         let pending = (*env).last_exception.take();
         let _ = call_addon(|| cb(env, fin.native, fin.hint));
         (*env).last_exception = pending;
@@ -208,9 +243,9 @@ unsafe fn js_call(
     env: napi_env,
     f: impl FnOnce(&mut v8::PinScope<'static, 'static>) -> NapiResult,
 ) -> napi_status {
-    // no scope: the env is being torn down and JS cannot run (Node's !can_call_into_js(), which
-    // is napi_pending_exception for an addon without a declared module API version)
-    if (*env).last_exception.is_some() || (*env).scope.is_null() {
+    // env teardown: JS cannot run (Node's !can_call_into_js(), which is napi_pending_exception
+    // for an addon without a declared module API version)
+    if (*env).last_exception.is_some() || (*env).tearing_down {
         return napi_pending_exception;
     }
     catching(env, f)
@@ -1140,6 +1175,7 @@ pub unsafe extern "C" fn napi_wrap(
         obj.set_private(s, key, v8::External::new(s, wrap as *mut c_void).into());
         if !result.is_null() {
             *result = weak_ref(s, env, obj);
+            (*wrap).own_ref = *result as usize;
         }
         Ok(())
     })
@@ -1165,6 +1201,7 @@ unsafe fn track_finalizer(
         finalize,
         hint,
         weak: None,
+        own_ref: 0,
     }));
     let on_gc = Box::new(move |isolate: &mut v8::Isolate| finalizer_collected(isolate, fin));
     (*fin).weak = Some(v8::Weak::with_finalizer(s, obj, on_gc));
@@ -1266,9 +1303,10 @@ pub unsafe extern "C" fn napi_add_finalizer(
         return napi_invalid_arg;
     };
     let s = scope(env);
-    track_finalizer(s, env, obj, finalize_data, Some(finalize_cb), finalize_hint);
+    let fin = track_finalizer(s, env, obj, finalize_data, Some(finalize_cb), finalize_hint);
     if !result.is_null() {
         *result = weak_ref(s, env, obj);
+        (*fin).own_ref = *result as usize;
     }
     napi_ok
 }
@@ -1519,8 +1557,9 @@ pub unsafe extern "C" fn napi_get_reference_value(
     }
     let value = match e.refs[id - 1].as_ref() {
         Some(Ref::Strong(g)) => Some(v8::Local::new(s, g)),
-        // as Node: a weak reference whose value was collected yields NULL
+        // as Node: a weak reference whose value was collected (or finalized) yields NULL
         Some(Ref::Weak(w)) => w.to_local(s),
+        Some(Ref::Cleared) => None,
         None => Some(v8::undefined(s).into()),
     };
     if !out.is_null() {
@@ -1808,7 +1847,7 @@ pub fn load_addon(
             .get(b"napi_register_module_v1")
             .map_err(|e| format!("no napi_register_module_v1: {e}"))?;
 
-        let isolate = std::ptr::null_mut();
+        let isolate = scope_ref.as_raw_isolate_ptr();
         let context = v8::Global::new(scope_ref, scope_ref.get_current_context());
         let env_ptr: napi_env = Box::into_raw(Box::new(Env {
             isolate,
@@ -1819,6 +1858,7 @@ pub fn load_addon(
             refs: Vec::new(),
             finalizers: Default::default(),
             next_finalizer: 0,
+            tearing_down: false,
         }));
         // The isolate owns the env from here on (freed with it, like the functions using it).
         match scope_ref.get_slot_mut::<AddonEnvs>() {
