@@ -146,6 +146,9 @@ pub(crate) struct ModuleParts {
     pub default_needs_rewrite: bool,
     /// true if the module used any static ESM import/export (else it's CJS / a plain script).
     pub has_module_syntax: bool,
+    /// true if the body references `__toESM` (a lowered dynamic `import()`). Only the module
+    /// preamble declares it, so a script without module syntax needs `TO_ESM_HELPER` prepended.
+    pub uses_to_esm: bool,
 }
 
 struct EmitState<'a, 'r> {
@@ -155,6 +158,8 @@ struct EmitState<'a, 'r> {
     /// bundler mode: resolve a `require("./rel")` specifier to a bundled module to rewrite the call.
     /// `None` in app mode → require() calls are left untouched (runtime resolution).
     resolve: Option<&'r dyn Fn(&str) -> SourceRef>,
+    /// set when the body now calls `__toESM` (see `ModuleParts::uses_to_esm`).
+    uses_to_esm: bool,
 }
 
 impl<'a> EmitState<'a, '_> {
@@ -207,7 +212,8 @@ impl<'a> EmitState<'a, '_> {
     /// `--supported:dynamic-import=false` lowering. The runner's CJS `require` resolves relative
     /// specifiers the same way static requires do, and `__toESM` preserves default/named interop
     /// so `(await import('./m')).default` / `.named` keep working.
-    fn lower_dynamic_import(&self, source: Expression<'a>) -> Expression<'a> {
+    fn lower_dynamic_import(&mut self, source: Expression<'a>) -> Expression<'a> {
+        self.uses_to_esm = true;
         let require_call = self.call_global("require", source);
         let toesm = self.call_global("__toESM", require_call);
         self.call_member("Promise", "resolve", toesm)
@@ -352,11 +358,13 @@ fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -
     let map_src = if with_map { Some((path, src)) } else { None };
     let (parts, mappings) = lower(ast, scoping, &ctx, &mut program, map_src)?;
 
-    // No ESM module syntax → CJS/script: return the transformed body unwrapped (no preamble).
+    // No ESM module syntax → CJS/script: return the transformed body unwrapped (no preamble), with
+    // just the `__toESM` helper prepended when a lowered `import()` calls it.
     if !parts.has_module_syntax {
-        let mut out = parts.body_code;
+        let helper = if parts.uses_to_esm { TO_ESM_HELPER } else { "" };
+        let mut out = format!("{helper}{}", parts.body_code);
         if let Some(m) = &mappings {
-            append_inline_map(&mut out, path, 0, m);
+            append_inline_map(&mut out, path, helper.matches('\n').count(), m);
         }
         return Some(out);
     }
@@ -404,7 +412,13 @@ fn lower<'a>(
     let Plan { imports, requires, re_exports, exports, body_stmts, default_needs_rewrite } =
         plan(&ast, &scoping, ctx, program)?;
 
-    let mut state = EmitState { ast, imports, scoping, resolve: ctx.resolve };
+    let mut state = EmitState {
+        ast,
+        imports,
+        scoping,
+        resolve: ctx.resolve,
+        uses_to_esm: false,
+    };
     let mut body = body_stmts;
     for stmt in body.iter_mut() {
         state.visit_statement(stmt);
@@ -433,8 +447,17 @@ fn lower<'a>(
 
     let has_module_syntax =
         !(requires.is_empty() && re_exports.is_empty() && exports.is_empty() && !default_needs_rewrite);
+    let uses_to_esm = state.uses_to_esm;
     Some((
-        ModuleParts { requires, re_exports, exports, body_code, default_needs_rewrite, has_module_syntax },
+        ModuleParts {
+            requires,
+            re_exports,
+            exports,
+            body_code,
+            default_needs_rewrite,
+            has_module_syntax,
+            uses_to_esm,
+        },
         mappings,
     ))
 }
@@ -813,22 +836,34 @@ fn module_export_name(n: &ModuleExportName) -> String {
     }
 }
 
+/// The identity-preserving `__toESM` helper line (self-contained). Part of `PREAMBLE`; also
+/// prepended alone to a script (no module syntax) whose lowered `import()` calls it.
+macro_rules! to_esm_helper {
+    () => {
+        "var __toESM = (mod) => (mod && mod.__esModule ? mod : (mod && (typeof mod === \"object\" || typeof mod === \"function\") && !(\"default\" in mod) && Object.defineProperty(mod, \"default\", { value: mod, configurable: true }), mod));\n"
+    };
+}
+const TO_ESM_HELPER: &str = to_esm_helper!();
+
 /// Runtime helper preamble (shared by app emit + the bundler — emitted ONCE per output). `__esm`
 /// and `__commonJS` are the lazy module-init wrappers the bundler uses so circular dependencies +
 /// init ordering work (each module's body runs once, on first require, with its exports object
 /// already live).
-pub(crate) const PREAMBLE: &str = r#"var __defProp = Object.defineProperty;
+pub(crate) const PREAMBLE: &str = concat!(
+    r#"var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __export = (target, all) => { for (var name in all) __defProp(target, name, { get: all[name], enumerable: true, configurable: true }); };
 var __copyProps = (to, from, except, desc) => { if (from && typeof from === "object" || typeof from === "function") { for (let key of __getOwnPropNames(from)) if (!__hasOwnProp.call(to, key) && key !== except) __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable, configurable: true }); } return to; };
 var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "default"), secondTarget && __copyProps(secondTarget, mod, "default"));
-var __toESM = (mod) => (mod && mod.__esModule ? mod : (mod && (typeof mod === "object" || typeof mod === "function") && !("default" in mod) && Object.defineProperty(mod, "default", { value: mod, configurable: true }), mod));
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+"#,
+    to_esm_helper!(),
+    r#"var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var __commonJS = (cb) => { var mod; return () => (mod || (mod = { exports: {} }, cb(mod.exports, mod)), mod.exports); };
 var __esm = (fn) => { var done, res; return () => (done || (done = 1, res = fn()), res); };
-"#;
+"#
+);
 
 /// Assemble one module's CJS text from its parts — NO preamble (the caller emits that once).
 /// `module.exports = __toCommonJS(__tt_exports)` is written EARLY (before requires + body) so that

@@ -356,6 +356,33 @@ fn script_without_module_syntax_is_returned_unwrapped() {
     assert!(!o.contains("__toCommonJS"));
 }
 
+#[test]
+fn script_whose_only_import_is_dynamic_declares_to_esm() {
+    // turbo-test#37 item 1: the lowered `import()` calls `__toESM`, which only the module
+    // preamble declared, so a script (no static import/export) threw "__toESM is not defined".
+    let src = "const p = import(\"./m.js\");\nmodule.exports = p;\n";
+    let o = emit(Path::new("plain.js"), src).unwrap();
+    let (helper, rest) = o.split_once('\n').unwrap();
+    assert!(helper.starts_with("var __toESM = (mod) =>"), "{o}");
+    assert!(
+        PREAMBLE.lines().any(|l| l == helper),
+        "the preamble's own helper: {o}"
+    );
+    assert!(rest.contains("__toESM(require(\"./m.js\"))"), "{o}");
+    assert!(rest.ends_with("module.exports = p;\n"), "{o}");
+    assert!(!o.contains("__toCommonJS"), "still a script: {o}");
+    // under coverage the body's mappings start after the helper line
+    let o = emit_inner(Path::new("plain.ts"), src, false, true).unwrap();
+    let mappings = inline_map(&o)["mappings"].as_str().unwrap().to_string();
+    assert!(
+        mappings.starts_with(';') && !mappings.starts_with(";;"),
+        "{mappings}"
+    );
+    // a module already gets the helper from the preamble, once
+    let o = e("export const p = import(\"./m.js\");");
+    assert_eq!(o.matches("var __toESM =").count(), 1, "{o}");
+}
+
 // ---- TS / JSX / decorators -----------------------------------------------------------------
 
 #[test]

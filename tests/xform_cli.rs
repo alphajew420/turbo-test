@@ -88,6 +88,57 @@ fn native_emit_keeps_bindings_live_and_bundles_cyclic_deps() {
     }
 }
 
+/// Names of the `.tt-cache` files starting with `prefix` (`ntv-` = native app transform,
+/// `mr-` = esbuild app transform, which the compile-failure retry also writes).
+fn cached(p: &Project, prefix: &str) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(p.path(".tt-cache"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(prefix))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Run the project under the native emitter in strict mode with a fresh cache, then under the
+/// esbuild baseline; both must pass `passed` tests. Under native, every app file must load from
+/// the native emitter's output: the only esbuild app transform (`mr-*.cjs`) may be the runner's
+/// probe of the test entry, so a second one means a module's native output failed to compile and
+/// was silently re-transformed by esbuild.
+fn native_and_esbuild_agree(p: &Project, passed: u64) {
+    for env in [
+        &[("TURBO_NATIVE_CJS_STRICT", "1")][..],
+        &[("TURBO_NATIVE_CJS", "0"), ("TURBO_NATIVE_DEPS", "0")][..],
+    ] {
+        let _ = std::fs::remove_dir_all(p.path(".tt-cache"));
+        let r = turbo_test(&p.dir, &["--reporter", "json"], env);
+        assert_eq!(r.code, Some(0), "{env:?}: {}", r.all());
+        let j = json_report(&r);
+        assert_eq!(j["numPassedTests"], passed, "{env:?}: {}", r.all());
+        if env.len() == 1 {
+            assert!(!cached(p, "ntv-").is_empty(), "native emitter used");
+            assert_eq!(
+                cached(p, "mr-").len(),
+                1,
+                "only the entry probe, no esbuild retry"
+            );
+        }
+    }
+}
+
+#[test]
+fn dynamic_import_in_a_module_without_static_imports() {
+    // turbo-test#37 item 1: a test file whose only import is `import()` is a script to the
+    // emitter, which declared `__toESM` only in the module preamble → "__toESM is not defined".
+    let p = mr_project("xform-dynonly");
+    p.file("m.js", "export const v = 7;\n");
+    p.file(
+        "a.test.js",
+        "test('dyn', async () => { const m = await import('./m.js'); expect(m.v).toBe(7); });\n",
+    );
+    native_and_esbuild_agree(&p, 1);
+}
+
 /// App file + dep package the native path can't lower (JSX namespace names) but esbuild can.
 fn namespace_jsx_project() -> Project {
     let p = mr_project("xform-strict");
