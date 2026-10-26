@@ -1069,6 +1069,95 @@ static napi_value f_module_file_name(napi_env env, napi_callback_info info) {
     return list(env, 3, it);
 }
 
+/* ---- NULL arguments of the core entrypoints ------------------------------------------------ */
+
+static napi_value f_noop(napi_env env, napi_callback_info info) {
+    (void)info;
+    return undef(env);
+}
+
+/* coreNulls() -> the statuses of the core entrypoints with a NULL result or value argument */
+static napi_value f_core_nulls(napi_env env, napi_callback_info info) {
+    napi_value v = num(env, 1), s = str(env, "s"), o, ab, fn, out;
+    napi_create_object(env, &o);
+    napi_create_arraybuffer(env, 8, NULL, &ab);
+    napi_create_function(env, "f", NAPI_AUTO_LENGTH, f_noop, NULL, &fn);
+    double d;
+    bool b;
+    uint32_t u;
+    int64_t i64;
+    int t;
+    size_t len, argc = 1;
+    void *data;
+    char buf[4];
+    napi_value argv[1];
+    napi_ref r;
+    napi_create_reference(env, o, 1, &r);
+    double st[] = {
+        napi_get_undefined(env, NULL),
+        napi_get_null(env, NULL),
+        napi_get_global(env, NULL),
+        napi_get_boolean(env, true, NULL),
+        napi_typeof(env, NULL, &t),
+        napi_typeof(env, v, NULL),
+        napi_create_uint32(env, 1, NULL),
+        napi_create_double(env, 1, NULL),
+        napi_get_value_uint32(env, NULL, &u),
+        napi_get_value_uint32(env, v, NULL),
+        napi_get_value_string_utf8(env, NULL, buf, 4, &len),
+        napi_coerce_to_string(env, NULL, &out),
+        napi_coerce_to_string(env, v, NULL),
+        napi_create_object(env, NULL),
+        napi_create_array_with_length(env, 1, NULL),
+        napi_set_named_property(env, NULL, "k", v),
+        napi_set_named_property(env, o, NULL, v),
+        napi_set_named_property(env, o, "k", NULL),
+        napi_get_named_property(env, NULL, "k", &out),
+        napi_get_named_property(env, o, NULL, &out),
+        napi_get_named_property(env, o, "k", NULL),
+        napi_set_element(env, NULL, 0, v),
+        napi_set_element(env, o, 0, NULL),
+        napi_get_element(env, NULL, 0, &out),
+        napi_get_element(env, o, 0, NULL),
+        napi_create_function(env, "f", NAPI_AUTO_LENGTH, NULL, NULL, &out),
+        napi_create_function(env, "f", NAPI_AUTO_LENGTH, f_noop, NULL, NULL),
+        napi_get_cb_info(env, NULL, &argc, argv, NULL, NULL),
+        napi_get_cb_info(env, info, NULL, argv, NULL, NULL),
+        napi_call_function(env, v, NULL, 0, NULL, &out),
+        napi_call_function(env, v, fn, 0, NULL, NULL),
+        napi_create_arraybuffer(env, 1, NULL, NULL),
+        napi_create_typedarray(env, 1, 1, NULL, 0, &out),
+        napi_create_typedarray(env, 1, 1, ab, 0, NULL),
+        napi_create_buffer(env, 1, &data, NULL),
+        napi_create_buffer_copy(env, 1, "x", &data, NULL),
+        napi_create_external_buffer(env, 1, buf, NULL, NULL, NULL),
+        napi_get_buffer_info(env, NULL, &data, &len),
+        napi_get_value_bool(env, NULL, &b),
+        napi_get_value_bool(env, v, NULL),
+        napi_get_value_double(env, NULL, &d),
+        napi_get_value_double(env, v, NULL),
+        napi_get_value_int64(env, NULL, &i64),
+        napi_get_value_int64(env, v, NULL),
+        napi_is_array(env, NULL, &b),
+        napi_is_array(env, v, NULL),
+        napi_get_array_length(env, NULL, &u),
+        napi_get_array_length(env, v, NULL),
+        napi_get_property_names(env, NULL, &out),
+        napi_get_property_names(env, o, NULL),
+        napi_throw(env, NULL),
+        napi_is_error(env, NULL, &b),
+        napi_is_error(env, v, NULL),
+        napi_is_exception_pending(env, NULL),
+        napi_get_and_clear_last_exception(env, NULL),
+        napi_create_reference(env, NULL, 1, &r),
+        napi_create_reference(env, o, 1, NULL),
+        napi_get_reference_value(env, r, NULL),
+        napi_get_value_string_utf8(env, s, NULL, 0, NULL),
+    };
+    napi_delete_reference(env, r);
+    return nums(env, sizeof st / sizeof st[0], st);
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -1191,6 +1280,7 @@ static const struct {
     {"escapeChecks", f_escape_checks},
     {"externalMemory", f_external_memory},
     {"moduleFileName", f_module_file_name},
+    {"coreNulls", f_core_nulls},
     {"nullEnv", f_null_env},
 };
 

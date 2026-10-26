@@ -647,6 +647,16 @@ describe('instances, scripts, handle scopes, memory, module file name', () => {
   });
 });
 
+describe('NULL arguments of the core entrypoints', () => {
+  test('a NULL result or value is napi_invalid_arg', () => {
+    const st = api.coreNulls();
+    const want = Array(st.length).fill(INVALID_ARG);
+    // napi_call_function's result is optional
+    want[30] = OK;
+    expect(st).toEqual(want);
+  });
+});
+
 describe('a NULL env', () => {
   test('is napi_invalid_arg for every entrypoint', () => {
     const statuses = api.nullEnv();
