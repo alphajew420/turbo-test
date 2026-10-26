@@ -912,13 +912,10 @@ fn plan_discovers_and_strips_subcommands() {
         assert_eq!(argv(&p), all, "{sub:?}");
         assert!(p.env.is_empty() && p.messages.is_empty());
     }
-    // only a LEADING subcommand is stripped; elsewhere it is a (missing) file arg
+    // only a LEADING subcommand is stripped; elsewhere it is a filter (matching nothing here)
     let p = run_plan(&t, &["a.test.ts", "run"]);
     assert_eq!(argv(&p), vec!["a.test.ts"]);
-    assert_eq!(
-        p.messages,
-        vec!["turbo-test: skipping 1 missing file(s): run"]
-    );
+    assert!(p.messages.is_empty());
 }
 
 #[test]
@@ -940,33 +937,54 @@ fn plan_no_files_found() {
     // (turbo-test#32 item 7, vitest semantics)
     let f = t.file("a.test.ts", T).display().to_string();
     let p = run_plan(&t, &["--passWithNoTests", &f]);
-    assert_eq!(argv(&p), vec![f]);
+    assert_eq!(argv(&p), vec!["a.test.ts"]);
     assert_eq!(p.env, vec![("TURBO_PASS_WITH_NO_TESTS", "1".to_string())]);
 }
 
+/// turbo-test#58: positional arguments are vitest filters on the discovered files: a file whose
+/// root-relative path contains one (case-insensitively; an absolute one as a prefix; a relative
+/// one also from the process cwd) runs; none matching is "No test files found" (vitest 4.1.12).
 #[test]
-fn plan_prunes_missing_files() {
-    let t = Tmp::new("plan-missing");
+fn plan_filters_like_vitest() {
+    let t = Tmp::new("plan-filters");
     t.file("sub/a.test.ts", T);
-    // relative args resolve against the process cwd; "" args are dropped
+    t.file("sub/deep/b.test.ts", T);
+    t.file("other/data.test.ts", T);
+    t.file("notincluded.ts", T);
+    // "" args are dropped; filters that match nothing add nothing
     let p = run_plan(
         &t,
         &["sub/a.test.ts", "", "gone.test.ts", "/nope/x.test.ts"],
     );
     assert_eq!(argv(&p), vec!["sub/a.test.ts"]);
+    assert!(p.messages.is_empty());
+    // a substring, case-insensitively
     assert_eq!(
-        p.messages,
-        vec!["turbo-test: skipping 2 missing file(s): gone.test.ts, /nope/x.test.ts"]
+        argv(&run_plan(&t, &["A.TEST"])),
+        vec!["other/data.test.ts", "sub/a.test.ts"]
     );
-    let p = run_plan(&t, &["gone.test.ts"]);
+    assert_eq!(argv(&run_plan(&t, &["deep"])), vec!["sub/deep/b.test.ts"]);
+    // a directory, with or without its trailing slash or a leading ./
+    let sub = vec!["sub/a.test.ts", "sub/deep/b.test.ts"];
+    for f in ["sub", "./sub/", "sub/"] {
+        assert_eq!(argv(&run_plan(&t, &[f])), sub, "{f}");
+    }
+    // an absolute directory
+    let abs = t.p("sub");
+    assert_eq!(argv(&run_plan(&t, &[&abs])), sub);
+    for none in [&["gone.test.ts"][..], &["notincluded.ts"]] {
+        let p = run_plan(&t, none);
+        assert_eq!(p.outcome, Err(1));
+        assert_eq!(
+            p.messages,
+            vec![format!(
+                "No test files found, exiting with code 1\n\nfilter: {}",
+                none[0]
+            )]
+        );
+    }
+    let p = run_plan(&t, &["gone.test.ts", "--passWithNoTests"]);
     assert_eq!(p.outcome, Err(0));
-    assert_eq!(
-        p.messages,
-        vec![
-            "turbo-test: skipping 1 missing file(s): gone.test.ts",
-            "turbo-test: no existing test files to run."
-        ]
-    );
 }
 
 #[test]
@@ -1005,7 +1023,7 @@ fn plan_forwards_runner_flags() {
             "-t",
             "adds",
             "--no-file-parallelism",
-            &fs
+            "a.test.ts"
         ])
     );
     assert!(p.messages.is_empty(), "{:?}", p.messages);
@@ -1021,7 +1039,7 @@ fn plan_forwards_runner_flags() {
         "--shard",
     ] {
         let p = run_plan(&t, &[&fs, flag]);
-        assert_eq!(argv(&p), vec![fs.clone()], "{flag}");
+        assert_eq!(argv(&p), vec!["a.test.ts".to_string()], "{flag}");
         assert_eq!(
             p.messages,
             vec![format!("turbo-test: ignoring '{flag}': missing value")],
@@ -1029,7 +1047,7 @@ fn plan_forwards_runner_flags() {
         );
     }
     let p = run_plan(&t, &["--bail", "--retry", "1", "-t", "-x", &fs]);
-    assert_eq!(argv(&p), args(&["--retry", "1", "-x", &fs]));
+    assert_eq!(argv(&p), args(&["--retry", "1", "-x", "a.test.ts"]));
     assert_eq!(
         p.messages,
         vec![
@@ -1039,12 +1057,12 @@ fn plan_forwards_runner_flags() {
     );
     // a value-less `--coverage-*` value flag still implies --coverage (as in the runner)
     let p = run_plan(&t, &[&fs, "--coverage-dir"]);
-    assert_eq!(argv(&p), args(&["--coverage", &fs]));
+    assert_eq!(argv(&p), args(&["--coverage", "a.test.ts"]));
     assert_eq!(p.messages.len(), 1);
     // inline value forms are forwarded as one token
     assert_eq!(
         argv(&run_plan(&t, &["--reporter=tap", &fs])),
-        args(&["--reporter=tap", &fs])
+        args(&["--reporter=tap", "a.test.ts"])
     );
 }
 
@@ -1089,10 +1107,16 @@ fn plan_drops_noop_vitest_flags() {
             &f,
         ],
     );
-    assert_eq!(argv(&p), vec![f.clone()]);
+    assert_eq!(argv(&p), vec!["a.test.ts".to_string()]);
     // a value-less no-op flag doesn't eat the following test file
-    assert_eq!(argv(&run_plan(&t, &["--run", &f])), vec![f.clone()]);
-    assert_eq!(argv(&run_plan(&t, &["--pool", "--run", &f])), vec![f]);
+    assert_eq!(
+        argv(&run_plan(&t, &["--run", &f])),
+        vec!["a.test.ts".to_string()]
+    );
+    assert_eq!(
+        argv(&run_plan(&t, &["--pool", "--run", &f])),
+        vec!["a.test.ts".to_string()]
+    );
 }
 
 #[test]
@@ -1226,7 +1250,7 @@ fn plan_coverage_injection() {
         "export default { test: { coverage: { include: ['src/**'], exclude: ['src/gen/**', 'x.ts'], thresholds: { lines: 90, branches: 80 } } } }",
     );
     // no coverage flag → nothing injected
-    assert_eq!(argv(&run_plan(&t, &[&f])), vec![f.clone()]);
+    assert_eq!(argv(&run_plan(&t, &[&f])), vec!["a.test.ts".to_string()]);
     let p = run_plan(&t, &["--coverage", &f]);
     assert_eq!(
         argv(&p),
@@ -1238,7 +1262,7 @@ fn plan_coverage_injection() {
             "src/**",
             "--coverage-exclude",
             "src/gen/**,x.ts",
-            &f
+            "a.test.ts"
         ])
     );
     // explicit flags win (space, inline and the singular alias)
@@ -1261,7 +1285,7 @@ fn plan_coverage_injection() {
             "--coverage-include=lib/**",
             "--coverage-exclude",
             "y",
-            &f
+            "a.test.ts"
         ])
     );
     let p = run_plan(
@@ -1278,31 +1302,32 @@ fn plan_coverage_injection() {
             "src/**",
             "--coverage-exclude",
             "src/gen/**,x.ts",
-            &f
+            "a.test.ts"
         ])
     );
     // a config without a coverage block injects nothing
     t.file("vitest.config.ts", "export default { test: {} }");
     assert_eq!(
         argv(&run_plan(&t, &["--coverage", &f])),
-        args(&["--coverage", &f])
+        args(&["--coverage", "a.test.ts"])
     );
     // no config at all
     std::fs::remove_file(t.0.join("vitest.config.ts")).unwrap();
     assert_eq!(
         argv(&run_plan(&t, &["--coverage", &f])),
-        args(&["--coverage", &f])
+        args(&["--coverage", "a.test.ts"])
     );
 }
 
 #[test]
 fn prepare_returns_argv_for_runnable_input() {
-    // absolute file args make prepare() independent of the test process's cwd; nothing in this
-    // input sets env vars, prints or exits
+    // `--root` and an absolute file arg make prepare() independent of the test process's cwd;
+    // nothing in this input sets env vars, prints or exits
     let t = Tmp::new("prepare");
     let f = t.file("a.test.ts", T).display().to_string();
+    let root = t.p("");
     assert_eq!(
-        prepare(args(&["run", "--reporter", "dot", &f])),
+        prepare(args(&["run", "--reporter", "dot", "--root", &root, &f])),
         args(&["--reporter", "dot", &f])
     );
 }

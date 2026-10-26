@@ -1,5 +1,5 @@
-//! The launcher front-end through the real binary: terminal exits and their messages, missing
-//! file pruning, subcommand stripping, `--environment` / config environment, config aliases,
+//! The launcher front-end through the real binary: terminal exits and their messages, positional
+//! filters, subcommand stripping, `--environment` / config environment, config aliases,
 //! a forced `-c` config, `--root`, and `--changed` against a real git repository (plus the
 //! git-unavailable fallback).
 #![cfg(unix)]
@@ -35,27 +35,32 @@ fn no_test_files_exit_codes() {
 }
 
 #[test]
-fn missing_files_are_pruned() {
-    let p = Project::new("launch-missing");
+fn positional_arguments_are_filters() {
+    // turbo-test#58, as vitest 4.1.12: every positional argument filters the discovered test
+    // files (a root-relative path containing it, case-insensitively); one matching nothing is
+    // no warning, all matching nothing is "No test files found" with exit 1
+    let p = Project::new("launch-filters");
     p.file("a.test.ts", PASS);
-    let r = tt(&p, &["a.test.ts", "gone.test.ts", ""]);
+    p.file("a/x.test.ts", PASS);
+    p.file("a/b/y.test.ts", PASS);
+    let r = tt(&p, &["a.test.ts", "gone.test.ts"]);
     assert_eq!(r.code, Some(0), "{}", r.all());
-    assert!(
-        r.stderr
-            .starts_with("turbo-test: skipping 1 missing file(s): gone.test.ts\n"),
-        "{}",
-        r.all()
-    );
+    assert_eq!(r.stderr, "", "{}", r.all());
     assert!(
         r.stdout.contains("PASS  a.test.ts  (1 passed, 0 failed)"),
         "{}",
         r.all()
     );
-    let r = tt(&p, &["gone.test.ts", "also-gone.test.ts"]);
+    assert!(!r.stdout.contains("x.test.ts"), "{}", r.all());
+    let r = tt(&p, &["X.TEST"]);
     assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(r.stdout.contains("PASS  a/x.test.ts"), "{}", r.all());
+    assert!(!r.stdout.contains("y.test.ts"), "{}", r.all());
+    let r = tt(&p, &["gone.test.ts", "also-gone.test.ts"]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
     assert_eq!(
         r.stderr,
-        "turbo-test: skipping 2 missing file(s): gone.test.ts, also-gone.test.ts\nturbo-test: no existing test files to run.\n"
+        "No test files found, exiting with code 1\n\nfilter: gone.test.ts, also-gone.test.ts\n"
     );
 }
 

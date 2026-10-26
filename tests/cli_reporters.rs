@@ -173,8 +173,9 @@ fn file_without_tests_fails_the_run() {
     let r = turbo_test(&p.dir, &["empty.spec.js", "a.test.js"], &[]);
     assert_eq!(r.code, Some(1), "{}", r.all());
     assert!(
-        r.stdout
-            .contains(&format!("ERROR empty.spec.js  ({msg})\nPASS  a.test.js")),
+        r.stdout.contains(&format!(
+            "PASS  a.test.js  (1 passed, 0 failed)\nERROR empty.spec.js  ({msg})"
+        )),
         "{}",
         r.all()
     );
@@ -187,13 +188,14 @@ fn file_without_tests_fails_the_run() {
     assert_eq!(r.code, Some(1), "{}", r.all());
     let j = json_report(&r);
     assert_eq!(j["success"], false);
-    assert_eq!(j["testResults"][0]["status"], "error");
-    assert_eq!(j["testResults"][1]["status"], "passed");
+    // the files run in discovery order (positional arguments are filters, turbo-test#58)
+    assert_eq!(j["testResults"][0]["status"], "passed");
+    assert_eq!(j["testResults"][1]["status"], "error");
     let r = turbo_test(&p.dir, &["--reporter", "junit", &e], &[]);
     assert_eq!(r.code, Some(1), "{}", r.all());
     assert!(
         r.stdout.contains(&format!(
-            "<testcase name=\"{e}\" classname=\"{e}\">\n      <error message=\"{msg}\"/>"
+            "<testcase name=\"empty.spec.js\" classname=\"empty.spec.js\">\n      <error message=\"{msg}\"/>"
         )),
         "{}",
         r.all()
@@ -202,7 +204,9 @@ fn file_without_tests_fails_the_run() {
     assert_eq!(r.code, Some(1), "{}", r.all());
     assert_eq!(
         r.stdout,
-        format!("TAP version 13\n1..1\nnot ok 1 - {e}\n  ---\n  message: {msg}\n  ...\n\n"),
+        format!(
+            "TAP version 13\n1..1\nnot ok 1 - empty.spec.js\n  ---\n  message: {msg}\n  ...\n\n"
+        ),
         "{}",
         r.all()
     );

@@ -80,7 +80,9 @@ fn is_test_file(name: &str) -> bool {
     let exts = [
         "js", "ts", "jsx", "tsx", "cjs", "cts", "mjs", "mts", "cjsx", "ctsx", "mjsx", "mtsx",
     ];
-    let Some((stem, ext)) = name.rsplit_once('.') else { return false };
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
     if !exts.contains(&ext) {
         return false;
     }
@@ -90,22 +92,16 @@ fn is_test_file(name: &str) -> bool {
 /// Recursive discovery walk: collect the files whose name `keep` accepts, outside the SKIP_DIR
 /// directories (symbolic links are not followed).
 fn walk(dir: &Path, out: &mut Vec<PathBuf>, keep: &dyn Fn(&str) -> bool) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let full = entry.path();
         match entry.file_type() {
-            Ok(ft) if ft.is_dir() => {
-                if !SKIP_DIR.contains(&name.as_ref()) {
-                    walk(&full, out, keep);
-                }
-            }
-            Ok(ft) if ft.is_file() => {
-                if keep(&name) {
-                    out.push(full);
-                }
-            }
+            Ok(ft) if ft.is_dir() && !SKIP_DIR.contains(&name.as_ref()) => walk(&full, out, keep),
+            Ok(ft) if ft.is_file() && keep(&name) => out.push(full),
             _ => {}
         }
     }
@@ -989,6 +985,29 @@ fn top_level_comma(s: &str) -> Option<usize> {
     None
 }
 
+/// Whether test file `t` (absolute) passes the positional filter `f`, as vitest's filterFiles:
+/// an absolute filter that is a prefix of the path, or the root-relative path containing the
+/// filter, or the filter made root-relative (from the process's cwd; a trailing slash kept),
+/// case-insensitively.
+fn filter_matches(root: &Path, proc_cwd: &Path, f: &str, t: &Path) -> bool {
+    let rel = |p: &Path| -> String {
+        let r = p.strip_prefix(root).unwrap_or(p);
+        r.components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let test_file = rel(t).to_lowercase();
+    if Path::new(f).is_absolute() && t.to_string_lossy().starts_with(f) {
+        return true;
+    }
+    let mut relative = rel(&absolute_in(proc_cwd, Path::new(f)));
+    if f.ends_with('/') {
+        relative.push('/');
+    }
+    test_file.contains(&f.to_lowercase()) || test_file.contains(&relative.to_lowercase())
+}
+
 /// Default discovery: all test files under `cwd`, filtered by config include/exclude when a config
 /// with `test.include` is found. Mirrors cli.js `discover`.
 fn discover(cwd: &Path, forced_config: Option<&Path>) -> Vec<PathBuf> {
@@ -1267,8 +1286,8 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         } else if a.starts_with('-') {
             forward.push(a.clone());
         } else if !a.is_empty() {
-            // skip empty args (e.g. a stray "" from a shell wrapper) — they'd be treated as a
-            // missing file and abort the whole run.
+            // skip empty args (e.g. a stray "" from a shell wrapper) — as a filter one would
+            // match every test file.
             files.push(a.clone());
         }
         i += 1;
@@ -1363,28 +1382,14 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         }
         discovered
     } else {
-        // a directory argument is a filter, as vitest's: the test files under it that discovery
-        // would run (the config's include / exclude, else the default names)
-        let mut out = Vec::new();
-        let mut discovered: Option<Vec<PathBuf>> = None;
-        let mut only_dirs = true;
-        for f in &files {
-            let abs = absolute_in(proc_cwd, Path::new(f));
-            if !abs.is_dir() {
-                only_dirs = false;
-                out.push(PathBuf::from(f));
-                continue;
-            }
-            let all = discovered.get_or_insert_with(|| discover(&cwd, forced.as_deref()));
-            let dir = abs.canonicalize().unwrap_or(abs);
-            for t in all.iter() {
-                let canon = t.canonicalize().unwrap_or_else(|_| t.clone());
-                if canon.starts_with(&dir) && !out.contains(t) {
-                    out.push(t.strip_prefix(proc_cwd).unwrap_or(t).to_path_buf());
-                }
-            }
-        }
-        if out.is_empty() && only_dirs {
+        // positional arguments are filters, as vitest's: the discovered files whose root-relative
+        // path contains one (directories and file paths alike)
+        let matched: Vec<PathBuf> = discover(&cwd, forced.as_deref())
+            .into_iter()
+            .filter(|t| files.iter().any(|f| filter_matches(&cwd, proc_cwd, f, t)))
+            .map(|t| t.strip_prefix(proc_cwd).map(Path::to_path_buf).unwrap_or(t))
+            .collect();
+        if matched.is_empty() {
             // vitest: "No test files found, exiting with code 1" (0 with --passWithNoTests)
             let code = i32::from(!opts.pass_with_no_tests);
             messages.push(format!(
@@ -1397,7 +1402,7 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
                 outcome: Err(code),
             };
         }
-        out
+        matched
     };
 
     // `--changed [since]`: keep only discovered test files git reports changed. Direct changed-file
@@ -1419,19 +1424,6 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
                 }
             }
         }
-    }
-
-    // Drop file args that no longer exist (stale paths would reach the runner as hard load-errors
-    // and flip the exit code). Warn, don't fail.
-    let missing: Vec<&PathBuf> = test_files.iter().filter(|f| !proc_cwd.join(f).exists()).collect();
-    if !missing.is_empty() {
-        let names: Vec<String> = missing.iter().map(|f| f.display().to_string()).collect();
-        messages.push(format!("turbo-test: skipping {} missing file(s): {}", missing.len(), names.join(", ")));
-        test_files.retain(|f| proc_cwd.join(f).exists());
-    }
-    if test_files.is_empty() {
-        messages.push("turbo-test: no existing test files to run.".to_string());
-        return Plan { env, messages, outcome: Err(0) }; // nothing to run is not a failure
     }
 
     // Effective argv for the runner loop: forwarded flags, then resolved files.

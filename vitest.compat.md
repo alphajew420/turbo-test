@@ -38,7 +38,7 @@ subcommand layer** — `argv[0]` that isn't a flag is treated as a test-file pat
 ### Supported today
 | flag | turbo-test | Notes |
 |---|---|---|
-| `<file glob…>` positional | ✅ | Falls back to vitest-style discovery + config `include`/`exclude` when none given (`cli.js`). A directory argument is a filter, as vitest's: the test files under it that discovery would run (nested directories too); one with none is `No test files found, exiting with code 1` (0 with `--passWithNoTests`). Other filter strings (vitest's substring match on a path that is neither a file nor a directory) are not modeled: such an argument is dropped as a missing file. |
+| `<filter…>` positional | ✅ | Filters, as vitest's: a discovered test file (vitest-style discovery + config `include`/`exclude`) runs when its root-relative path contains one of the arguments, case-insensitively (a file path, a directory, or any substring: `b` runs `a/b/y.test.ts`; an absolute path matches as a prefix). An argument that matches nothing is no warning; when nothing matches at all: `No test files found, exiting with code 1` (0 with `--passWithNoTests`). A file outside `include` does not run even when named. Files run in discovery order. With no argument, every discovered file runs. |
 | `-j, --jobs N` | ✅ | turbo-test's worker count. ≈ vitest `--maxWorkers` (no separate min). Also `TURBO_JOBS` env. |
 | `--shard i/n` | ✅ | Deterministic index partition. Matches vitest's `--shard`. |
 | `--reporter <r>` | 🟡 | **Only `json` is honored** (terse vitest-ish JSON). Any other value → default text reporter. See §3. |
