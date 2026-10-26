@@ -156,6 +156,24 @@ fn config_aliases_reach_the_resolver() {
 }
 
 #[test]
+fn concatenated_dirname_alias_resolves() {
+    // turbo-test#32 item 8a: `'@z': __dirname + '/z'` was dropped (`cannot resolve @z/m.js`)
+    let p = Project::new("launch-alias-concat");
+    p.file("z/m.js", "export const m = 'zed'\n");
+    p.file(
+        "vitest.config.js",
+        "export default { resolve: { alias: { '@z': __dirname + '/z' } } };\n",
+    );
+    p.file(
+        "a.test.js",
+        "import { m } from '@z/m.js'\ntest('alias', () => { expect(m).toBe('zed') })\n",
+    );
+    let r = tt(&p, &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(r.stdout.contains("(1 passed, 0 failed)"), "{}", r.all());
+}
+
+#[test]
 fn forced_config_and_root() {
     let p = Project::new("launch-config");
     p.file(

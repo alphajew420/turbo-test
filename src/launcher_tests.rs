@@ -579,11 +579,20 @@ fn alias_target_resolution() {
         alias_target(d, "new URL('./y', import.meta.url).pathname").as_deref(),
         Some("/proj/cfg/y")
     );
+    // turbo-test#32 item 8a: a bare dir-name base concatenated with a literal is that dir
+    // (`__dirname + '/z'` ≡ `path.resolve(__dirname, 'z')`); it used to be dropped
     assert_eq!(
         alias_target(d, "__dirname + '/z'").as_deref(),
-        None,
-        "marker base with no literal"
+        Some("/proj/cfg/z")
     );
+    assert_eq!(
+        alias_target(d, " import.meta.dirname+\"/w/\"").as_deref(),
+        Some("/proj/cfg/w/")
+    );
+    assert_eq!(alias_target(d, "__dirname").as_deref(), Some("/proj/cfg"));
+    // any other literal-free base is still unknown
+    assert_eq!(alias_target(d, "root + '/z'"), None);
+    assert_eq!(alias_target(d, "path.resolve(root) + '/z'"), None);
     assert_eq!(
         alias_target(d, "path.resolve(__dirname, 'src') + '/sub' + '/'").as_deref(),
         Some("/proj/cfg/src/sub/")

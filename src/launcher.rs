@@ -732,13 +732,21 @@ fn parse_alias_inner(inner: &str, dir: &Path) -> Vec<(String, String)> {
 
 /// Derive the alias target path/specifier from a JS value expression. When the value looks like a
 /// filesystem-path expression (`path.resolve`/`path.join`/`fileURLToPath`/`new URL`/`__dirname`/
-/// `import.meta.url`), ALL its quoted segments are joined against the config dir with path.resolve
-/// semantics (so `path.resolve(__dirname, '../..', 'pkg/src')` resolves correctly, not just its last
-/// segment). Otherwise the value is a plain literal (`'/abs'`, `'./rel'`, or a bare module specifier
-/// like `'preact/compat'`) and its last string is resolved by its own prefix. `None` if no literal.
+/// `import.meta.url`/`import.meta.dirname`), ALL its quoted segments are joined against the config
+/// dir with path.resolve semantics (so `path.resolve(__dirname, '../..', 'pkg/src')` resolves
+/// correctly, not just its last segment). Otherwise the value is a plain literal (`'/abs'`, `'./rel'`, or a bare module specifier
+/// like `'preact/compat'`) and its last string is resolved by its own prefix. A bare `__dirname` /
+/// `import.meta.dirname` base is the config dir itself. `None` if there is no literal otherwise.
 fn alias_target(dir: &Path, val: &str) -> Option<String> {
-    const PATH_MARKERS: [&str; 6] =
-        ["path.resolve", "path.join", "fileURLToPath", "new URL", "__dirname", "import.meta.url"];
+    const PATH_MARKERS: [&str; 7] = [
+        "path.resolve",
+        "path.join",
+        "fileURLToPath",
+        "new URL",
+        "__dirname",
+        "import.meta.url",
+        "import.meta.dirname",
+    ];
     // A value can be a string CONCATENATION (`path.resolve(__dirname,'src') + '/sub'`). Split on the
     // top-level `+`: the FIRST operand is the base (path.resolve-joined when it's a path expression,
     // else its plain literal), and each later operand is a plain string appended LITERALLY — so
@@ -750,7 +758,9 @@ fn alias_target(dir: &Path, val: &str) -> Option<String> {
     // isn't mistaken for a path expression.
     let mut base = if PATH_MARKERS.iter().any(|m| blank_quoted(&first).contains(m)) {
         let quoted = extract_quoted(&first);
-        if quoted.is_empty() {
+        // a bare config-dir base (`__dirname + '/z'`) is the dir itself: joining no segments
+        let bare_dir = matches!(first.as_str(), "__dirname" | "import.meta.dirname");
+        if quoted.is_empty() && !bare_dir {
             return None;
         }
         resolve_alias_join(dir, &quoted)
