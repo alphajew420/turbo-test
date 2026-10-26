@@ -259,3 +259,57 @@ test.for([[1, 2]])('opts %i', { timeout: 100 }, ([a]) => { expect(a).toBe(1) })
         r.all()
     );
 }
+
+#[test]
+#[ignore = "turbo-test#69: fails until the fix"]
+fn a_failing_before_all_skips_its_suite_and_an_empty_describe_fails() {
+    // turbo-test#69: a throwing beforeAll still ran its suite's tests (counted as one more failed
+    // test), and an empty describe passed. vitest 4.1.12: the suite's tests (nested ones too) are
+    // skipped, its afterAll still runs, and the file fails; an empty describe fails its file with
+    // "No test found in suite <name>".
+    let p = Project::new("rc-collect-hooks");
+    p.file(
+        "b.test.js",
+        "const log = []\n\
+         describe('ba', () => {\n\
+           beforeAll(() => { log.push('ba'); throw new Error('ba boom') })\n\
+           beforeEach(() => log.push('be'))\n\
+           afterEach(() => log.push('ae'))\n\
+           afterAll(() => log.push('aa'))\n\
+           test('t1', () => log.push('t1'))\n\
+           describe('nested', () => { beforeAll(() => log.push('nba')); test('t2', () => log.push('t2')) })\n\
+         })\n\
+         test('after', () => { expect(log.join()).toBe('ba,aa') })\n",
+    );
+    p.file(
+        "e.test.js",
+        "describe('empty', () => {})\ntest('ok', () => {})\n",
+    );
+    let r = turbo_test(&p.dir, &["--reporter", "tap", "b.test.js"], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert_eq!(
+        tap_points(&r),
+        [
+            "ok 1 - ba > t1 # SKIP",
+            "ok 2 - ba > nested > t2 # SKIP",
+            "ok 3 - after",
+        ],
+        "{}",
+        r.all()
+    );
+    let r = turbo_test(&p.dir, &["b.test.js", "e.test.js"], &[("TURBO_JOBS", "1")]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout.starts_with(
+            "FAIL  b.test.js  (1 passed, 0 failed)\n        ✗ ba beforeAll: ba boom\n\
+             FAIL  e.test.js  (1 passed, 0 failed)\n        ✗ No test found in suite empty\n"
+        ),
+        "{}",
+        r.all()
+    );
+    assert!(
+        r.stdout.contains("\n Test Files  2 failed | 0 passed (2)\n      Tests  2 passed (2)\n"),
+        "{}",
+        r.all()
+    );
+}
