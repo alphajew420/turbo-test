@@ -184,6 +184,13 @@ describe('functions', () => {
     expect(a.status()).toBe(OK);
   });
 
+  test('napi_get_cb_info fills argv slots past argc with undefined', () => {
+    expect(a.padded(1)).toEqual([1, 1, undefined, undefined, undefined]);
+    expect(a.padded()).toEqual([0, undefined, undefined, undefined, undefined]);
+    expect(a.status()).toBe(OK);
+    expect(a.padded(1, 2, 3, 4, 5)).toEqual([5, 1, 2, 3, 4]);
+  });
+
   test('a callback returning NULL yields undefined', () => {
     expect(a.retNull(1)).toBe(undefined);
   });

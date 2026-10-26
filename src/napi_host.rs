@@ -493,7 +493,7 @@ pub unsafe extern "C" fn napi_create_function(
 
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_cb_info(
-    _env: napi_env,
+    env: napi_env,
     info: napi_callback_info,
     argc: *mut usize,
     argv: *mut napi_value,
@@ -509,9 +509,10 @@ pub unsafe extern "C" fn napi_get_cb_info(
             for i in 0..n {
                 *argv.add(i) = cb.args[i];
             }
-            // pad remaining with undefined-ish (null ptr treated as undefined by caller)
+            // as in Node, slots past the actual arguments are filled with `undefined`
+            let undefined = to_napi(v8::undefined(scope(env)).into());
             for i in n..want {
-                *argv.add(i) = std::ptr::null_mut();
+                *argv.add(i) = undefined;
             }
         }
         *argc = have;

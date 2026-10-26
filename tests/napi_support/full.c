@@ -225,6 +225,16 @@ static napi_value f_argc_only(napi_env env, napi_callback_info info) {
     return dbl(env, (double)argc);
 }
 
+/* padded(...): napi_get_cb_info into a 4-slot argv -> [argc, slot0..slot3]; slots past the
+ * real argc must be filled with undefined. */
+static napi_value f_padded(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value argv[4] = {NULL, NULL, NULL, NULL};
+    ST(napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+    napi_value it[5] = {dbl(env, (double)argc), argv[0], argv[1], argv[2], argv[3]};
+    return list(env, 5, it);
+}
+
 static napi_value f_this_only(napi_env env, napi_callback_info info) {
     napi_value self = NULL;
     void *data = (void *)1;
@@ -633,6 +643,7 @@ static const struct {
     {"keys", f_keys},
     {"makeFn", f_make_fn},
     {"argcOnly", f_argc_only},
+    {"padded", f_padded},
     {"thisOnly", f_this_only},
     {"retNull", f_ret_null},
     {"call", f_call},
