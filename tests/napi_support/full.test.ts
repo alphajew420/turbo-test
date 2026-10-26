@@ -427,22 +427,21 @@ describe('arraybuffers, typed arrays, buffers', () => {
     expect(a.status()).toBe(OK);
   });
 
-  test('napi_get_buffer_info: views (with offset), ArrayBuffers, non-buffers', () => {
+  test('napi_get_buffer_info: views (with offset), non-buffers', () => {
     const u = new Uint8Array([9, 8, 7, 6]);
     expect(a.bufInfo(u.subarray(1))).toEqual([3, 8]);
     expect([...u]).toEqual([9, 9, 7, 6]); // data points at the view's first byte
     expect(a.bufInfo(new DataView(u.buffer, 2, 2))).toEqual([2, 7]);
     expect(u[2]).toBe(8);
-    const ab = new Uint8Array([5]).buffer;
-    expect(a.bufInfo(ab)).toEqual([1, 5]);
-    expect(new Uint8Array(ab)[0]).toBe(6);
     expect(a.bufInfo(new Uint8Array(0))).toEqual([0, -1]);
-    expect(a.bufInfo(new ArrayBuffer(0))).toEqual([0, -1]);
     expect(a.status()).toBe(OK);
-    expect(a.bufInfo('nope')).toBe(undefined);
-    expect(a.status()).toBe(INVALID_ARG);
+    // only ArrayBufferViews (Buffer / Uint8Array / DataView ...): a raw ArrayBuffer is not one
+    for (const v of ['nope', new Uint8Array([5]).buffer, new ArrayBuffer(0)]) {
+      expect(a.bufInfo(v)).toBe(undefined);
+      expect(a.status()).toBe(INVALID_ARG);
+    }
     expect(a.bufInfoNulls(u)).toBe(OK);
-    expect(a.bufInfoNulls(new ArrayBuffer(1))).toBe(OK);
+    expect(a.bufInfoNulls(new ArrayBuffer(1))).toBe(INVALID_ARG);
   });
 });
 

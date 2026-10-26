@@ -817,36 +817,24 @@ pub unsafe extern "C" fn napi_get_buffer_info(
 ) -> napi_status {
     let s = scope(env);
     let val = to_local(v);
-    // Accept any ArrayBufferView (Uint8Array Buffer) or a raw ArrayBuffer.
-    if let Ok(view) = TryInto::<v8::Local<v8::ArrayBufferView>>::try_into(val) {
-        let len = view.byte_length();
-        if !length.is_null() {
-            *length = len;
-        }
-        if !data.is_null() {
-            let off = view.byte_offset();
-            *data = view
-                .buffer(s)
-                .and_then(|b| b.get_backing_store().data())
-                .map(|p| (p.as_ptr() as *mut u8).add(off) as *mut c_void)
-                .unwrap_or(std::ptr::null_mut());
-        }
-        return napi_ok;
+    // As Node (node::Buffer::HasInstance): any ArrayBufferView (Buffer, Uint8Array, DataView,
+    // ...); anything else, a raw ArrayBuffer included, is napi_invalid_arg.
+    let Ok(view) = TryInto::<v8::Local<v8::ArrayBufferView>>::try_into(val) else {
+        return napi_invalid_arg;
+    };
+    let len = view.byte_length();
+    if !length.is_null() {
+        *length = len;
     }
-    if let Ok(ab) = TryInto::<v8::Local<v8::ArrayBuffer>>::try_into(val) {
-        if !length.is_null() {
-            *length = ab.byte_length();
-        }
-        if !data.is_null() {
-            *data = ab
-                .get_backing_store()
-                .data()
-                .map(|p| p.as_ptr())
-                .unwrap_or(std::ptr::null_mut());
-        }
-        return napi_ok;
+    if !data.is_null() {
+        let off = view.byte_offset();
+        *data = view
+            .buffer(s)
+            .and_then(|b| b.get_backing_store().data())
+            .map(|p| (p.as_ptr() as *mut u8).add(off) as *mut c_void)
+            .unwrap_or(std::ptr::null_mut());
     }
-    napi_invalid_arg
+    napi_ok
 }
 
 // ---- more value getters (bool/double/int64) -------------------------------
