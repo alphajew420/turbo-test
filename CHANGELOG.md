@@ -34,6 +34,34 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   fails its `require()` with an error naming it instead of crashing the whole run (SIGSEGV), and
   load errors carry the loader's message. The inventory (function, version, tests, host
   differences) is [docs/node-api.md](docs/node-api.md).
+- Node-API core entrypoints check a NULL result / value argument as Node (`napi_invalid_arg`)
+  instead of crashing or returning `napi_ok` (turbo-test#50); `napi_create_typedarray` accepts
+  a SharedArrayBuffer (turbo-test#51); the buffer creators hand back `Buffer`s, not plain
+  `Uint8Array`s (turbo-test#52); an exception a finalizer leaves pending is reported as
+  uncaught from the event loop, as in Node, instead of being dropped (turbo-test#53).
+- `structuredClone` is V8's structured clone with `{ transfer }` (transferred buffers are
+  detached) and Node's errors (turbo-test#46).
+- `require.cache` is the shared module cache: deleting an entry makes the next `require()` load
+  the module again, a set entry is served as is (turbo-test#47). `require.resolve()` resolves
+  (it returned its argument) and a missing module is Node's `MODULE_NOT_FOUND` with the require
+  stack (turbo-test#56).
+- `fs.symlinkSync` / `fs.promises.symlink` exist (turbo-test#48); `process.cwd()` is the process's
+  working directory, not the nearest package.json directory (turbo-test#54); `os.tmpdir()` /
+  `os.homedir()` follow the environment as Node's (turbo-test#55).
+- An unresolved `import()` rejects as vitest's: `Cannot find module '/sub/x.js' imported from
+  <importer>` / `Cannot find package 'x' …` (`ERR_MODULE_NOT_FOUND`), `No such built-in module`
+  (turbo-test#61).
+- Launcher, as vitest 4.1.12: every config lookup uses vitest's config names and order
+  (turbo-test#49); default discovery matches `.mjs`/`.cjs`/`.mts`/`.cts` test files and skips
+  only `node_modules` and `.git` (hidden, `dist`, `build`, `coverage`, `target`… are searched,
+  turbo-test#57); a config `exclude` applies without a config `include` (turbo-test#60);
+  positional arguments are filters on the discovered files (a directory, a file path or any
+  substring of the root-relative path, case-insensitively — a directory argument failed with
+  "graph load failed", turbo-test#45 / turbo-test#58); discovered files are named relative to the
+  working directory (the JSON report keeps absolute names, as vitest's; the duration history
+  is keyed by absolute path) and nothing to run prints vitest's `No test files found, exiting
+  with code N` with its filter / include / exclude lines (turbo-test#59). A missing file
+  argument is no longer dropped with a warning: like any filter, it matches nothing.
 
 ### Tests
 - Node-API fixtures `api.c`, `async.c`, `cleanup.c`, `apiversion.c`, `refs.c`, `selfreg.c`,

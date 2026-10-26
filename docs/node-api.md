@@ -70,7 +70,7 @@ Version: the first `NAPI_VERSION` that declares the function. Tests: the specs u
 | `napi_create_string_utf8` | 1 | js_native_api.h | implemented | addons.test.ts, api.test.ts, apiversion.test.ts, async.test.ts, full.test.ts, init.test.ts, objectwrap.test.ts, refs.test.ts, selfreg.test.ts |  |
 | `napi_create_symbol` | 1 | js_native_api.h | implemented | api.test.ts |  |
 | `napi_create_type_error` | 1 | js_native_api.h | implemented | api.test.ts |  |
-| `napi_create_typedarray` | 1 | js_native_api.h | implemented | full.test.ts |  |
+| `napi_create_typedarray` | 1 | js_native_api.h | implemented | api.test.ts, full.test.ts | over an ArrayBuffer or a SharedArrayBuffer |
 | `napi_create_uint32` | 1 | js_native_api.h | implemented | full.test.ts, init_lock.test.ts |  |
 | `napi_define_class` | 1 | js_native_api.h | implemented | full.test.ts, objectwrap.test.ts, wrap.test.ts |  |
 | `napi_define_properties` | 1 | js_native_api.h | implemented | objectwrap.test.ts |  |
@@ -142,12 +142,12 @@ Version: the first `NAPI_VERSION` that declares the function. Tests: the specs u
 | `napi_async_init` | 1 | node_api.h | implemented | api.test.ts, async.test.ts | no async_hooks: the context identifies nothing more |
 | `napi_cancel_async_work` | 1 | node_api.h | implemented | api.test.ts, async.test.ts |  |
 | `napi_create_async_work` | 1 | node_api.h | implemented | api.test.ts, async.test.ts |  |
-| `napi_create_buffer` | 1 | node_api.h | implemented | full.test.ts |  |
-| `napi_create_buffer_copy` | 1 | node_api.h | implemented | full.test.ts |  |
+| `napi_create_buffer` | 1 | node_api.h | implemented | api.test.ts, full.test.ts |  |
+| `napi_create_buffer_copy` | 1 | node_api.h | implemented | api.test.ts, full.test.ts |  |
 | `napi_create_external_buffer` | 1 | node_api.h | implemented | api.test.ts, full.test.ts | the addon's memory, not copied; NULL data gets zero-filled memory of its own |
 | `napi_delete_async_work` | 1 | node_api.h | implemented | async.test.ts |  |
 | `napi_fatal_error` | 1 | node_api.h | implemented | `fatal_error_aborts_the_process` | prints `FATAL ERROR: <location> <message>` and aborts (no native stack trace) |
-| `napi_get_buffer_info` | 1 | node_api.h | implemented | full.test.ts |  |
+| `napi_get_buffer_info` | 1 | node_api.h | implemented | api.test.ts, full.test.ts |  |
 | `napi_get_node_version` | 1 | node_api.h | implemented | apiversion.test.ts | 24.0.0 "node", the version `process.version` names |
 | `napi_is_buffer` | 1 | node_api.h | implemented | api.test.ts |  |
 | `napi_make_callback` | 1 | node_api.h | implemented | api.test.ts, async.test.ts | nextTicks / microtasks run when the native call returns to JS or the event loop |
@@ -166,7 +166,7 @@ Version: the first `NAPI_VERSION` that declares the function. Tests: the specs u
 | `napi_ref_threadsafe_function` | 4 | node_api.h | implemented | async.test.ts |  |
 | `napi_release_threadsafe_function` | 4 | node_api.h | implemented | async.test.ts |  |
 | `napi_unref_threadsafe_function` | 4 | node_api.h | implemented | async.test.ts, cleanup.test.ts, full.test.ts |  |
-| `napi_add_finalizer` | 5 | js_native_api.h | implemented | typetag.test.ts, wrap.test.ts |  |
+| `napi_add_finalizer` | 5 | js_native_api.h | implemented | api.test.ts, typetag.test.ts, wrap.test.ts | an exception the finalizer leaves pending is uncaught (reported from the event loop) |
 | `napi_create_date` | 5 | js_native_api.h | implemented | api.test.ts |  |
 | `napi_get_date_value` | 5 | js_native_api.h | implemented | api.test.ts |  |
 | `napi_is_date` | 5 | js_native_api.h | implemented | api.test.ts |  |

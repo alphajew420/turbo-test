@@ -5340,8 +5340,8 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
         if let Some(c) = collector.as_mut() {
             c.start(context);
         }
-        // process.cwd(): the test's project root (nearest package.json outside node_modules) —
-        // some tests build absolute paths via `path.join(process.cwd(), 'node_modules/...')`.
+        // __cwd: the test's project root (nearest package.json outside node_modules), the
+        // runner's internal base (process.cwd() is the process's working directory, #54).
         {
             let mut root = entry_abs.parent();
             let mut found: Option<&Path> = None;
@@ -5534,7 +5534,7 @@ fn run_test_file_reused(
             }
         }
 
-        // process.cwd(): the test's project root (nearest package.json outside node_modules).
+        // __cwd: the test's project root (nearest package.json outside node_modules).
         {
             let mut root = entry_abs.parent();
             let mut found: Option<&Path> = None;
