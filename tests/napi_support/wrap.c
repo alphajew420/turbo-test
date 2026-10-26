@@ -208,8 +208,9 @@ napi_value napi_register_module_v1(napi_env env, napi_value exports) {
         napi_create_function(env, FNS[i].name, NAPI_AUTO_LENGTH, FNS[i].cb, NULL, &f);
         napi_set_named_property(env, exports, FNS[i].name, f);
     }
-    /* the host's napi_define_class takes no property descriptors yet: put the method on the
-     * prototype by hand */
+    /* the method goes on the prototype by hand (napi_create_function: no receiver signature, so
+     * calling it on another object reaches napi_unwrap); objectwrap.c defines a class from
+     * property descriptors */
     napi_value cls, proto, inc;
     napi_define_class(env, "Counter", NAPI_AUTO_LENGTH, counter_ctor, NULL, 0, NULL, &cls);
     napi_get_named_property(env, cls, "prototype", &proto);

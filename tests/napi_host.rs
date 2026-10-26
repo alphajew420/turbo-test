@@ -115,6 +115,18 @@ fn objects_wrap_native_pointers() {
     assert_eq!(j["numPassedTests"], 5, "{}", r.all());
 }
 
+/// A node-addon-api-style ObjectWrap class: napi_define_class builds the prototype (instance
+/// methods with the class as their signature, accessors, values) and the static members from its
+/// property descriptors, with Node's attributes; napi_get_new_target tells `new` from a call;
+/// napi_define_properties defines the same descriptors on any object.
+#[test]
+fn define_class_builds_an_object_wrap_class() {
+    let p = project("napi-objectwrap");
+    compile_addon(&p, "objectwrap");
+    p.file("objectwrap.test.ts", spec("objectwrap.test.ts"));
+    assert_all_pass(&p, 9);
+}
+
 /// Objects still wrapped when the addon's env is torn down (the file's isolate is disposed) have
 /// their finalizers run then, newest first, as Node does at exit: references can still be
 /// deleted, JS cannot run (napi_pending_exception).

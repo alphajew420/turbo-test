@@ -4,7 +4,9 @@
 //! This is what Node/Deno/Bun each provide; here it is scoped to the surface turbo-dom's
 //! parser addon needs (enumerated from `nm -u` on the .node):
 //!   value/object/string/number, arrays, functions + cb_info, arraybuffer/typedarray,
-//!   errors/exceptions, references, napi_wrap / unwrap / remove_wrap, threadsafe-fn (stubbed).
+//!   errors/exceptions, references, napi_wrap / unwrap / remove_wrap, classes and property
+//!   descriptors (napi_define_class / napi_define_properties / napi_get_new_target, what
+//!   node-addon-api's ObjectWrap builds on), threadsafe-fn (stubbed).
 //!
 //! Bridge: `napi_value` IS a `v8::Local<Value>` (Local is `NonNull<T>` — pointer-sized),
 //! so they transmute. Handles are created in the scope stored on the env for the current
@@ -29,6 +31,7 @@ pub const napi_ok: napi_status = 0;
 pub const napi_invalid_arg: napi_status = 1;
 pub const napi_object_expected: napi_status = 2;
 pub const napi_string_expected: napi_status = 3;
+pub const napi_name_expected: napi_status = 4;
 pub const napi_number_expected: napi_status = 6;
 pub const napi_boolean_expected: napi_status = 7;
 pub const napi_array_expected: napi_status = 8;
@@ -41,6 +44,27 @@ pub type napi_ref = *mut c_void;
 pub type napi_callback_info = *mut CbInfo;
 pub type napi_callback = unsafe extern "C" fn(napi_env, napi_callback_info) -> napi_value;
 pub type napi_finalize = unsafe extern "C" fn(napi_env, *mut c_void, *mut c_void);
+
+/// napi_property_attributes bits.
+pub const napi_writable: i32 = 1;
+pub const napi_enumerable: i32 = 1 << 1;
+pub const napi_configurable: i32 = 1 << 2;
+pub const napi_static: i32 = 1 << 10;
+
+/// One property for napi_define_class / napi_define_properties: named by `utf8name`, else by
+/// the `name` value; a `method`, a `getter` / `setter` pair, or a plain `value`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct napi_property_descriptor {
+    pub utf8name: *const c_char,
+    pub name: napi_value,
+    pub method: Option<napi_callback>,
+    pub getter: Option<napi_callback>,
+    pub setter: Option<napi_callback>,
+    pub value: napi_value,
+    pub attributes: i32,
+    pub data: *mut c_void,
+}
 
 #[repr(i32)]
 pub enum napi_valuetype {
@@ -223,6 +247,8 @@ pub struct CbInfo {
     pub args: Vec<napi_value>,
     pub this: napi_value,
     pub data: *mut c_void,
+    /// `new.target` of a construct call, NULL for a plain call (napi_get_new_target).
+    pub new_target: napi_value,
 }
 
 // ---- value getters --------------------------------------------------------
@@ -512,10 +538,16 @@ fn napi_fn_trampoline(
     let argv: Vec<napi_value> = (0..args.length())
         .map(|i| unsafe { to_napi(args.get(i)) })
         .collect();
+    let new_target = if args.is_construct_call() {
+        unsafe { to_napi(args.new_target()) }
+    } else {
+        std::ptr::null_mut()
+    };
     let mut info = CbInfo {
         args: argv,
         this: unsafe { to_napi(args.this().into()) },
         data,
+        new_target,
     };
     // Point the env at this call's scope for the callback's duration and restore it after: a
     // nested call (the addon calling JS that calls the addon again) must not leave the outer
@@ -600,13 +632,7 @@ pub unsafe extern "C" fn napi_create_function(
     out: *mut napi_value,
 ) -> napi_status {
     js_call(env, |s| {
-        let record = Box::into_raw(Box::new(Callback { env, cb, data }));
-        (*env).fns.push(record);
-        let data_val = v8::External::new(s, record as *mut c_void);
-        let tmpl = v8::FunctionTemplate::builder(napi_fn_trampoline)
-            .data(data_val.into())
-            .build(s);
-        let f = tmpl.get_function(s).ok_or(napi_generic_failure)?;
+        let f = new_function(s, env, cb, data)?;
         // as Node: a non-NULL name becomes the function's `name` (a name V8 cannot hold is
         // napi_generic_failure)
         if !name.is_null() {
@@ -618,6 +644,51 @@ pub unsafe extern "C" fn napi_create_function(
         put(out, f.into());
         Ok(())
     })
+}
+
+/// A function template dispatching to the addon callback `cb` with `data` (its `Callback`
+/// record is owned by the env), optionally with a receiver `signature` — Node's
+/// FunctionCallbackWrapper::NewTemplate.
+unsafe fn callback_template<'s>(
+    s: &mut v8::PinScope<'s, 'static>,
+    env: napi_env,
+    cb: napi_callback,
+    data: *mut c_void,
+    signature: Option<v8::Local<'s, v8::Signature>>,
+) -> v8::Local<'s, v8::FunctionTemplate> {
+    let record = Box::into_raw(Box::new(Callback { env, cb, data }));
+    (*env).fns.push(record);
+    let data_val = v8::External::new(s, record as *mut c_void);
+    let builder = v8::FunctionTemplate::builder(napi_fn_trampoline).data(data_val.into());
+    match signature {
+        Some(sig) => builder.signature(sig).build(s),
+        None => builder.build(s),
+    }
+}
+
+/// An unnamed function dispatching to `cb` (Node's FunctionCallbackWrapper::NewFunction).
+unsafe fn new_function<'s>(
+    s: &mut v8::PinScope<'s, 'static>,
+    env: napi_env,
+    cb: napi_callback,
+    data: *mut c_void,
+) -> Result<v8::Local<'s, v8::Function>, napi_status> {
+    let tmpl = callback_template(s, env, cb, data, None);
+    tmpl.get_function(s).ok_or(napi_generic_failure)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_new_target(
+    _env: napi_env,
+    info: napi_callback_info,
+    result: *mut napi_value,
+) -> napi_status {
+    // as Node: both arguments are required; a plain (non-construct) call gives NULL
+    if info.is_null() || result.is_null() {
+        return napi_invalid_arg;
+    }
+    *result = (*info).new_target;
+    napi_ok
 }
 
 #[no_mangle]
@@ -1364,20 +1435,193 @@ pub unsafe extern "C" fn napi_stub() -> napi_status {
     napi_generic_failure
 }
 
-/// define_class → treat the constructor as a plain function (prototype methods skipped;
-/// sufficient for addons whose exercised exports are functions, e.g. the parser).
+// ---- classes and property descriptors -----------------------------------------
+
+/// The key a descriptor names, as Node's V8NameFromPropertyDescriptor: `utf8name`, else the
+/// `name` value, which must be a string or a symbol (napi_name_expected).
+unsafe fn property_name(
+    s: &mut v8::PinScope<'static, 'static>,
+    p: &napi_property_descriptor,
+) -> Result<v8::Local<'static, v8::Name>, napi_status> {
+    if !p.utf8name.is_null() {
+        let bytes = std::ffi::CStr::from_ptr(p.utf8name).to_bytes();
+        let name = v8::String::new_from_utf8(s, bytes, v8::NewStringType::Internalized)
+            .ok_or(napi_generic_failure)?;
+        return Ok(name.into());
+    }
+    if p.name.is_null() {
+        return Err(napi_name_expected);
+    }
+    to_local(p.name).try_into().map_err(|_| napi_name_expected)
+}
+
+/// The template attributes of a prototype member, as Node's V8PropertyAttributesFromDescriptor:
+/// a data member without napi_writable is read-only; no napi_enumerable is DontEnum, no
+/// napi_configurable DontDelete.
+fn template_attributes(p: &napi_property_descriptor) -> v8::PropertyAttribute {
+    let mut attr = v8::PropertyAttribute::NONE;
+    if p.getter.is_none() && p.setter.is_none() && p.attributes & napi_writable == 0 {
+        attr = attr | v8::PropertyAttribute::READ_ONLY;
+    }
+    if p.attributes & napi_enumerable == 0 {
+        attr = attr | v8::PropertyAttribute::DONT_ENUM;
+    }
+    if p.attributes & napi_configurable == 0 {
+        attr = attr | v8::PropertyAttribute::DONT_DELETE;
+    }
+    attr
+}
+
+/// The descriptors behind a `(count, properties)` argument pair: properties are required for a
+/// count above 0 (napi_invalid_arg).
+unsafe fn descriptors<'a>(
+    count: usize,
+    properties: *const napi_property_descriptor,
+) -> Result<&'a [napi_property_descriptor], napi_status> {
+    if count == 0 {
+        return Ok(&[]);
+    }
+    if properties.is_null() {
+        return Err(napi_invalid_arg);
+    }
+    Ok(std::slice::from_raw_parts(properties, count))
+}
+
+/// napi_define_class, as Node: a constructor function named `name` whose prototype carries the
+/// instance members (methods with the class as their receiver signature, accessors, values) of
+/// the descriptors; the napi_static ones are then defined on the constructor like
+/// napi_define_properties (the class is handed back even when one of those fails).
 #[no_mangle]
+#[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn napi_define_class(
     env: napi_env,
     name: *const c_char,
     len: usize,
-    ctor: napi_callback,
+    ctor: Option<napi_callback>,
     data: *mut c_void,
-    _property_count: usize,
-    _properties: *const c_void,
+    property_count: usize,
+    properties: *const napi_property_descriptor,
     out: *mut napi_value,
 ) -> napi_status {
-    napi_create_function(env, name, len, ctor, data, out)
+    js_call(env, |s| {
+        if out.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let ctor = ctor.ok_or(napi_invalid_arg)?;
+        let props = descriptors(property_count, properties)?;
+        // as Node's CHECK_NEW_FROM_UTF8_LEN: the class name is required
+        if name.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let tpl = callback_template(s, env, ctor, data, None);
+        let class_name =
+            v8::String::new_from_utf8(s, utf8_arg(name, len), v8::NewStringType::Internalized)
+                .ok_or(napi_generic_failure)?;
+        tpl.set_class_name(class_name);
+        let proto = tpl.prototype_template(s);
+        for p in props.iter().filter(|p| p.attributes & napi_static == 0) {
+            let key = property_name(s, p)?;
+            let attr = template_attributes(p);
+            if p.getter.is_some() || p.setter.is_some() {
+                let getter = p
+                    .getter
+                    .map(|cb| callback_template(s, env, cb, p.data, None));
+                let setter = p
+                    .setter
+                    .map(|cb| callback_template(s, env, cb, p.data, None));
+                proto.set_accessor_property(key, getter, setter, attr);
+            } else if let Some(method) = p.method {
+                let sig = v8::Signature::new(s, tpl);
+                let t = callback_template(s, env, method, p.data, Some(sig));
+                proto.set_with_attr(key, t.into(), attr);
+            } else {
+                // A template holds only primitives: V8 aborts the process on an object (Node
+                // crashes there); refuse it instead.
+                if p.value.is_null() || to_local(p.value).is_object() {
+                    return Err(napi_invalid_arg);
+                }
+                proto.set_with_attr(key, to_local(p.value).into(), attr);
+            }
+        }
+        let class = tpl.get_function(s).ok_or(napi_generic_failure)?;
+        put(out, class.into());
+        let statics: Vec<napi_property_descriptor> = props
+            .iter()
+            .filter(|p| p.attributes & napi_static != 0)
+            .copied()
+            .collect();
+        define_properties(s, env, class.into(), &statics)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_define_properties(
+    env: napi_env,
+    object: napi_value,
+    property_count: usize,
+    properties: *const napi_property_descriptor,
+) -> napi_status {
+    js_call(env, |s| {
+        let props = descriptors(property_count, properties)?;
+        if object.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let obj = to_object(s, object)?;
+        define_properties(s, env, obj, props)
+    })
+}
+
+/// Define `props` on `obj`, as Node's napi_define_properties: an accessor pair or a method
+/// becomes a new function per property (no signature, no name); a data property with all three
+/// attributes takes the CreateDataProperty fast path. A definition V8 refuses is
+/// napi_invalid_arg (napi_generic_failure for a method).
+unsafe fn define_properties(
+    s: &mut v8::PinScope<'static, 'static>,
+    env: napi_env,
+    obj: v8::Local<'static, v8::Object>,
+    props: &[napi_property_descriptor],
+) -> NapiResult {
+    for p in props {
+        let key = property_name(s, p)?;
+        let enumerable = p.attributes & napi_enumerable != 0;
+        let configurable = p.attributes & napi_configurable != 0;
+        let writable = p.attributes & napi_writable != 0;
+        let (mut desc, refused) = if p.getter.is_some() || p.setter.is_some() {
+            let undefined: v8::Local<v8::Value> = v8::undefined(s).into();
+            let mut accessor = |cb: Option<napi_callback>| match cb {
+                Some(cb) => new_function(s, env, cb, p.data).map(Into::into),
+                None => Ok(undefined),
+            };
+            let (get, set) = (accessor(p.getter)?, accessor(p.setter)?);
+            (
+                v8::PropertyDescriptor::new_from_get_set(get, set),
+                napi_invalid_arg,
+            )
+        } else if let Some(method) = p.method {
+            let f = new_function(s, env, method, p.data)?;
+            let desc = v8::PropertyDescriptor::new_from_value_writable(f.into(), writable);
+            (desc, napi_generic_failure)
+        } else {
+            if p.value.is_null() {
+                return Err(napi_invalid_arg);
+            }
+            let value = to_local(p.value);
+            if enumerable && writable && configurable {
+                if obj.create_data_property(s, key, value) != Some(true) {
+                    return Err(napi_invalid_arg);
+                }
+                continue;
+            }
+            let desc = v8::PropertyDescriptor::new_from_value_writable(value, writable);
+            (desc, napi_invalid_arg)
+        };
+        desc.set_enumerable(enumerable);
+        desc.set_configurable(configurable);
+        if obj.define_property(s, key, &desc) != Some(true) {
+            return Err(refused);
+        }
+    }
+    Ok(())
 }
 
 // threadsafe-function family: napi-rs creates a GC-finalizer tsfn at module init, so
