@@ -63,3 +63,11 @@ comma only — commas inside `{ts,tsx}` are NOT split (v0.2.7 fix; the canonical
 `src/**/*.{ts,tsx}` is forwarded comma-joined and was being torn into malformed globs).
 Under `--coverage`, 0 instrumented files is a hard FAIL (non-zero exit), never a vacuous 0/0
 green — guards against a misconfigured include silently covering nothing.
+Mapping V8 ranges back through esbuild's inline map (src/coverage.rs) must respect three things
+(turbo-test#34; expected values = vitest's v8 provider, checked against node's V8):
+the ESM->CJS interop prologue (export getters + `module.exports = __toCommonJS(...)`) maps to
+(0, 0) and is NOT source code (no FN/DA/ranges on line 1 from it); top-level code is counted
+only by the module-wide ranges, which open on the wrapper line and close past the map comment
+(clamped to the source start/end); and segments often begin with blank columns (indentation,
+the space before a token) — skip that lead-in before applying the 1:1 column delta, and credit
+a line whose first segment is blank only with the count of the token it points back to.

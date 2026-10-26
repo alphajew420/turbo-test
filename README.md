@@ -269,8 +269,10 @@ near-free — but it measures compiled bytecode mapped back through source maps,
 instruments the source AST directly. At the **line** level the two are comparable (our esbuild maps
 are clean). For **branches**, turbo-test pairs oxc decision points with V8 block counts for real
 per-arm data — including braceless early-return `if (c) return x;` (the implicit-else arm is
-derived from the block/continuation counts, not stuck at 0). Istanbul still resolves a few exotic
-shapes more finely; if you need that exhaustive gate, keep an Istanbul/vitest job alongside.
+derived from the block/continuation counts, not stuck at 0). Top-level module code is counted
+(statements and branches), esbuild's ESM export getters are not reported as functions, and lines of
+switch cases that never ran read 0. Istanbul still resolves a few exotic shapes more finely; if you
+need that exhaustive gate, keep an Istanbul/vitest job alongside.
 
 ## CLI
 
