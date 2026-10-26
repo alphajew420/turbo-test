@@ -30,3 +30,10 @@ test('a shared library without napi_register_module_v1 is rejected', () => {
 test('a file that fails to dlopen is rejected', () => {
   expect(() => require('./garbage.node')).toThrow(/^native addon \/.*\/garbage\.node: dlopen /);
 });
+
+// Module init runs under the host's addon lock; this nested init is a same-thread re-entry and
+// must not deadlock. (Host-only: Node hangs here, its dlopen mutex is held across module init.)
+test("require() of a .node from inside another addon's module init", () => {
+  (globalThis as any).loadNested = () => require('./second.node');
+  expect(require('./init_nested.node').nested.who()).toBe('second');
+});

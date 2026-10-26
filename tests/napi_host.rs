@@ -2,10 +2,11 @@
 //! `require()`d from specs run by the real CLI, and the specs assert what every implemented
 //! `napi_*` entrypoint produced (values, statuses, thrown errors, pending exceptions), plus the
 //! module-init paths (exports vs returned value, throwing init, unsupported entrypoint, missing
-//! init symbol, a file that fails to dlopen), re-entrant callbacks and several addons loaded
-//! side by side. The expected values are Node-API's: the same specs pass against Node 26 with
-//! the same fixtures, except for host-only behaviour (unsupported napi_wrap etc., reference ids,
-//! cases where Node aborts).
+//! init symbol, a file that fails to dlopen, a nested require() during init, init serialized
+//! across workers), re-entrant callbacks and several addons loaded side by side. The expected
+//! values are Node-API's: the same specs pass against Node 26 with the same fixtures, except for
+//! host-only behaviour (unsupported napi_wrap etc., reference ids, cases where Node aborts or
+//! deadlocks).
 #![cfg(unix)]
 
 mod common;
@@ -50,12 +51,33 @@ fn strings_over_v8_max_length_fail_cleanly() {
 #[test]
 fn module_init_outcomes() {
     let p = project("napi-init");
-    for stem in ["init_custom", "init_throw", "init_wrap", "noreg"] {
+    for stem in [
+        "init_custom",
+        "init_throw",
+        "init_wrap",
+        "noreg",
+        "init_nested",
+        "second",
+    ] {
         compile_addon(&p, stem);
     }
     p.file("garbage.node", "this is not a shared library\n");
     p.file("init.test.ts", spec("init.test.ts"));
-    assert_all_pass(&p, 5);
+    assert_all_pass(&p, 6);
+}
+
+/// Two workers require() the same addon at about the same time: its module init runs under the
+/// addon lock like every other entry into addon code, one thread at a time.
+#[test]
+fn module_init_is_serialized_across_workers() {
+    let p = project("napi-init-lock");
+    compile_addon(&p, "init_lock");
+    p.file("a.test.ts", spec("init_lock.test.ts"));
+    p.file("b.test.ts", spec("init_lock.test.ts"));
+    let r = turbo_test(&p.dir, &["--reporter", "json"], &[("TURBO_JOBS", "2")]);
+    let j = json_report(&r);
+    assert_eq!(j["numFailedTests"], 0, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 2, "{}", r.all());
 }
 
 #[test]

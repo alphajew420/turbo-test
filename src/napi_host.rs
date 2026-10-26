@@ -480,15 +480,9 @@ fn napi_fn_trampoline(
     // race (intermittent "document is not defined" / load flakiness). Serialize native addon
     // entry across threads with a global lock; a thread-local guard allows same-thread
     // re-entry (the addon calling a JS callback that re-enters) without self-deadlock.
-    let (reentrant, _guard) = enter_addon();
     // Calling the addon's native callback crosses the FFI boundary. A panic there is UB and
-    // can crash the process; catch_unwind converts it into a thrown JS error instead.
-    let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-        cb(env_ptr, &mut info as *mut CbInfo)
-    }));
-    if !reentrant {
-        IN_ADDON.with(|f| f.set(false));
-    }
+    // can crash the process; call_addon converts it into a thrown JS error instead.
+    let ret = call_addon(|| unsafe { cb(env_ptr, &mut info as *mut CbInfo) });
     unsafe { (*env_ptr).scope = outer };
     // As Node's CallIntoModule: an exception the callback left pending is thrown to its caller.
     if let Some(exc) = unsafe { (*env_ptr).last_exception.take() } {
@@ -512,6 +506,17 @@ fn enter_addon() -> (bool, Option<std::sync::MutexGuard<'static, ()>>) {
         Some(ADDON_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
     };
     (reentrant, guard)
+}
+
+/// Run native addon code (a callback, a module init) under `enter_addon`, catching a Rust panic
+/// out of it (one crossing the `extern "C"` boundary is UB) as an `Err`.
+fn call_addon<R>(f: impl FnOnce() -> R) -> std::thread::Result<R> {
+    let (reentrant, _guard) = enter_addon();
+    let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    if !reentrant {
+        IN_ADDON.with(|f| f.set(false));
+    }
+    ret
 }
 
 /// The JS-visible outcome of a native callback: a non-null `napi_value` is the return value,
@@ -1292,13 +1297,14 @@ pub fn load_addon(
         // The addon's module init runs arbitrary native code. Guard it two ways:
         //  - A JS exception it leaves pending (napi_throw_*, an unsupported N-API call we route
         //    through throw_unsupported, a throwing JS call) surfaces as a clean require() failure.
-        //  - catch_unwind turns a Rust panic crossing the `extern "C"` FFI boundary (which is UB
+        //  - call_addon turns a Rust panic crossing the `extern "C"` FFI boundary (which is UB
         //    and can abort/segfault, taking the whole run down with no diagnostic) into a
         //    recoverable Err -> a thrown JS error in the loader. The rest of the run survives.
+        // call_addon also holds the addon lock, as for every other entry into addon code: two
+        // workers loading the same library must not run its init at once (a require() from
+        // inside a native callback or another addon's init is a same-thread re-entry).
         let exports_napi = to_napi(exports.into());
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            register(env_ptr, exports_napi)
-        }));
+        let result = call_addon(|| register(env_ptr, exports_napi));
         let result = init_outcome(result, path)?;
         if let Some(exc) = (*env_ptr).last_exception.take() {
             let msg = v8::Local::new(scope_ref, &exc).to_rust_string_lossy(scope_ref);
