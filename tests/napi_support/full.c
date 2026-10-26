@@ -459,6 +459,25 @@ static napi_value f_throw_err(napi_env env, napi_callback_info info) {
     return NULL;
 }
 
+/* throwErrCode(code, msg): napi_throw_error with a code. */
+static napi_value f_throw_err_code(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    char *c = cstr(env, arg(env, &a, 0));
+    char *m = cstr(env, arg(env, &a, 1));
+    ST(napi_throw_error(env, c, m));
+    free(c);
+    free(m);
+    return NULL;
+}
+
+/* createErrCode(code, msg): napi_create_error with a code value (any JS value). */
+static napi_value f_create_err_code(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value out = NULL;
+    ST(napi_create_error(env, arg(env, &a, 0), arg(env, &a, 1), &out));
+    return or_undef(env, out);
+}
+
 static napi_value f_create_err(napi_env env, napi_callback_info info) {
     Args a = args(env, info);
     napi_value out = NULL;
@@ -712,7 +731,9 @@ static const struct {
     {"newInstance", f_new_instance},
     {"throwVal", f_throw_val},
     {"throwErr", f_throw_err},
+    {"throwErrCode", f_throw_err_code},
     {"createErr", f_create_err},
+    {"createErrCode", f_create_err_code},
     {"isError", f_is_error},
     {"pending", f_pending},
     {"throwPending", f_throw_pending},

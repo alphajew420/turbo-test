@@ -125,10 +125,7 @@ type NapiResult = Result<(), napi_status>;
 
 /// Run `f` the way Node runs a napi call that can execute JS (`NAPI_PREAMBLE` plus its
 /// `v8impl::TryCatch`): while an exception is pending it returns `napi_pending_exception`
-/// without running `f`; a JS exception thrown inside `f` is caught and parked on the env as
-/// its pending exception. `napi_is_exception_pending` / `napi_get_and_clear_last_exception`
-/// see it, and the trampoline (or the module loader) throws it to JS when the addon returns
-/// to its caller. A termination is not caught: it keeps unwinding.
+/// without running `f`; otherwise it runs `f` under `catching`.
 unsafe fn js_call(
     env: napi_env,
     f: impl FnOnce(&mut v8::PinScope<'static, 'static>) -> NapiResult,
@@ -136,6 +133,17 @@ unsafe fn js_call(
     if (*env).last_exception.is_some() {
         return napi_pending_exception;
     }
+    catching(env, f)
+}
+
+/// Run `f` in a TryCatch: a JS exception thrown inside it is caught and parked on the env as
+/// its pending exception. `napi_is_exception_pending` / `napi_get_and_clear_last_exception`
+/// see it, and the trampoline (or the module loader) throws it to JS when the addon returns
+/// to its caller. A termination is not caught: it keeps unwinding.
+unsafe fn catching(
+    env: napi_env,
+    f: impl FnOnce(&mut v8::PinScope<'static, 'static>) -> NapiResult,
+) -> napi_status {
     let tc = std::pin::pin!(v8::TryCatch::new(scope(env)));
     let tc = &mut tc.init();
     let result = f(tc);
@@ -997,13 +1005,18 @@ pub unsafe extern "C" fn napi_throw(env: napi_env, error: napi_value) -> napi_st
 #[no_mangle]
 pub unsafe extern "C" fn napi_throw_error(
     env: napi_env,
-    _code: *const c_char,
+    code: *const c_char,
     msg: *const c_char,
 ) -> napi_status {
     js_call(env, |s| {
         let m = std::ffi::CStr::from_ptr(msg).to_string_lossy();
         let ms = v8::String::new(s, &m).unwrap();
         let exc = v8::Exception::error(s, ms);
+        if !code.is_null() {
+            let code = std::ffi::CStr::from_ptr(code).to_string_lossy();
+            let code = v8::String::new(s, &code).ok_or(napi_generic_failure)?;
+            set_error_code(s, exc, code)?;
+        }
         s.throw_exception(exc);
         Ok(())
     })
@@ -1011,18 +1024,38 @@ pub unsafe extern "C" fn napi_throw_error(
 #[no_mangle]
 pub unsafe extern "C" fn napi_create_error(
     env: napi_env,
-    _code: napi_value,
+    code: napi_value,
     msg: napi_value,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let ms: v8::Local<v8::String> = match to_local(msg).try_into() {
-        Ok(m) => m,
-        Err(_) => return napi_string_expected,
-    };
-    let exc = v8::Exception::error(s, ms);
-    put(out, exc);
-    napi_ok
+    // No NAPI_PREAMBLE in Node, but setting `code` can run JS (a setter): park what it throws.
+    catching(env, |s| {
+        let ms: v8::Local<v8::String> =
+            to_local(msg).try_into().map_err(|_| napi_string_expected)?;
+        let exc = v8::Exception::error(s, ms);
+        if !code.is_null() {
+            let code: v8::Local<v8::String> = to_local(code)
+                .try_into()
+                .map_err(|_| napi_string_expected)?;
+            set_error_code(s, exc, code)?;
+        }
+        put(out, exc);
+        Ok(())
+    })
+}
+
+/// `err.code = code`, as Node's set_error_code for napi_throw_error / napi_create_error: a
+/// failed (throwing) Set is napi_generic_failure.
+unsafe fn set_error_code(
+    s: &mut v8::PinScope<'static, 'static>,
+    err: v8::Local<v8::Value>,
+    code: v8::Local<v8::String>,
+) -> NapiResult {
+    let err: v8::Local<v8::Object> = err.try_into().map_err(|_| napi_generic_failure)?;
+    let key = v8::String::new(s, "code").ok_or(napi_generic_failure)?;
+    err.set(s, key.into(), code.into())
+        .ok_or(napi_generic_failure)?;
+    Ok(())
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_is_error(

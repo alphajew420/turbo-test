@@ -481,6 +481,52 @@ describe('errors and exceptions', () => {
     expect(a.status()).toBe(OK);
   });
 
+  test('napi_throw_error / napi_create_error set err.code', () => {
+    let caught: any;
+    try {
+      a.throwErrCode('ERR_NATIVE', 'with code');
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.message).toBe('with code');
+    expect(caught.code).toBe('ERR_NATIVE');
+    expect(a.status()).toBe(OK);
+    try {
+      a.throwErr('no code');
+    } catch (e) {
+      caught = e;
+    }
+    expect('code' in caught).toBe(false); // a NULL code sets none
+    const made = a.createErrCode('ERR_MADE', 'made');
+    expect(a.status()).toBe(OK);
+    expect(made).toBeInstanceOf(Error);
+    expect([made.message, made.code]).toEqual(['made', 'ERR_MADE']);
+    expect('code' in a.createErr('plain')).toBe(false);
+    // a code value must be a string
+    for (const code of [5, undefined, null, new String('boxed')]) {
+      expect(a.createErrCode(code, 'm')).toBe(undefined);
+      expect(a.status()).toBe(STRING_EXPECTED);
+    }
+  });
+
+  test('a code that cannot be set is napi_generic_failure', () => {
+    Object.defineProperty(Error.prototype, 'code', {
+      set() {
+        throw new Error('code setter threw');
+      },
+      configurable: true,
+    });
+    try {
+      expect(() => a.createErrCode('ERR_X', 'm')).toThrow('code setter threw');
+      expect(a.status()).toBe(GENERIC_FAILURE);
+      expect(() => a.throwErrCode('ERR_X', 'm')).toThrow('code setter threw');
+      expect(a.status()).toBe(GENERIC_FAILURE);
+    } finally {
+      delete (Error.prototype as any).code;
+    }
+  });
+
   test('napi_create_error / napi_is_error', () => {
     const e = a.createErr('made');
     expect(a.status()).toBe(OK);
