@@ -539,6 +539,62 @@ fn interop_prologue_lines_are_not_source_line_1() {
     );
 }
 
+/// turbo-test#34's thr.js and the code part of esbuild's output for it, with esbuild's own
+/// mappings: the indented line starts its first segment on the indentation, and the `throw`
+/// segment starts on the space before the keyword (gen col 8 → source col 9).
+const THR_SRC: &str = "export function g(c) {\n  if (c) throw new Error('x');\n  return 1;\n}\n";
+const THR_GEN: &str = "function g(c) {\n  if (c) throw new Error(\"x\");\n  return 1;\n}";
+const THR_MAP: &str = "AAAO,SAAS,EAAE,GAAG;AACnB,MAAI,EAAG,OAAM,IAAI,MAAM,GAAG;AAC1B,SAAO;AACT";
+
+#[test]
+fn gen_to_orig_skips_a_segments_blank_lead_in() {
+    let p = vpath("thr-lead.js");
+    let w = inline_wrapped(THR_GEN, &format!("{{\"mappings\":\"{THR_MAP}\"}}"));
+    register_meta(&p, &w, THR_SRC);
+    let meta = meta_for(&p).unwrap();
+    let line1 = at(THR_GEN, "  if", 0);
+    assert_eq!(gen_to_orig(&meta, line1), Some((1, 2))); // indentation: the segment's own start
+    assert_eq!(gen_to_orig(&meta, line1 + 1), Some((1, 2)));
+    assert_eq!(gen_to_orig(&meta, line1 + 2), Some((1, 2))); // `if`
+    assert_eq!(gen_to_orig(&meta, line1 + 3), Some((1, 3)));
+    assert_eq!(gen_to_orig(&meta, line1 + 9), Some((1, 9))); // `throw` (was col 10)
+    assert_eq!(gen_to_orig(&meta, line1 + 12), Some((1, 12)));
+    assert_eq!(gen_to_orig(&meta, line1 + 15), Some((1, 15))); // `new`: next segment, no lead
+                                                               // a lead-in whose source position is itself blank is a real (identity) run: no skipping
+    let q = vpath("blank-source-lead.js");
+    let src = "a  =  1;";
+    register_meta(
+        &q,
+        &inline_wrapped(src, "{\"mappings\":\"AAAA,CAAC\"}"),
+        src,
+    );
+    let qm = meta_for(&q).unwrap();
+    assert_eq!(gen_to_orig(&qm, WRAP.len() + 3), Some((0, 3)));
+}
+
+#[test]
+fn braceless_consequent_statement_takes_its_own_range() {
+    let p = vpath("thr-statements.js");
+    let w = inline_wrapped(THR_GEN, &format!("{{\"mappings\":\"{THR_MAP}\"}}"));
+    register_meta(&p, &w, THR_SRC);
+    // V8's ranges for g(false): the function, and the never-run `throw` (it starts AT the keyword)
+    let ranges = vec![
+        (at(THR_GEN, "function", 0), WRAP.len() + THR_GEN.len(), 1),
+        (at(THR_GEN, "throw", 0), at(THR_GEN, "\n  return", 0), 0),
+    ];
+    map_statements(&p, &ranges);
+    // if (2), throw (2), return 1 (3)
+    assert_eq!(
+        stmts_of(&p),
+        BTreeMap::from([(0, (2, 1)), (1, (2, 0)), (2, (3, 1))])
+    );
+    map_branches(&p, &ranges);
+    assert_eq!(
+        brs_of(&p),
+        BTreeMap::from([((0, 0), (2, true, 0)), ((0, 1), (2, true, 1))])
+    );
+}
+
 // ---- mapping V8 ranges onto lines / functions / branches / statements -----------------------
 
 #[test]
@@ -634,7 +690,7 @@ fn map_branches_implicit_else_derives_counts_from_sub_ranges() {
     let ranges_for = |consequent: Option<i64>, continuation: Option<i64>| {
         let mut r = vec![(at(src, "function", 0), WRAP.len() + src.len(), 5)];
         if let Some(c) = consequent {
-            // V8 starts the braceless consequent's range a column past the keyword
+            // a braceless consequent's range that maps a column past the keyword
             r.push((at(src, "return 1", 1), at(src, "return 1", 9), c));
         }
         if let Some(c) = continuation {

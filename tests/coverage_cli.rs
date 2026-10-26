@@ -853,3 +853,15 @@ fn top_level_statements_are_covered() {
         vec!["DA:1,1", "DA:2,1", "DA:3,1"]
     );
 }
+
+#[test]
+fn braceless_if_throw_that_never_fires_is_an_uncovered_statement() {
+    let (p, lcov, j) = issue34_run("cov-i34-throw");
+    let thr = p.path("thr.js");
+    // the `throw` never ran: 2/3, the same as the braced `if (c) { throw … }` gives
+    assert_eq!(summary_of(&j, &thr, "statements"), (2, 3));
+    assert_eq!(
+        lines_with(&lcov_record(&lcov, &thr), "BRDA:"),
+        vec!["BRDA:2,0,0,0", "BRDA:2,0,1,1"]
+    );
+}
