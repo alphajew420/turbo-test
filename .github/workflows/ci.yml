@@ -169,13 +169,43 @@ jobs:
           node_modules/.bin/tsc --version
           node_modules/.bin/esbuild --version
 
+  # ---- Release guard (tags only): no pre-publish patches, versions match the tag ----
+  # Pre-publish, Cargo.toml's [patch.crates-io] resolves the unreleased turbo-dom crates
+  # from git (RELEASING.md). A tag must build against the published registry crates, so
+  # the section must be gone and Cargo.lock must hold no git sources; Cargo.toml and
+  # package.json must both carry the tag's version. Both publish jobs depend on this.
+  release-guard:
+    name: release guard
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No [patch] section, no git sources, versions equal the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          fail=0
+          if grep -n '^\[patch' Cargo.toml; then
+            echo "::error::Cargo.toml still has a [patch] section (remove it before tagging: RELEASING.md)"; fail=1
+          fi
+          if grep -n '^source = "git+' Cargo.lock; then
+            echo "::error::Cargo.lock still resolves crates from git (re-lock from crates.io: RELEASING.md)"; fail=1
+          fi
+          cargo_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          npm_version=$(node -p "require('./package.json').version")
+          if [ "$cargo_version" != "$tag" ] || [ "$npm_version" != "$tag" ]; then
+            echo "::error::Cargo.toml $cargo_version / package.json $npm_version != tag $tag"; fail=1
+          fi
+          exit "$fail"
+
   # ---- Publish to npm on a version tag ----
   # One package containing every platform binary; cli.js picks the matching one at runtime
   # (linux x64 also detects musl vs glibc). Requires repo secret NPM_TOKEN (a Classic
   # Automation token allowed to publish the package).
   publish:
     name: publish
-    needs: [build]
+    needs: [build, release-guard]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -211,7 +241,7 @@ jobs:
   # cargo reads it from the environment natively.
   publish-crate:
     name: publish-crate
-    needs: [build]
+    needs: [build, release-guard]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
