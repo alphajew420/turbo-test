@@ -3657,6 +3657,52 @@ pub unsafe extern "C" fn napi_unref_threadsafe_function(
 /// The module init symbol exported by the addon.
 type RegisterFn = unsafe extern "C" fn(napi_env, napi_value) -> napi_value;
 
+/// dlopen the addon with every symbol bound now (RTLD_NOW), so an import the process does not
+/// provide fails the load instead of binding to NULL and crashing on its first call (macOS
+/// binds an unresolved flat-namespace import lazily, to address 0).
+#[cfg(unix)]
+unsafe fn open_library(path: &Path) -> Result<libloading::Library, libloading::Error> {
+    use libloading::os::unix::{Library, RTLD_LOCAL, RTLD_NOW};
+    Library::open(Some(path), RTLD_NOW | RTLD_LOCAL).map(Into::into)
+}
+#[cfg(not(unix))]
+unsafe fn open_library(path: &Path) -> Result<libloading::Library, libloading::Error> {
+    libloading::Library::new(path)
+}
+
+/// What the loader said (dlerror), which libloading keeps as the error's source.
+fn loader_message(e: &libloading::Error) -> String {
+    let source = std::error::Error::source(e);
+    source.map_or_else(|| e.to_string(), ToString::to_string)
+}
+
+/// The load error for a failed dlopen: an import the process does not provide is named (a
+/// Node-API one as missing from the host), anything else is the loader's message.
+fn dlopen_error(err: &str) -> String {
+    match missing_symbol(err) {
+        Some(sym) if sym.starts_with("napi_") || sym.starts_with("node_api_") => format!(
+            "it imports {sym}, which turbo-test's Node-API host does not provide (dlopen {err})"
+        ),
+        Some(sym) => format!("it imports {sym}, which nothing loaded provides (dlopen {err})"),
+        None => format!("dlopen {err}"),
+    }
+}
+
+/// The symbol a dlopen error says is missing, without the Mach-O leading underscore: macOS
+/// "symbol not found in flat namespace '_name'", glibc "undefined symbol: name", musl
+/// "Error relocating <file>: name: symbol not found".
+fn missing_symbol(err: &str) -> Option<&str> {
+    if let Some((_, rest)) = err.split_once("symbol not found in flat namespace '") {
+        let sym = rest.split('\'').next().unwrap_or(rest);
+        return Some(sym.strip_prefix('_').unwrap_or(sym));
+    }
+    if let Some((_, rest)) = err.split_once("undefined symbol: ") {
+        return rest.split([' ', ',', ')']).next();
+    }
+    let (head, _) = err.split_once(": symbol not found")?;
+    head.rsplit(": ").next()
+}
+
 /// Load a `.node` addon: dlopen, set up the env, call `napi_register_module_v1` with a
 /// fresh exports object, and return that object. Must be called inside a live scope.
 pub fn load_addon(
@@ -3664,10 +3710,10 @@ pub fn load_addon(
     path: &Path,
 ) -> Result<v8::Global<v8::Value>, String> {
     unsafe {
-        let lib = libloading::Library::new(path).map_err(|e| format!("dlopen {e}"))?;
+        let lib = open_library(path).map_err(|e| dlopen_error(&loader_message(&e)))?;
         let register: libloading::Symbol<RegisterFn> = lib
             .get(b"napi_register_module_v1")
-            .map_err(|e| format!("no napi_register_module_v1: {e}"))?;
+            .map_err(|e| format!("no napi_register_module_v1: {}", loader_message(&e)))?;
 
         let env_ptr: napi_env = Box::into_raw(Box::new(Env::new(scope_ref)));
         // The isolate owns the env from here on (freed with it, like the functions using it).

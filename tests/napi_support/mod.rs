@@ -25,6 +25,7 @@ pub fn c_source(stem: &str) -> &'static str {
         "refs" => include_str!("refs.c"),
         "second" => include_str!("second.c"),
         "typetag" => include_str!("typetag.c"),
+        "unknown" => include_str!("unknown.c"),
         "wrap" => include_str!("wrap.c"),
         _ => panic!("unknown napi fixture {stem}"),
     }

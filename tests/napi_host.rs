@@ -1,8 +1,8 @@
 //! The Node-API host (src/napi_host.rs) end to end: C addons compiled at test time are
 //! `require()`d from specs run by the real CLI, and the specs assert what every implemented
 //! `napi_*` entrypoint produced (values, statuses, thrown errors, pending exceptions), plus the
-//! module-init paths (exports vs returned value, throwing init, unsupported entrypoint, missing
-//! init symbol, a file that fails to dlopen, a nested require() during init, init serialized
+//! module-init paths (exports vs returned value, throwing init, unsupported entrypoint, an
+//! import the host does not provide, missing init symbol, a file that fails to dlopen, a nested require() during init, init serialized
 //! across workers), re-entrant callbacks, several addons loaded side by side, and napi_wrap with
 //! its finalizers (on collection and at env teardown). The expected
 //! values are Node-API's: the same specs pass against Node 26 with the same fixtures, except for
@@ -59,12 +59,13 @@ fn module_init_outcomes() {
         "noreg",
         "init_nested",
         "second",
+        "unknown",
     ] {
         compile_addon(&p, stem);
     }
     p.file("garbage.node", "this is not a shared library\n");
     p.file("init.test.ts", spec("init.test.ts"));
-    assert_all_pass(&p, 6);
+    assert_all_pass(&p, 7);
 }
 
 /// Two workers require() the same addon at about the same time: its module init runs under the

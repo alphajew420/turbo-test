@@ -21,6 +21,14 @@ test('an unsupported entrypoint called during init is a catchable require() erro
   );
 });
 
+test('an addon importing a Node-API function the host does not provide fails require()', () => {
+  expect(() => require('./unknown.node')).toThrow(
+    /^native addon \/.*\/unknown\.node: it imports napi_turbo_test_unknown_entrypoint, which turbo-test's Node-API host does not provide \(dlopen .*napi_turbo_test_unknown_entrypoint/,
+  );
+  // the run goes on: other addons still load
+  expect(require('./second.node').who()).toBe('second');
+});
+
 test('a shared library without napi_register_module_v1 is rejected', () => {
   expect(() => require('./noreg.node')).toThrow(
     /^native addon \/.*\/noreg\.node: no napi_register_module_v1: /,

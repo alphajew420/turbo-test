@@ -233,3 +233,30 @@ fn v8_giving_nothing_is_pending_exception_or_generic_failure() {
         }
     });
 }
+
+/// A dlopen failure names an import the process does not provide (the loaders' three message
+/// forms); any other failure keeps the loader's message.
+#[test]
+fn dlopen_errors_name_the_missing_import() {
+    let mac = "dlopen(/p/a.node, 0x0006): symbol not found in flat namespace '_napi_bogus'";
+    assert_eq!(missing_symbol(mac), Some("napi_bogus"));
+    assert_eq!(
+        dlopen_error(mac),
+        format!("it imports napi_bogus, which turbo-test's Node-API host does not provide (dlopen {mac})")
+    );
+    let glibc = "/p/a.node: undefined symbol: node_api_bogus";
+    assert_eq!(missing_symbol(glibc), Some("node_api_bogus"));
+    let musl = "Error relocating /p/a.node: uv_bogus: symbol not found";
+    assert_eq!(missing_symbol(musl), Some("uv_bogus"));
+    assert_eq!(
+        dlopen_error(musl),
+        format!("it imports uv_bogus, which nothing loaded provides (dlopen {musl})")
+    );
+    let other = "dlopen(/p/a.node, 0x0006): slice is not valid mach-o file";
+    assert_eq!(missing_symbol(other), None);
+    assert_eq!(dlopen_error(other), format!("dlopen {other}"));
+    assert_eq!(
+        missing_symbol("symbol not found in flat namespace '_x"),
+        Some("x")
+    );
+}
