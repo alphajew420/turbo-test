@@ -77,7 +77,7 @@ Three things still keep Node/npm in the loop:
 event-loop + timers, console/process shims, `vi.*`. It is already baked into the binary via
 `include_str!` (`runner.rs:3364`) and ships inside it — **it is not a Node dependency.**
 
-Could it become Rust? The `v8 = "149.3.0"` crate IS **rusty_v8** (Deno's bindings; crate renamed
+Could it become Rust? The `v8` crate (`turbo-surf-v8 =150.4.0`) IS **rusty_v8** (Deno's bindings; crate renamed
 `rusty_v8` → `v8`) — already our embedder. But rusty-v8 is the Rust↔V8 *FFI*; it lets Rust drive
 V8 and bind native functions, it does **not** make V8 run Rust (V8 executes JS/Wasm). So one
 *could* reimplement the harness as native `v8::FunctionTemplate` callbacks on `globalThis` (the

@@ -12,10 +12,13 @@ and unrelated dependency versions.
 
 ## Native dependency provenance
 
-The runner uses the reviewed `turbo-surf-v8` 149.3.0 distribution through its local
-`v8` alias. Its numeric version, library name and official upstream prebuilt SDK
-URLs remain unchanged. The fork retains the Rust weak-handle teardown fix;
-falling back to the unpatched `v8` registry package is not equivalent.
+The runner depends on the published registry crate `turbo-surf-v8 =150.4.0`
+(V8 15.0) through its local `v8` alias. It no longer links the vendored
+`vendor/rusty_v8` 149.3.0 tree. That tree, its scripts below and the workflows
+that check or publish it remain only until the turbo-dom consolidation removes
+them, and they describe the 149.3.0 fork, not the runner's current dependency.
+Like 149.3.0, published 150.4.0 does not carry the interceptor
+`ShouldThrowOnError` fix, so `tests/interceptor_should_throw.rs` stays ignored.
 
 ```sh
 python3 -B vendor/update-rusty-v8.py --check

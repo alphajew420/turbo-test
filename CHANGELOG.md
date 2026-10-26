@@ -5,6 +5,14 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+### Changed
+- V8: depend on the published registry crate `turbo-surf-v8 =150.4.0` (V8 15.0)
+  instead of the vendored `vendor/rusty_v8` 149.3.0 path crate, and move turbo-dom
+  0.5.7 -> 0.5.8. This is the first step of the turbo-dom consolidation, isolating
+  the engine/DOM bump from the later binding move. No source changes were needed.
+  Cargo, npm and fixtures/compat results are identical per test to 0.4.8. The
+  vendored tree and its tooling stay until the consolidation removes them.
+
 ### Release procedure
 
 - Determine missing V8 dependency versions through the official registry API,

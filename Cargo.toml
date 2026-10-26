@@ -51,7 +51,7 @@ base64 = "0.22"
 # CSS Syntax, selector and declaration validation for the DOM's CSSOM facade.
 lightningcss = { version = "1.0.0-alpha.71", default-features = false }
 cssparser = "0.37"
-# Public native rtdom API only. The published0.5.7 release supplies custom
+# Public native rtdom API only. The published 0.5.8 release supplies custom
 # state selectors, bounded storage accounting and actual-context fragments.
 # Keep the existing turbo_dom_parser import name through the package alias.
 turbo-dom-parser = { package = "turbo-dom", version = "0.5.8" }

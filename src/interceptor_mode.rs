@@ -6,8 +6,8 @@
 //! forms). Published Rusty V8 (149.3/150.4) answers
 //! `PropertyCallbackArguments::should_throw_on_error` through a
 //! `PropertyCallbackInfo<Value>` instantiation, which V8 folds to `false`.
-//! turbo-test's vendored Rusty V8 carries the fix; turbo-surf links the
-//! published 150.4 package, so the binding reads the frame itself, exactly as
+//! turbo-test and turbo-surf both link the published 150.4 package, which
+//! lacks the fix, so the binding reads the frame itself, exactly as
 //! V8's inline `PropertyCallbackInfo<void>::ShouldThrowOnError` does.
 
 extern "C" {
