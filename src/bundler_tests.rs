@@ -12,9 +12,7 @@ fn pkg(name: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir()
         .join("turbo-test-bundler-ut")
         .join(format!("{name}-{}-{n}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
+    let _ = std::fs::remove_dir_all(&dir); // stale dir from a recycled pid
     for (rel, src) in files {
         let p = dir.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();

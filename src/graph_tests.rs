@@ -12,9 +12,7 @@ fn project(name: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir()
         .join("turbo-test-graph-ut")
         .join(format!("{name}-{}-{n}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
+    let _ = std::fs::remove_dir_all(&dir); // stale dir from a recycled pid
     std::fs::create_dir_all(&dir).unwrap();
     for (rel, src) in files {
         let p = dir.join(rel);
