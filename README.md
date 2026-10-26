@@ -352,7 +352,7 @@ npm test                     # node --test test/*.mjs (CLI compat + tsc type che
 cargo tarpaulin              # line-coverage gate (tarpaulin.toml), fails below 99.98%
 ```
 
-The Rust crate is gated at **>= 99.98% line coverage** (6835/6836 lines; cargo-tarpaulin,
+The Rust crate is gated at **>= 99.98% line coverage** (8318/8319 lines; cargo-tarpaulin,
 Llvm engine; CI job `coverage`). Subprocess runs of the instrumented binaries are attributed through
 `tarpaulin.toml`'s `objects`; the `#[path]` unit-test modules are excluded from the figure.
 
