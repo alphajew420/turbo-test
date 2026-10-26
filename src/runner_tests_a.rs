@@ -184,11 +184,7 @@ fn nearest_pkg_type_reads_the_closest_package_json() {
 }
 
 #[test]
-fn kind_of_and_detect_kind() {
-    assert_eq!(kind_of(Path::new("/x/a.cjs")), Kind::Cjs);
-    assert_eq!(kind_of(Path::new("/x/a.js")), Kind::Esm);
-    assert_eq!(kind_of(Path::new("/x/noext")), Kind::Esm);
-
+fn detect_kind_by_extension_and_package_type() {
     let d = tmp("kind");
     assert_eq!(detect_kind(&d.join("a.cjs")), Kind::Cjs);
     for f in ["a.mjs", "a.mts", "a.ts", "a.tsx", "a.jsx"] {
@@ -517,20 +513,6 @@ fn project_root_and_tsc_root_find_their_markers() {
     let g = put(&lone, "x/y.ts", "");
     assert_eq!(project_root_uncached(&g), None);
     assert_eq!(tsc_root(&g), None);
-}
-
-#[test]
-fn mock_specifiers_collects_unique_literal_specs() {
-    let d = tmp("mockspecs");
-    let f = put(
-        &d,
-        "a.test.ts",
-        "vi.mock('./a', () => ({}));\nvi.doMock(\"b\");\njest.mock(`c`);\njest.doMock( './a');\nvi.mock(dynamic);\nvi.mock('unterminated",
-    );
-    assert_eq!(mock_specifiers(&f), vec!["./a", "b", "c"]);
-    assert!(mock_specifiers(&d.join("missing.ts")).is_empty());
-    let empty = put(&d, "e.ts", "vi.mock(");
-    assert!(mock_specifiers(&empty).is_empty());
 }
 
 #[test]
@@ -1217,24 +1199,6 @@ fn feature_switches_default_on() {
     // the unit-test process never sets TURBO_NO_MR / TURBO_NO_E12
     assert!(mr_enabled());
     assert!(e12_enabled());
-}
-
-#[test]
-fn is_react_family_cases() {
-    for s in [
-        "react",
-        "/p/node_modules/react",
-        "/p/node_modules/react/index.js",
-        "react-dom/client",
-        "react/jsx-runtime",
-        "scheduler",
-        "/p/node_modules/scheduler",
-    ] {
-        assert!(is_react_family(s), "{s}");
-    }
-    for s in ["preact", "reactive", "/p/node_modules/lodash/index.js"] {
-        assert!(!is_react_family(s), "{s}");
-    }
 }
 
 #[test]

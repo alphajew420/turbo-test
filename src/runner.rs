@@ -439,14 +439,6 @@ fn cjs_first_project_uncached(entry: &Path) -> bool {
     false
 }
 
-/// Kind by extension only (unambiguous extensions).
-fn kind_of(path: &Path) -> Kind {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("cjs") => Kind::Cjs,
-        _ => Kind::Esm,
-    }
-}
-
 /// Nearest package.json `"type"` for a file (Node's module-determination rule).
 fn nearest_pkg_type(path: &Path) -> Option<&'static str> {
     // E12: memoize keyed by the start dir (path.parent()). The nearest package.json "type" is a
@@ -876,34 +868,7 @@ fn tsc_root(file: &Path) -> Option<PathBuf> {
 /// load reliably instead of hand-rolling CJS/ESM interop across the whole dep tree. `vitest`
 /// is externalized (we provide it); CSS/assets get stub loaders. Returns the bundled path,
 /// or None to fall back to the native per-module loader. Cached by source path + mtime.
-/// Extract vi.mock("spec", ...) / vi.doMock(...) string-literal specifiers from a file.
-fn mock_specifiers(file: &Path) -> Vec<String> {
-    let Ok(src) = std::fs::read_to_string(file) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for kw in ["vi.mock(", "vi.doMock(", "jest.mock(", "jest.doMock("] {
-        let mut i = 0;
-        while let Some(p) = src[i..].find(kw) {
-            let start = i + p + kw.len();
-            i = start;
-            let rest = src[start..].trim_start();
-            let mut ch = rest.chars();
-            if let Some(q) = ch.next() {
-                if q == '"' || q == '\'' || q == '`' {
-                    if let Some(end) = rest[1..].find(q) {
-                        let spec = rest[1..1 + end].to_string();
-                        if !out.contains(&spec) {
-                            out.push(spec);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
+///
 /// Bundle a test/setup file. `externals` are vi.mock specifiers kept OUT of the bundle so the
 /// native loader (+ mock registry) intercepts them; after bundling they are rewritten from
 /// their (file-relative) form to the resolved ABSOLUTE path so they resolve correctly from
@@ -2564,15 +2529,6 @@ fn mr_enabled() -> bool {
 // mirrors TURBO_NO_CODE_CACHE. (E6 transform-existence memo = neutral, E11 drain-loop hoist =
 // slightly slower — both measured no-help at the validated jobs=8 protocol and not shipped.)
 fn e12_enabled() -> bool { std::env::var("TURBO_NO_E12").is_err() }
-
-/// react family — bundled standalone (one instance) and externalized from every other
-/// node_modules bundle so all code shares the SAME react (fixes dual-react in mocks).
-fn is_react_family(spec_or_path: &str) -> bool {
-    let p = spec_or_path;
-    p.ends_with("/react") || p == "react"
-        || p.contains("/react/") || p.contains("react-dom") || p.contains("react/jsx")
-        || p.ends_with("/scheduler") || p == "scheduler"
-}
 
 /// Bundle a node_modules entry to CJS (one esbuild call per package entry), with react family
 /// externalized so it's shared. Returns the bundled code. Cached by entry+mtime.
