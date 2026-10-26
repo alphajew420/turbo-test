@@ -1396,6 +1396,16 @@ fn run_setup_file(
 }
 
 /// Run a short framework snippet in the current context.
+/// Run `js` as a script; whether it completed without throwing (the exception is cleared).
+fn run_js_ok(scope: &mut v8::PinScope, js: &str) -> bool {
+    let tc = std::pin::pin!(v8::TryCatch::new(scope));
+    let tc = &mut tc.init();
+    v8::String::new(tc, js)
+        .and_then(|code| v8::Script::compile(tc, code, None))
+        .and_then(|s| s.run(tc))
+        .is_some()
+}
+
 fn run_js(scope: &mut v8::PinScope, js: &str) {
     if let Some(code) = v8::String::new(scope, js) {
         if let Some(s) = v8::Script::compile(scope, code, None) {
@@ -1480,32 +1490,46 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
     let entry_dir = js_string_literal(&dir.to_string_lossy());
     run_js(scope, &format!("globalThis.__ttEntryDir = {entry_dir};"));
     let Some(root) = project_root(entry) else {
-        // No esbuild project (e.g. standalone fixtures): register self-contained factories
-        // directly (no JSX/transform available here). These registrations are this file's
-        // prepass: the module's own vi.mock call keeps them instead of re-running the factory.
-        for (spec, factory) in &mocks {
+        // No esbuild project (ESM graph): the runtime runs this file's prepass like the esbuild
+        // one, just untransformed — one script that replays the file's vi.hoisted declarations
+        // and then its vi.mock calls, so factories close over the hoisted values (vitest); async
+        // factories are awaited by the resolve + drain below. __ttDir is the entry dir only
+        // while it runs (automocks and importOriginal resolve from it). A throwing factory
+        // registers runtime.js's error stand-in, as the module's own call would. If the
+        // replayed declarations fail, the mocks are registered without them.
+        let hoisted = extract_hoisted(&src).join("\n");
+        let calls: String = mocks
+            .iter()
+            .map(|(spec, factory)| {
+                let s = js_string_literal(spec);
+                if factory.is_empty() {
+                    format!("vi.mock({s});\n")
+                } else {
+                    format!("vi.mock({s}, {factory});\n")
+                }
+            })
+            .collect();
+        run_js(
+            scope,
+            &format!(
+                "globalThis.__ttPrevDir = globalThis.__ttDir; globalThis.__ttDir = {entry_dir}; \
+                 globalThis.__hoistedCache = []; globalThis.__hoistedIdx = 0;"
+            ),
+        );
+        if !run_js_ok(scope, &format!("(() => {{\n{hoisted}\n{calls}}})();")) {
+            run_js_ok(scope, &format!("(() => {{\n{calls}}})();"));
+        }
+        run_js(scope, "globalThis.__ttDir = globalThis.__ttPrevDir;");
+        resolve_pending_mocks(scope);
+        drain_pending_mocks(scope, dir, false);
+        // These registrations are this file's prepass: the module's own vi.mock call keeps them
+        // instead of re-running the factory.
+        for (spec, _) in &mocks {
             let Some(abs) = resolve_spec(spec, dir) else {
                 continue;
             };
-            let key = js_string_literal(&abs.to_string_lossy());
-            if factory.is_empty() {
-                // factory-less vi.mock: the runtime's automock of the real module (the same
-                // __automock the module-runner prepass's `vi.mock(spec)` uses).
-                let d = js_string_literal(&dir.to_string_lossy());
-                let s = js_string_literal(spec);
-                let js = format!(
-                    "__ttRegisterMock({d}, {s}, __automock(__ttImportActual({d}, {s}))); \
-                     __ttPrepassMocks.add({key});"
-                );
-                let tc = std::pin::pin!(v8::TryCatch::new(scope));
-                let tc = &mut tc.init();
-                let code = v8::String::new(tc, &js).unwrap();
-                if let Some(script) = v8::Script::compile(tc, code, None) {
-                    script.run(tc);
-                }
-                continue;
-            }
-            if register_mock(scope, &abs, factory).is_some() {
+            if REGISTRY.with(|r| r.borrow().mocks.contains_key(&abs)) {
+                let key = js_string_literal(&abs.to_string_lossy());
                 run_js(scope, &format!("__ttPrepassMocks.add({key});"));
             }
         }

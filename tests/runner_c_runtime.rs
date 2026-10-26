@@ -1,5 +1,6 @@
 //! Runtime semantics that follow Node/vitest: the `URL` polyfill resolves relative references
-//! like Node's WHATWG `URL`; an entry file's hoisted mock factory runs once.
+//! like Node's WHATWG `URL`; an entry file's hoisted mock factory runs once; without esbuild the
+//! entry prepass replays `vi.hoisted` values and awaits async factories.
 #![cfg(unix)]
 
 mod common;
@@ -119,4 +120,92 @@ test('each factory ran once', () => {{
             assert_passes(&r, 1);
         }
     }
+}
+
+/// A project without esbuild (the ESM-graph path).
+fn esm_graph_project(name: &str) -> Project {
+    let p = Project::new(name);
+    p.file(
+        "package.json",
+        &format!(r#"{{"name":"{name}","type":"module"}}"#),
+    );
+    p
+}
+
+#[test]
+fn esm_graph_entry_mock_factories_see_vi_hoisted_values() {
+    // turbo-test#38 item 4: without esbuild, the entry's factories were compiled on their own,
+    // without the file's vi.hoisted declarations ("calls is not defined").
+    let p = esm_graph_project("rc-esm-hoisted");
+    p.file(
+        "m.js",
+        "export const v = 'real';\nexport const u = 'real-u';\n",
+    );
+    p.file(
+        "a.test.js",
+        r#"import { v, u } from './m.js';
+const calls = vi.hoisted(() => ({ m: 0 }));
+const { label } = vi.hoisted(() => ({ label: 'hoisted' }));
+vi.mock('./m.js', () => { calls.m++; return { v: label, u: 'mock-u' }; });
+test('factory closes over vi.hoisted values', () => {
+  expect(v).toBe('hoisted');
+  expect(u).toBe('mock-u');
+  expect(calls.m).toBe(1);
+});
+"#,
+    );
+    assert_passes(&turbo_test(&p.dir, &["a.test.js"], &[]), 1);
+}
+
+#[test]
+fn esm_graph_async_entry_mock_factories_are_awaited() {
+    // turbo-test#38 item 5: without esbuild, an async factory's Promise was registered as the
+    // module ("does not provide an export named 'w'").
+    let p = esm_graph_project("rc-esm-async");
+    p.file(
+        "n.js",
+        "export const w = 'real';\nexport default 'real-default';\n",
+    );
+    p.file(
+        "o.js",
+        "export const k = 'real-k';\nexport const keep = 'kept';\n",
+    );
+    p.file(
+        "a.test.js",
+        r#"import d, { w } from './n.js';
+import { k, keep } from './o.js';
+vi.mock('./n.js', async () => ({ w: 'mock', default: 'mock-default' }));
+vi.mock('./o.js', async (importOriginal) => ({ ...(await importOriginal()), k: 'mock-k' }));
+test('async factories are awaited', () => {
+  expect([w, d]).toEqual(['mock', 'mock-default']);
+  expect([k, keep]).toEqual(['mock-k', 'kept']);
+});
+"#,
+    );
+    assert_passes(&turbo_test(&p.dir, &["a.test.js"], &[]), 1);
+}
+
+#[test]
+fn esm_graph_throwing_vi_hoisted_fails_the_file_and_mocks_still_register() {
+    // turbo-test#38 item 4 edge: a vi.hoisted that throws fails the file with its error
+    // (vitest); the prepass registers the file's mocks without the hoisted values meanwhile.
+    let p = esm_graph_project("rc-esm-hoisted-throw");
+    p.file("m.js", "export const v = 'real';\n");
+    p.file(
+        "a.test.js",
+        r#"import { v } from './m.js';
+const h = vi.hoisted(() => { throw new Error('hoisted boom'); });
+vi.mock('./m.js', () => ({ v: 'mock' }));
+test('never runs', () => { expect(v).toBe('mock'); });
+"#,
+    );
+    let r = turbo_test(&p.dir, &["a.test.js"], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout
+            .lines()
+            .any(|l| l.starts_with("ERROR") && l.contains("hoisted boom")),
+        "{}",
+        r.all()
+    );
 }
