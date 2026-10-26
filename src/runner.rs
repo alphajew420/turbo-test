@@ -1572,6 +1572,9 @@ fn setup_dom(scope: &mut v8::PinScope, _entry: &Path) {
 /// type aliases (`type Percentage = number` -> `Number`) so NestJS/Mongoose decorators get the
 /// right `design:type`. Module syntax is kept as ESM so the caller's esbuild ESM->CJS pass gives
 /// the same `var import_X = require(...)` shape the rest of the pipeline (vi.mock hoisting) needs.
+/// Imports used only in type positions are first moved onto a namespace import (TypeScript's own
+/// remedy for TS1272), so on the ESM graph an interface's metadata reads `ns.Iface` (undefined →
+/// `Object`) instead of naming an export that doesn't exist.
 /// Returns None if the project ships no `typescript` (caller falls back to oxc).
 fn tsc_transform_esm(file: &Path, root: &Path) -> Option<String> {
     let ts_dir = root.join("node_modules/typescript");
@@ -1586,7 +1589,88 @@ const fs = require('fs');
 const file = process.argv[2];
 const src = fs.readFileSync(file, 'utf8');
 const isTsx = file.endsWith('.tsx');
-const out = ts.transpileModule(src, {
+// isolatedModules + emitDecoratorMetadata: a value import of a name used only as a type (an
+// interface) is kept for its `design:type` reference and then fails ESM linking (no such export).
+// TypeScript's own remedy (TS1272) is a namespace import: `ns.Shape` reads as undefined -> Object.
+// So import bindings referenced only in type positions are moved to a namespace import and their
+// type references qualified with it. Names that are shadowed or used as values are left alone.
+function nsTypeOnlyImports(text) {
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, isTsx ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const binds = new Map();
+  for (const st of sf.statements) {
+    const ic = ts.isImportDeclaration(st) && st.importClause;
+    if (!ic || ic.isTypeOnly) continue;
+    const add = (local, imported, el) => binds.set(local.text, { st, el, imported, refs: [], ok: true });
+    if (ic.name) add(ic.name, 'default', ic);
+    if (ic.namedBindings && ts.isNamedImports(ic.namedBindings)) {
+      for (const el of ic.namedBindings.elements) {
+        const imp = el.propertyName || el.name;
+        if (!el.isTypeOnly && ts.isIdentifier(imp)) add(el.name, imp.text, el);
+      }
+    }
+  }
+  if (!binds.size) return text;
+  const declKinds = [ts.isVariableDeclaration, ts.isParameter, ts.isFunctionDeclaration, ts.isFunctionExpression,
+    ts.isClassDeclaration, ts.isClassExpression, ts.isInterfaceDeclaration, ts.isTypeAliasDeclaration,
+    ts.isEnumDeclaration, ts.isModuleDeclaration, ts.isTypeParameterDeclaration, ts.isBindingElement,
+    ts.isImportEqualsDeclaration, ts.isNamespaceImport, ts.isImportSpecifier, ts.isImportClause];
+  const typeUse = (id) => {
+    for (let n = id, q = id.parent; q; n = q, q = q.parent) {
+      if (ts.isTypeQueryNode(q) || ts.isComputedPropertyName(q)) return false;
+      if (ts.isExpressionWithTypeArguments(q)) {
+        const h = q.parent;
+        return ts.isHeritageClause(h) && (h.token === ts.SyntaxKind.ImplementsKeyword || ts.isInterfaceDeclaration(h.parent));
+      }
+      if (ts.isTypeNode(q)) return true;
+    }
+    return false;
+  };
+  const visit = (node) => {
+    const b = ts.isIdentifier(node) && binds.get(node.text);
+    if (b) {
+      const p = node.parent;
+      if (p === b.el) { /* the import binding itself */ }
+      else if (declKinds.some((k) => k(p)) && p.name === node) b.ok = false; // shadowed
+      else if (ts.isExportSpecifier(p)) b.ok = false; // re-exported: needs the binding
+      else if ((ts.isPropertyAccessExpression(p) && p.name === node) || (ts.isQualifiedName(p) && p.right === node)
+        || (p.propertyName === node) || (p.name === node && !ts.isShorthandPropertyAssignment(p))
+        || ts.isLabeledStatement(p) || ts.isBreakOrContinueStatement(p)) { /* a member name, not a reference */ }
+      else if (typeUse(node)) b.refs.push(node);
+      else b.ok = false; // a value reference
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  const edits = [];
+  const perDecl = new Map();
+  for (const b of binds.values()) {
+    if (!b.ok || !b.refs.length) continue;
+    if (!perDecl.has(b.st)) perDecl.set(b.st, { ns: '__tt_ns' + perDecl.size, moved: new Set() });
+    const d = perDecl.get(b.st);
+    d.moved.add(b.el);
+    for (const r of b.refs) edits.push([r.getStart(sf), r.end, d.ns + '.' + b.imported]);
+  }
+  for (const [st, d] of perDecl) {
+    const ic = st.importClause;
+    const nb = ic.namedBindings;
+    const keepDefault = ic.name && !d.moved.has(ic);
+    const keepNamed = nb && ts.isNamedImports(nb) ? nb.elements.filter((e) => !d.moved.has(e)) : [];
+    const from = st.moduleSpecifier.getText(sf);
+    const parts = [];
+    if (keepDefault) parts.push(ic.name.text);
+    if (nb && ts.isNamespaceImport(nb)) parts.push(nb.getText(sf));
+    if (keepNamed.length) parts.push('{ ' + keepNamed.map((e) => e.getText(sf)).join(', ') + ' }');
+    const clause = parts.length ? 'import ' + parts.join(', ') + ' from ' + from + '; ' : '';
+    edits.push([st.getStart(sf), st.end, clause + 'import * as ' + d.ns + ' from ' + from + ';']);
+  }
+  edits.sort((a, b) => b[0] - a[0]);
+  let out = text;
+  for (const [s, e, r] of edits) out = out.slice(0, s) + r + out.slice(e);
+  return out;
+}
+let input = src;
+try { input = nsTypeOnlyImports(src); } catch (e) {} // e.g. a typescript without the parser API
+const out = ts.transpileModule(input, {
   fileName: file,
   compilerOptions: {
     module: ts.ModuleKind.ESNext,
@@ -2434,9 +2518,12 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
             // imported INTERFACE (e.g. Sequelize/Mongoose `@Column() declare x: SomeIface`), it
             // emits `Reflect.metadata("design:type", SomeIface)` — referencing the type-only import
             // as a value, so it can't be elided. The interface has no runtime export, so V8 fails
-            // ESM instantiation with `does not provide an export named SomeIface`. tsc emits
-            // `Object` for non-value types (ts-jest parity). This fails at LINK time (before eval),
-            // so the eval-throw retry-on-load can't rescue it — hence routing here, up front.
+            // ESM instantiation with `does not provide an export named SomeIface`. tsc (no checker
+            // either, isolatedModules) emits a guarded read instead, `typeof SomeIface ===
+            // "function" ? SomeIface : Object`; after esbuild's ESM->CJS pass that is a property
+            // read of the required module, so a missing export gives `Object` (ts-jest parity).
+            // This fails at LINK time (before eval), so the eval-throw retry-on-load can't rescue
+            // it — hence routing here, up front.
             // node_modules excluded (ship pre-compiled JS); browser/React projects have no
             // emitDecoratorMetadata so this branch never fires for them.
             let needs_meta = !abs.components().any(|c| c.as_os_str() == "node_modules")
@@ -2484,10 +2571,12 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
         && decorator_metadata_enabled(abs)
         && file_has_decorator(&raw);
     // content-addressed disk cache, shared across runs and workers. Key on the legacy-decorator
-    // decision so a config/file change can't serve stale (un-lowered) output.
+    // decision so a config/file change can't serve stale (un-lowered) output. The tag changes
+    // with the decorator transform (v2: tsc reads type-only imports through a namespace import),
+    // so output cached by an older binary is not served.
     let mut key = cache_key(abs, &raw);
     if legacy_decorators {
-        key ^= 0x9e37_79b9_7f4a_7c15;
+        key ^= 0x9e37_79b9_7f4a_7c16;
     }
     let path = cache_dir().join(format!("{:016x}.js", key));
     if let Ok(cached) = std::fs::read_to_string(&path) {
@@ -2499,10 +2588,13 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
     // not oxc. oxc has no type checker, so a decorated field typed as an imported INTERFACE
     // (`@Column() declare x: SomeIface`) makes it emit `Reflect.metadata("design:type", SomeIface)`
     // — the type-only import then can't be elided, and since the interface has no runtime export
-    // the ESM linker fails: `does not provide an export named SomeIface`. tsc emits `Object` for
-    // non-value types (ts-jest parity). It fails at LINK time, so the eval-throw retry-on-load can't
-    // rescue it — route here, on first load. oxc remains the fallback when the project ships no
-    // typescript (tsc_transform_esm → None).
+    // the ESM linker fails: `does not provide an export named SomeIface`. transpileModule has no
+    // checker either: it keeps such an import too (its guarded `typeof SomeIface` metadata read
+    // still names the binding), which only links because tsc_transform_esm first moves imports
+    // used solely as types onto a namespace import (`ns.SomeIface` → undefined → `Object`, as
+    // ts-jest gives). It fails at LINK time, so the eval-throw retry-on-load can't rescue it —
+    // route here, on first load. oxc remains the fallback when the project ships no typescript
+    // (tsc_transform_esm → None).
     if legacy_decorators {
         // Use a TYPESCRIPT-based root (not project_root, which requires esbuild) — tsc_transform_esm
         // only needs `node_modules/typescript`, and many backends (ts-jest projects) ship typescript

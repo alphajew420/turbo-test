@@ -173,7 +173,10 @@ default, and only a decorator file that actually *throws* at load (a missing-met
 re-transformed through the project's own TypeScript (`ts.transpileModule`, exact ts-jest parity —
 local type aliases like `type Percentage = number` resolve to `Number`, not `Object`), falling back
 to oxc's metadata transform when the project ships no `typescript`. The common path never pays the
-cost and never regresses.
+cost and never regresses. A plain `import { SomeInterface }` used as a decorated member's type
+needs no `import type`: imports used only as types are read through a namespace import (TypeScript's
+own fix for TS1272), so their `design:type` is `Object` and ES-module linking never looks for the
+missing export. (The oxc fallback has no type information and still needs `import type` there.)
 
 ```bash
 npx turbo-test            # discovers *.spec.* too; reads jest config when no vitest config exists

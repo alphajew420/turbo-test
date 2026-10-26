@@ -48,7 +48,7 @@ const REFLECT_SETUP: &str = r#"(function () {
   const store = new WeakMap();
   const k = (mk, p) => String(mk) + ' ' + String(p);
   const slot = (t) => { let m = store.get(t); if (!m) { m = new Map(); store.set(t, m); } return m; };
-  Reflect.defineMetadata = (mk, mv, t, p) => slot(t).set(k(mk, p), mv);
+  Reflect.defineMetadata = (mk, mv, t, p) => { slot(t).set(k(mk, p), mv); };
   Reflect.getMetadata = (mk, t, p) => { const m = store.get(t); return m ? m.get(k(mk, p)) : undefined; };
   Reflect.metadata = (mk, mv) => (t, p) => Reflect.defineMetadata(mk, mv, t, p);
 })();
@@ -91,11 +91,57 @@ export class Model {
     p
 }
 
+/// More import shapes for the metadata of decorated members: an aliased interface, a class, a
+/// default-imported interface and a value import sharing their declaration, a qualified type,
+/// `implements` and `typeof` positions, plus constructor parameter types. `k.test.ts` checks every `design:*` type.
+fn add_metadata_import_kinds(p: &Project) {
+    p.file(
+        "kinds.ts",
+        r#"export interface Opts { o: 1 }
+export class Thing {}
+export const VALUE = 3;
+export default interface Def { d: 1 }
+export namespace Other { export interface Inner { i: 1 } }
+"#,
+    );
+    p.file(
+        "model2.ts",
+        r#"import Def, { Opts as O, Thing, VALUE, Other } from './kinds';
+function Field(target: any, key: string) {
+  (target.constructor.__types || (target.constructor.__types = {}))[key] =
+    Reflect.getMetadata('design:type', target, key).name;
+}
+function Param(_t: any, _k: any, _i: number) {}
+type Value = typeof VALUE;
+class Impl implements O { o!: 1; }
+export class M2 {
+  @Field opts!: O;
+  @Field thing!: Thing;
+  @Field def!: Def;
+  @Field inner!: Other.Inner;
+  value: Value = VALUE;
+  constructor(@Param a: O, @Param t: Thing) {}
+}
+"#,
+    );
+    p.file(
+        "k.test.ts",
+        r#"import { M2 } from './model2';
+test('design:type / design:paramtypes for each import shape', () => {
+  expect((M2 as any).__types).toEqual({ opts: 'Object', thing: 'Thing', def: 'Object', inner: 'Object' });
+  expect(Reflect.getMetadata('design:paramtypes', M2, undefined).map((t: any) => t.name)).toEqual(['Object', 'Thing']);
+  expect(new M2(null as any, null as any).value).toBe(3);
+});
+"#,
+    );
+}
+
 #[test]
 fn decorator_metadata_via_typescript_on_the_module_runner() {
     let p = decorator_project("ta-deco-mr-tsc");
     p.with_esbuild();
     p.with_typescript();
+    add_metadata_import_kinds(&p);
     // a decorated test file whose vi.mock factory shares a module `let` with the tests
     p.file("svc.ts", "export const svc = () => 'real';\n");
     p.file(
@@ -114,7 +160,7 @@ test('decorated entry with a hoisted mock', () => {
 "#,
     );
     let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
-    assert_eq!(counts(&r), passed(2, 2), "{}", r.all());
+    assert_eq!(counts(&r), passed(3, 3), "{}", r.all());
 }
 
 #[test]
@@ -127,19 +173,17 @@ fn decorator_metadata_falls_back_to_oxc_without_typescript() {
 
 #[test]
 fn decorator_metadata_on_the_esm_graph_path() {
-    // no esbuild: the entry + model load as ESM; typescript (tsc_root) lowers the decorators
+    // no esbuild: the entry + model load as ESM; typescript (tsc_root) lowers the decorators.
+    // A plain `import { Shape }` of an interface links: the type-only binding is read through a
+    // namespace import, so its `design:type` is `Object` (as with `import type`).
     let p = decorator_project("ta-deco-esm-tsc");
     p.with_typescript();
-    // `import type`: on this path a plain `import { Shape }` of an interface is kept by
-    // transpileModule and then fails ESM linking (reported as a pre-existing bug).
-    let model = std::fs::read_to_string(p.path("model.ts")).unwrap();
-    p.file(
-        "model.ts",
-        &model.replace("import { Shape }", "import type { Shape }"),
-    );
+    add_metadata_import_kinds(&p);
     let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
-    assert_eq!(counts(&r), passed(1, 1), "{}", r.all());
-    // neither esbuild nor typescript: oxc legacy-decorator lowering
+    assert_eq!(counts(&r), passed(2, 2), "{}", r.all());
+    // neither esbuild nor typescript: oxc legacy-decorator lowering (no type information, so
+    // the interface needs `import type` there)
+    let model = std::fs::read_to_string(p.path("model.ts")).unwrap();
     let q = decorator_project("ta-deco-esm-oxc");
     q.file(
         "model.ts",
