@@ -372,7 +372,9 @@ pub unsafe extern "C" fn napi_set_named_property(
         let key = std::ffi::CStr::from_ptr(name).to_string_lossy();
         let k = v8::String::new(s, &key).ok_or(napi_generic_failure)?;
         let o: v8::Local<v8::Object> = to_local(obj).try_into().map_err(|_| napi_invalid_arg)?;
-        o.set(s, k.into(), to_local(value));
+        // V8's Object::Set is Nothing only when it threw (a throwing setter or proxy trap)
+        o.set(s, k.into(), to_local(value))
+            .ok_or(napi_pending_exception)?;
         Ok(())
     })
 }
@@ -402,7 +404,8 @@ pub unsafe extern "C" fn napi_set_element(
 ) -> napi_status {
     js_call(env, |s| {
         let o: v8::Local<v8::Object> = to_local(obj).try_into().map_err(|_| napi_invalid_arg)?;
-        o.set_index(s, index, to_local(value));
+        o.set_index(s, index, to_local(value))
+            .ok_or(napi_pending_exception)?;
         Ok(())
     })
 }

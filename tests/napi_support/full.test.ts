@@ -163,6 +163,27 @@ describe('objects and arrays', () => {
     expect(a.status()).toBe(GENERIC_FAILURE);
   });
 
+  test('a set that throws reports napi_pending_exception', () => {
+    const named = Object.defineProperty({}, 'boom', {
+      set() {
+        throw new Error('setter threw');
+      },
+    });
+    expect(() => a.setNamed(named, 'boom', 1)).toThrow('setter threw');
+    expect(a.status()).toBe(PENDING_EXCEPTION);
+    const indexed = Object.defineProperty([], 0, {
+      set() {
+        throw new Error('index setter threw');
+      },
+    });
+    expect(() => a.setEl(indexed, 0, 1)).toThrow('index setter threw');
+    expect(a.status()).toBe(PENDING_EXCEPTION);
+    // a write that silently fails (sloppy-mode Set) is not an error
+    expect(a.setNamed(Object.freeze({ k: 1 }), 'k', 2)).toBe(OK);
+    expect(a.setEl(Object.freeze([1]), 0, 2)).toBe(OK);
+    expect(a.setNamed(new Proxy({}, { set: () => false }), 'k', 1)).toBe(OK);
+  });
+
   test('elements, napi_is_array, napi_get_array_length', () => {
     const arr: unknown[] = [];
     expect(a.setEl(arr, 2, 'x')).toBe(OK);
