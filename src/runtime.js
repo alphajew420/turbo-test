@@ -65,6 +65,9 @@ globalThis.process = {
 function __reportUncaught(e) {
   try { globalThis.console.error('uncaught', (e && e.message) || e); } catch {}
 }
+// the native host (napi_fatal_exception, an exception left by an async native callback)
+// reports through the same path
+globalThis.__reportUncaught = __reportUncaught;
 const __loop = {
   macro: [],       // {id, due, cb, interval, gen}
   // Internal one-shot timers (test-timeout enforcement). Kept SEPARATE from `macro` so they are

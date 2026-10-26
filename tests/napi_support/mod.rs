@@ -12,6 +12,8 @@ const NAPI_H: &str = include_str!("napi.h");
 /// The C source of fixture `stem` (tests/napi_support/<stem>.c).
 pub fn c_source(stem: &str) -> &'static str {
     match stem {
+        "api" => include_str!("api.c"),
+        "fatal" => include_str!("fatal.c"),
         "full" => include_str!("full.c"),
         "init_custom" => include_str!("init_custom.c"),
         "init_lock" => include_str!("init_lock.c"),
@@ -31,6 +33,7 @@ pub fn c_source(stem: &str) -> &'static str {
 /// The spec file `name` (tests/napi_support/<name>).
 pub fn spec(name: &str) -> &'static str {
     match name {
+        "api.test.ts" => include_str!("api.test.ts"),
         "full.test.ts" => include_str!("full.test.ts"),
         "huge.test.ts" => include_str!("huge.test.ts"),
         "init.test.ts" => include_str!("init.test.ts"),

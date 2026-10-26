@@ -72,7 +72,22 @@ extern napi_status napi_new_instance(napi_env, napi_value, size_t, const napi_va
                                      napi_value *);
 extern napi_status napi_throw(napi_env, napi_value);
 extern napi_status napi_throw_error(napi_env, const char *, const char *);
+extern napi_status napi_throw_type_error(napi_env, const char *, const char *);
+extern napi_status napi_throw_range_error(napi_env, const char *, const char *);
+extern napi_status node_api_throw_syntax_error(napi_env, const char *, const char *);
 extern napi_status napi_create_error(napi_env, napi_value, napi_value, napi_value *);
+extern napi_status napi_create_type_error(napi_env, napi_value, napi_value, napi_value *);
+extern napi_status napi_create_range_error(napi_env, napi_value, napi_value, napi_value *);
+extern napi_status node_api_create_syntax_error(napi_env, napi_value, napi_value, napi_value *);
+typedef struct {
+    const char *error_message;
+    void *engine_reserved;
+    uint32_t engine_error_code;
+    napi_status error_code;
+} napi_extended_error_info;
+extern napi_status napi_get_last_error_info(napi_env, const napi_extended_error_info **);
+extern napi_status napi_fatal_exception(napi_env, napi_value);
+extern void napi_fatal_error(const char *, size_t, const char *, size_t) __attribute__((noreturn));
 extern napi_status napi_is_error(napi_env, napi_value, bool *);
 extern napi_status napi_is_exception_pending(napi_env, bool *);
 extern napi_status napi_get_and_clear_last_exception(napi_env, napi_value *);
