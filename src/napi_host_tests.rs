@@ -1,6 +1,6 @@
 //! Unit tests for the napi host paths an addon cannot drive through `require()`: the panic
 //! guards (a C callback cannot unwind into Rust), stored pending exceptions, same-thread
-//! re-entry of the addon lock, and the trampoline's missing-env / missing-slot fallbacks.
+//! re-entry of the addon lock, and the trampoline's dispatch through its callback record.
 //! The end-to-end surface is covered by tests/napi_host.rs.
 
 use super::*;
@@ -117,9 +117,17 @@ unsafe extern "C" fn record_call(_env: napi_env, _info: napi_callback_info) -> n
 }
 
 #[test]
-fn trampoline_without_env_or_slot_returns_undefined() {
+fn trampoline_dispatches_through_the_callback_record() {
     with_scope(|s| {
-        let saved = ENVS.with(|e| std::mem::take(&mut *e.borrow_mut()));
+        let recv: v8::Local<v8::Value> = v8::undefined(s).into();
+        // a function on the trampoline without a callback record (not made by
+        // napi_create_function) calls nothing and returns undefined
+        let bare = v8::FunctionTemplate::new(s, napi_fn_trampoline)
+            .get_function(s)
+            .unwrap();
+        assert!(bare.call(s, recv, &[]).unwrap().is_undefined());
+        assert!(!CALLED.load(Ordering::SeqCst));
+        // a napi-created function reaches its addon callback through the record
         let mut env = env_for(s);
         let mut f: napi_value = std::ptr::null_mut();
         let status = unsafe {
@@ -133,22 +141,9 @@ fn trampoline_without_env_or_slot_returns_undefined() {
             )
         };
         assert_eq!(status, napi_ok);
+        assert_eq!(env.fns.len(), 1);
         let func: v8::Local<v8::Function> = unsafe { to_local(f) }.try_into().unwrap();
-        let recv: v8::Local<v8::Value> = v8::undefined(s).into();
-        // no env installed on this thread
-        let r = func.call(s, recv, &[]).unwrap();
-        assert!(r.is_undefined());
-        // an env without this function's slot
-        let other = Box::into_raw(env_for(s));
-        ENVS.with(|e| e.borrow_mut().push(other));
-        let r = func.call(s, recv, &[]).unwrap();
-        assert!(r.is_undefined());
-        assert!(!CALLED.load(Ordering::SeqCst));
-        ENVS.with(|e| *e.borrow_mut() = saved);
-        drop(unsafe { Box::from_raw(other) });
-        // control: the sentinel does record a real invocation
-        let ret = unsafe { record_call(&mut *env, std::ptr::null_mut()) };
-        assert!(ret.is_null());
+        assert!(func.call(s, recv, &[]).unwrap().is_undefined());
         assert!(CALLED.load(Ordering::SeqCst));
     });
 }

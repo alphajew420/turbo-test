@@ -44,16 +44,46 @@ pub enum napi_valuetype {
     Bigint = 9,
 }
 
-/// Per-thread napi environment. `scope` points at the live rusty_v8 scope for the current
+/// One loaded addon's napi environment (Node creates one `napi_env` per addon instance), owned
+/// by its isolate (`AddonEnvs`). `scope` points at the live rusty_v8 scope for the current
 /// native call (the only window during which napi value calls happen).
 pub struct Env {
     pub isolate: *mut v8::Isolate,
     pub scope: *mut c_void, // *mut v8::PinScope<'static,'static>, valid only during a call
     pub context: Option<v8::Global<v8::Context>>,
     pub last_exception: Option<v8::Global<v8::Value>>,
-    /// registered (callback, data) for functions created via napi_create_function
-    pub fns: Vec<(napi_callback, *mut c_void)>,
+    /// One record per napi_create_function; each function's data is an External pointing at
+    /// its record, so a function always dispatches into the env (addon) that created it.
+    pub fns: Vec<*mut Callback>,
     pub refs: Vec<Option<v8::Global<v8::Value>>>,
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        for &f in &self.fns {
+            drop(unsafe { Box::from_raw(f) });
+        }
+    }
+}
+
+/// What a napi-created function calls: the addon callback, its data, and the env it belongs to.
+#[derive(Clone, Copy)]
+pub struct Callback {
+    env: napi_env,
+    cb: napi_callback,
+    data: *mut c_void,
+}
+
+/// The envs of every addon loaded into an isolate, kept in an isolate slot so they are freed
+/// with the isolate: the functions pointing into them cannot outlive it either.
+struct AddonEnvs(Vec<napi_env>);
+
+impl Drop for AddonEnvs {
+    fn drop(&mut self) {
+        for &env in &self.0 {
+            drop(unsafe { Box::from_raw(env) });
+        }
+    }
 }
 
 /// Process-global lock serializing native `.node` addon entry across worker threads (the shared
@@ -61,16 +91,6 @@ pub struct Env {
 static ADDON_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 thread_local! {
     static IN_ADDON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Every env loaded on this thread; the last one is current. Envs are never freed while the
-    /// thread lives, so a callback still running in an older env (a `require()` of another
-    /// addon from inside a native callback) keeps a valid env pointer.
-    static ENVS: std::cell::RefCell<Vec<*mut Env>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// The current env on this thread. The `ENVS` borrow ends before this returns, so napi
-/// callbacks that re-enter (directly or through JS) never hit a held `RefCell` borrow.
-fn current_env() -> Option<*mut Env> {
-    ENVS.with(|e| e.borrow().last().copied())
 }
 
 #[inline]
@@ -348,23 +368,22 @@ pub unsafe extern "C" fn napi_set_element(
 
 // ---- functions ------------------------------------------------------------
 
-/// Trampoline: every napi function shares this rusty_v8 callback. It recovers the
-/// (napi_callback, data) by the index stored as the function's data Integer, packages
-/// CbInfo, points the env scope at the current scope, and calls the addon callback.
+/// Trampoline: every napi function shares this rusty_v8 callback. It recovers the function's
+/// `Callback` record from the External stored as its data, packages CbInfo, points the
+/// owning env's scope at the current scope, and calls the addon callback.
 fn napi_fn_trampoline(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let idx = args
-        .data()
-        .to_integer(scope)
-        .map(|i| i.value() as usize)
-        .unwrap_or(usize::MAX);
-    let Some(env_ptr) = current_env() else { return };
-    let Some(&(cb, data)) = (unsafe { &(*env_ptr).fns }).get(idx) else {
+    let Ok(record) = v8::Local::<v8::External>::try_from(args.data()) else {
         return;
     };
+    let Callback {
+        env: env_ptr,
+        cb,
+        data,
+    } = unsafe { *(record.value() as *const Callback) };
     let argv: Vec<napi_value> = (0..args.length())
         .map(|i| unsafe { to_napi(args.get(i)) })
         .collect();
@@ -445,13 +464,10 @@ pub unsafe extern "C" fn napi_create_function(
     data: *mut c_void,
     out: *mut napi_value,
 ) -> napi_status {
-    let idx = {
-        let e = &mut *env;
-        e.fns.push((cb, data));
-        e.fns.len() - 1
-    };
+    let record = Box::into_raw(Box::new(Callback { env, cb, data }));
+    (*env).fns.push(record);
     let s = scope(env);
-    let data_val = v8::Integer::new(s, idx as i32);
+    let data_val = v8::External::new(s, record as *mut c_void);
     let tmpl = v8::FunctionTemplate::builder(napi_fn_trampoline)
         .data(data_val.into())
         .build(s);
@@ -1096,7 +1112,13 @@ pub fn load_addon(
             fns: Vec::new(),
             refs: Vec::new(),
         }));
-        ENVS.with(|e| e.borrow_mut().push(env_ptr));
+        // The isolate owns the env from here on (freed with it, like the functions using it).
+        match scope_ref.get_slot_mut::<AddonEnvs>() {
+            Some(envs) => envs.0.push(env_ptr),
+            None => {
+                scope_ref.set_slot(AddonEnvs(vec![env_ptr]));
+            }
+        }
 
         let exports = v8::Object::new(scope_ref);
         // The addon's module init runs arbitrary native code. Guard it two ways:

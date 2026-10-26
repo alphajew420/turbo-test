@@ -63,3 +63,12 @@ fn reentrant_callbacks_work() {
     p.file("reentry.test.ts", spec("reentry.test.ts"));
     assert_all_pass(&p, 3);
 }
+
+#[test]
+fn each_addon_keeps_its_own_env() {
+    let p = project("napi-addons");
+    compile_addon(&p, "full");
+    compile_addon(&p, "second");
+    p.file("addons.test.ts", spec("addons.test.ts"));
+    assert_all_pass(&p, 2);
+}

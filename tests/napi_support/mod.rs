@@ -29,6 +29,7 @@ pub fn spec(name: &str) -> &'static str {
         "huge.test.ts" => include_str!("huge.test.ts"),
         "init.test.ts" => include_str!("init.test.ts"),
         "reentry.test.ts" => include_str!("reentry.test.ts"),
+        "addons.test.ts" => include_str!("addons.test.ts"),
         _ => panic!("unknown napi spec {name}"),
     }
 }
