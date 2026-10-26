@@ -1241,6 +1241,12 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
     };
     let forced = opts.config.as_ref().map(|f| absolute_in(proc_cwd, Path::new(f)));
 
+    // `--passWithNoTests` also covers a test file that collects no test at all (vitest: no
+    // "No test suite found in file" error) → the runtime reads it per file.
+    if opts.pass_with_no_tests {
+        env.push(("TURBO_PASS_WITH_NO_TESTS", "1".to_string()));
+    }
+
     // `--isolate` / `--no-isolate` → the runner's reuse env switches (read per-file in runner.rs).
     match opts.isolate {
         Some(false) => env.push(("TURBO_REUSE_ISOLATE", "1".to_string())),

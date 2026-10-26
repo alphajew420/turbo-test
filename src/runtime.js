@@ -1979,13 +1979,15 @@ function describe(name, a, b) {
   fn();
   current = prev;
 }
-describe.skip = (name, _fn) => { /* skipped */ };
+// A skipped/todo suite registers no tests, but it IS a collected task for vitest's "No test suite
+// found in file" check (see __tt.run) — count it so such a file is not reported as empty.
+describe.skip = (name, _fn) => { __tt.skippedSuites++; };
 describe.only = (name, fn) => { __tt.hasOnly = true; describe(name, fn); };
-describe.todo = (name) => { /* todo: collected as nothing to run */ };
+describe.todo = (name) => { __tt.skippedSuites++; /* todo: collected as nothing to run */ };
 // describe.skipIf/runIf: when the condition skips the block, register NO tests (the whole suite
 // is absent) — mirrors it.skipIf/runIf semantics applied at the suite level.
-describe.skipIf = (cond) => (name, a, b) => { if (cond) return; describe(name, a, b); };
-describe.runIf = (cond) => (name, a, b) => { if (!cond) return; describe(name, a, b); };
+describe.skipIf = (cond) => (name, a, b) => { if (cond) { __tt.skippedSuites++; return; } describe(name, a, b); };
+describe.runIf = (cond) => (name, a, b) => { if (!cond) { __tt.skippedSuites++; return; } describe(name, a, b); };
 describe.concurrent = describe; // accepted; a file's tests still run sequentially
 describe.each = (rows) => (name, fn) => rows.forEach((row, i) => {
   const args = Array.isArray(row) ? row : [row];
@@ -2162,6 +2164,8 @@ async function runSuite(suite, ancestors, summary) {
 
 globalThis.__tt = {
   hasOnly: false,
+  // Skipped/todo describe blocks seen in this file (they register nothing in `root`).
+  skippedSuites: 0,
   // Compiled lazily from globalThis.__TT_NAME_PATTERN (set by the host from -t/--testNamePattern).
   get namePattern() {
     if (this._np !== undefined) return this._np;
@@ -2171,6 +2175,14 @@ globalThis.__tt = {
   },
   async run() {
     const summary = { passed: 0, failed: 0, skipped: 0, failures: [], tests: [] };
+    // vitest (runner `runFiles`): a file that collected NO task at all — no test or suite, skipped
+    // and todo ones included — fails with "No test suite found in file <path>" unless
+    // passWithNoTests. Reported as the file's only failure entry with no failed test; the CLI
+    // turns that into a file-level error (cli.rs `file_result`).
+    if (!root.tests.length && !root.suites.length && !this.skippedSuites && !globalThis.__TT_PASS_WITH_NO_TESTS) {
+      summary.failures.push(`No test suite found in file ${globalThis.__ttFile}`);
+      return summary;
+    }
     // --no-allowOnly (host → __TT_FORBID_ONLY): a stray `.only` must fail the run (vitest CI
     // default). Record it as a failure so it surfaces in the report and flips the exit code.
     if (globalThis.__TT_FORBID_ONLY && this.hasOnly) {
@@ -2223,6 +2235,7 @@ globalThis.__ttResetForNextFile = () => {
   // setup) is the lesser evil and handled elsewhere.
   current = root;
   globalThis.__tt.hasOnly = false;
+  globalThis.__tt.skippedSuites = 0;
   // mock-prepass scratch (turbo-test specific) — must be empty before the next file hoists.
   globalThis.__pendingMocks = [];
   globalThis.__hoistedCache = [];

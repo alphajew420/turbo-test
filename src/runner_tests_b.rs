@@ -150,15 +150,22 @@ fn builtin_and_test_api_module_names() {
 }
 
 #[test]
-fn test_report_ok_needs_a_pass_and_no_failures() {
+fn test_report_ok_means_nothing_failed() {
     let r = |passed, failed| TestReport {
         passed,
         failed,
         ..Default::default()
     };
     assert!(r(1, 0).ok());
-    assert!(!r(0, 0).ok());
+    // only skipped / filtered tests: nothing failed (turbo-test#32 item 7)
+    assert!(r(0, 0).ok());
     assert!(!r(3, 1).ok());
+    // a file-level failure entry (e.g. "No test suite found in file …") is not ok
+    let empty = TestReport {
+        failures: vec!["No test suite found in file /x.test.js".into()],
+        ..r(0, 0)
+    };
+    assert!(!empty.ok());
 }
 
 #[test]

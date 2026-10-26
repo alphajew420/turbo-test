@@ -789,10 +789,32 @@ fn file_result_lines() {
         "FAIL  /p/a.test.ts  (1 passed, 2 failed)\n        ✗ x: boom\n        ✗ y: bang"
     );
     assert_eq!(r.tests.len(), 1);
-    // nothing collected is not a pass
-    assert!(file_result(0, f, Ok(report(0, 0)), 1.0)
-        .line
-        .starts_with("FAIL  "));
+    // only skipped / name-filtered tests: nothing failed → PASS, matching how it is counted
+    // (turbo-test#32 item 7: it printed FAIL yet counted as a passed file)
+    let r = file_result(0, f, Ok(report(0, 0)), 1.0);
+    assert_eq!(r.line, "PASS  /p/a.test.ts  (0 passed, 0 failed)");
+    assert!(!r.load_error);
+    // a file that collected nothing at all: the runtime's vitest "No test suite found in file"
+    // report becomes a file-level error (like a load error) so every reporter fails it
+    let msg = "No test suite found in file /p/a.test.ts";
+    let rep = TestReport {
+        failures: vec![msg.into()],
+        ..report(0, 0)
+    };
+    let r = file_result(4, f, Ok(rep), 3.0);
+    assert_eq!(
+        r.line,
+        "ERROR /p/a.test.ts  (No test suite found in file /p/a.test.ts)"
+    );
+    assert!(r.load_error && r.tests.is_empty());
+    assert_eq!((r.idx, r.passed, r.failed, r.dur_ms), (4, 0, 0, 3.0));
+    assert_eq!(r.error_msg, msg);
+    // the same text as a real failure (failed > 0) stays an ordinary FAIL
+    let rep = TestReport {
+        failures: vec![msg.into()],
+        ..report(0, 1)
+    };
+    assert!(file_result(0, f, Ok(rep), 1.0).line.starts_with("FAIL  "));
     let r = file_result(1, f, Err("graph load failed".into()), 2.0);
     assert_eq!(r.line, "ERROR /p/a.test.ts  (graph load failed)");
     assert!(r.load_error && r.tests.is_empty());

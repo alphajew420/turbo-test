@@ -512,8 +512,22 @@ pub fn execute_file(engine: &Engine, file: &Path) -> FileOutcome {
     r
 }
 
-/// Turn one file's outcome into the reporters' [`FileResult`].
+/// How the runtime words vitest's file-level error for a file that collected no test or suite at
+/// all (runtime.js `__tt.run`): the report's only `failures` entry, with no failed test.
+pub const NO_SUITE_FOUND: &str = "No test suite found in file ";
+
+/// Turn one file's outcome into the reporters' [`FileResult`]. A "no test suite found" report is
+/// a file-level error, reported exactly like a load error (ERROR line, JSON `error`, JUnit
+/// `<error>` case, TAP `not ok`, counted as a failed file).
 pub fn file_result(idx: usize, file: &Path, r: FileOutcome, dur_ms: f64) -> FileResult {
+    let r = match r {
+        Ok(rep)
+            if rep.failed == 0 && rep.failures.iter().any(|f| f.starts_with(NO_SUITE_FOUND)) =>
+        {
+            Err(rep.failures.join("; "))
+        }
+        r => r,
+    };
     match r {
         Ok(rep) => {
             let mark = if rep.ok() { "PASS" } else { "FAIL" };

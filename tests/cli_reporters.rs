@@ -161,6 +161,128 @@ fn test_console_output_never_corrupts_a_stdout_artifact() {
 }
 
 #[test]
+fn file_without_tests_fails_the_run() {
+    // turbo-test#32 item 7: a file that collects no test printed FAIL but counted as passed and
+    // exited 0. vitest fails it with "No test suite found in file <path>" unless
+    // --passWithNoTests (vitest runner `runFiles`: `!file.tasks.length && !passWithNoTests`).
+    let p = Project::new("rep-empty");
+    p.file("empty.spec.js", "export const x = 1;\n");
+    p.file("a.test.js", "test('a', () => {})\n");
+    let (e, a) = (path(&p, "empty.spec.js"), path(&p, "a.test.js"));
+    let msg = format!("No test suite found in file {e}");
+    let r = turbo_test(&p.dir, &["empty.spec.js", "a.test.js"], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout
+            .contains(&format!("ERROR empty.spec.js  ({msg})\nPASS  a.test.js")),
+        "{}",
+        r.all()
+    );
+    assert!(
+        r.stdout.contains("Test Files  1 failed | 1 passed (2)"),
+        "{}",
+        r.all()
+    );
+    let r = turbo_test(&p.dir, &["--reporter", "json", &e, &a], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    let j = json_report(&r);
+    assert_eq!(j["success"], false);
+    assert_eq!(j["testResults"][0]["status"], "error");
+    assert_eq!(j["testResults"][1]["status"], "passed");
+    let r = turbo_test(&p.dir, &["--reporter", "junit", &e], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout.contains(&format!(
+            "<testcase name=\"{e}\" classname=\"{e}\">\n      <error message=\"{msg}\"/>"
+        )),
+        "{}",
+        r.all()
+    );
+    let r = turbo_test(&p.dir, &["--reporter", "tap", &e], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert_eq!(
+        r.stdout,
+        format!("TAP version 13\n1..1\nnot ok 1 - {e}\n  ---\n  message: {msg}\n  ...\n\n"),
+        "{}",
+        r.all()
+    );
+    // --passWithNoTests also covers an empty file (vitest semantics): it passes
+    let r = turbo_test(
+        &p.dir,
+        &["--passWithNoTests", "empty.spec.js", "a.test.js"],
+        &[],
+    );
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(
+        r.stdout
+            .contains("PASS  empty.spec.js  (0 passed, 0 failed)"),
+        "{}",
+        r.all()
+    );
+}
+
+#[test]
+fn skipped_or_filtered_files_are_not_empty() {
+    // Collected-but-not-run tests are tasks too (vitest only errors on a file with NO tasks):
+    // skipped/todo tests and suites, and tests a -t pattern filters out, keep the file green.
+    let p = Project::new("rep-skipped");
+    p.file("skip.test.js", "test.skip('s', () => {})\n");
+    p.file("todo.test.js", "test.todo('t')\n");
+    p.file(
+        "dskip.test.js",
+        "describe.skip('d', () => { test('x', () => {}) })\n",
+    );
+    p.file("dtodo.test.js", "describe.todo('d')\n");
+    p.file(
+        "dif.test.js",
+        "describe.skipIf(true)('d', () => {})\ndescribe.runIf(false)('e', () => {})\n",
+    );
+    p.file("a.test.js", "test('alpha', () => {})\n");
+    p.file("empty.test.js", "export {}\n");
+    let files = [
+        "skip.test.js",
+        "todo.test.js",
+        "dskip.test.js",
+        "dtodo.test.js",
+        "dif.test.js",
+    ];
+    let r = turbo_test(&p.dir, &files, &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(r.stdout.contains("Test Files  5 passed (5)"), "{}", r.all());
+    for f in files {
+        assert!(
+            r.stdout
+                .contains(&format!("PASS  {f}  (0 passed, 0 failed)")),
+            "{f}: {}",
+            r.all()
+        );
+    }
+    let r = turbo_test(&p.dir, &["-t", "nomatch", "a.test.js"], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    // under isolate reuse the skipped-suite marker is reset per file: a skipped-suite file
+    // followed by an empty one on the same worker still fails the empty one
+    let r = turbo_test(
+        &p.dir,
+        &[
+            "--no-isolate",
+            "--jobs",
+            "1",
+            "dskip.test.js",
+            "empty.test.js",
+        ],
+        &[],
+    );
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout.contains("PASS  dskip.test.js")
+            && r.stdout
+                .contains("ERROR empty.test.js  (No test suite found in file "),
+        "{}",
+        r.all()
+    );
+}
+
+#[test]
 fn junit_reporter() {
     let p = fixture("rep-junit");
     let r = run(&p, &["--reporter", "junit"]);

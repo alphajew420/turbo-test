@@ -823,6 +823,12 @@ fn plan_no_files_found() {
         p.messages,
         vec!["turbo-test: no test files found — exiting 0 (--passWithNoTests)."]
     );
+    // with files, --passWithNoTests reaches the runtime: a file with no tests then passes
+    // (turbo-test#32 item 7, vitest semantics)
+    let f = t.file("a.test.ts", T).display().to_string();
+    let p = run_plan(&t, &["--passWithNoTests", &f]);
+    assert_eq!(argv(&p), vec![f]);
+    assert_eq!(p.env, vec![("TURBO_PASS_WITH_NO_TESTS", "1".to_string())]);
 }
 
 #[test]

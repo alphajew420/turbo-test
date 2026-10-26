@@ -3968,7 +3968,8 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     // Execution-control knobs from the CLI, plumbed to the runtime the same way as the name
     // pattern: env (set by cli.rs) → global the runtime reads. All optional.
     //   --testTimeout → __TT_DEFAULT_TIMEOUT (ms), --retry → __TT_DEFAULT_RETRY,
-    //   --silent → __TT_SILENT, --no-allowOnly → __TT_FORBID_ONLY.
+    //   --silent → __TT_SILENT, --no-allowOnly → __TT_FORBID_ONLY,
+    //   --passWithNoTests → __TT_PASS_WITH_NO_TESTS.
     let mut prelude = String::new();
     if let Ok(v) = std::env::var("TURBO_TEST_TIMEOUT") {
         if let Ok(n) = v.parse::<u64>() {
@@ -3985,6 +3986,10 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     }
     if std::env::var("TURBO_TEST_FORBID_ONLY").is_ok() {
         prelude.push_str("globalThis.__TT_FORBID_ONLY=true;");
+    }
+    // --passWithNoTests (launcher) → a file with no tests at all passes instead of failing
+    if std::env::var("TURBO_PASS_WITH_NO_TESTS").is_ok() {
+        prelude.push_str("globalThis.__TT_PASS_WITH_NO_TESTS=true;");
     }
     if !prelude.is_empty() {
         if let Some(code) = v8::String::new(scope, &prelude) {
@@ -4157,8 +4162,10 @@ pub struct TestCase {
 }
 
 impl TestReport {
+    /// Nothing failed — no failed test and no file-level failure entry. A file whose tests were
+    /// all skipped / filtered out is ok (it counts as a passed file).
     pub fn ok(&self) -> bool {
-        self.failed == 0 && self.passed > 0
+        self.failed == 0 && self.failures.is_empty()
     }
 }
 
