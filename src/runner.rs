@@ -2893,11 +2893,10 @@ fn register_mock_value<'s>(
     Some(())
 }
 
-/// Register a mock by running its factory source (self-contained `() => (...)`).
+/// Register a mock by running its factory source (self-contained `() => (...)`; every caller
+/// passes one — a factory-less mock is registered as an automock by the runtime).
 fn register_mock<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, factory_src: &str) -> Option<()> {
-    let exports_val = if factory_src.is_empty() {
-        v8::Object::new(scope).into()
-    } else {
+    let exports_val = {
         let code = v8::String::new(scope, &format!("({factory_src})"))?;
         let script = v8::Script::compile(scope, code, None)?;
         let f = v8::Local::<v8::Function>::try_from(script.run(scope)?).ok()?;
@@ -3648,12 +3647,15 @@ fn native_require(
         rv.set(v8::Local::new(scope, &g));
         return;
     }
-    // mocked?
-    let mocked = REGISTRY.with(|r| r.borrow().mocks.get(&abs).cloned());
-    if let Some(factory) = mocked {
-        if !REGISTRY.with(|r| r.borrow().cjs_exports.contains_key(&abs)) {
-            register_mock(scope, &abs, &factory);
-        }
+    // mocked? A registered mock is served from its cjs_exports below. Its exports stay while it
+    // is registered (invalidate_importers never evicts a mocked module, turbo-test#31 item 2);
+    // a mocks entry without them would load the real module rather than serve an empty `{}`.
+    let mocked = REGISTRY.with(|r| {
+        let reg = r.borrow();
+        reg.mocks.contains_key(&abs) && reg.cjs_exports.contains_key(&abs)
+    });
+    if mocked {
+        // served below
     } else if mr_enabled() || detect_kind(&abs) == Kind::Cjs {
         // MR: load everything as CJS (esbuild --format=cjs) so imports are live + mockable.
         let (loaded, cause) = {
@@ -3967,11 +3969,13 @@ fn ensure_vitest_builtin<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<()> {
 
 /// Load a dependency by path, honoring mocks and kind.
 fn load_dep<'s>(scope: &mut v8::PinScope<'s, '_>, dep: &Path) -> Option<()> {
-    let mocked = REGISTRY.with(|r| r.borrow().mocks.get(dep).cloned());
-    if let Some(factory) = mocked {
-        if !REGISTRY.with(|r| r.borrow().cjs_synth_by_path.contains_key(dep)) {
-            register_mock(scope, dep, &factory)?;
-        }
+    // a registered mock (its synthetic module is what importers link against; see native_require
+    // for why a mocked path always has one)
+    let mocked = REGISTRY.with(|r| {
+        let reg = r.borrow();
+        reg.mocks.contains_key(dep) && reg.cjs_synth_by_path.contains_key(dep)
+    });
+    if mocked {
         return Some(());
     }
     // CSS/asset imports -> stub (CSS-module proxy: any class name -> its own string). Assets and
