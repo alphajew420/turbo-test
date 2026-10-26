@@ -316,7 +316,7 @@ fn null_deferred_and_duplicate_cleanup_hook_are_invalid_arg() {
     with_scope(|s| {
         let mut env = env_for(s);
         let e: napi_env = &mut *env;
-        let arg = 1usize as *mut c_void;
+        let arg = std::ptr::dangling_mut::<c_void>();
         unsafe {
             let v = to_napi(v8::undefined(s).into());
             let null = std::ptr::null_mut();

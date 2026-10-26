@@ -775,7 +775,6 @@ fn bundled_dynamic_imports_load_the_bundled_module_lazily() {
 #[test]
 fn transform_to_parts_flags_default_rewrite() {
     let p = parts("export default 7;");
-    assert!(p.default_needs_rewrite);
     assert!(
         p.body_code.starts_with("var __tt_default = 7"),
         "{}",

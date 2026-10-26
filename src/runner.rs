@@ -58,8 +58,8 @@ thread_local! {
     static FORCE_FRESH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Isolate-reuse (TURBO_REUSE_ISOLATE): one persistent isolate + context per worker thread,
     /// reused across files so node_modules barrels are evaluated once, not per file.
-    static REUSE_ISO: RefCell<Option<v8::OwnedIsolate>> = RefCell::new(None);
-    static REUSE_CTX: RefCell<Option<v8::Global<v8::Context>>> = RefCell::new(None);
+    static REUSE_ISO: RefCell<Option<v8::OwnedIsolate>> = const { RefCell::new(None) };
+    static REUSE_CTX: RefCell<Option<v8::Global<v8::Context>>> = const { RefCell::new(None) };
     static DOM_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// CommonJS-first module resolution (jest/node backend projects). Set once per run from the
     /// entry's project: a jest config with a node test environment resolves the `require` export
@@ -375,12 +375,14 @@ fn is_esm_module_uncached(abs: &Path) -> bool {
     }
 }
 
+/// The resolvers by (nearest tsconfig, ESM importer, CJS-first resolution).
+type ResolverCache = HashMap<(Option<PathBuf>, bool, bool), std::rc::Rc<oxc_resolver::Resolver>>;
+
 /// A resolver configured for the nearest tsconfig of `from_dir` + the importer's module kind
 /// (ESM vs CJS conditions), cached per (tsconfig, esm).
 fn resolver_for(from_dir: &Path, esm: bool) -> std::rc::Rc<oxc_resolver::Resolver> {
     thread_local! {
-        static RESOLVERS: RefCell<HashMap<(Option<PathBuf>, bool, bool), std::rc::Rc<oxc_resolver::Resolver>>> =
-            RefCell::new(HashMap::new());
+        static RESOLVERS: RefCell<ResolverCache> = RefCell::new(HashMap::new());
     }
     // CJS-first mode is part of the key so a flip rebuilds the resolver (it changes conditions).
     let key = (nearest_tsconfig(from_dir), esm, CJS_FIRST_RESOLUTION.with(|c| c.get()));
@@ -517,6 +519,9 @@ pub fn resolve_spec(spec: &str, from_dir: &Path) -> Option<PathBuf> {
     resolve_spec_as(spec, from_dir, true)
 }
 
+/// The resolutions by (specifier, importer dir, ESM importer, CJS-first resolution).
+type ResolveMemo = HashMap<(String, PathBuf, bool, bool), Option<PathBuf>>;
+
 /// Resolve with the importer's module kind (`esm`) selecting ESM vs CJS export conditions.
 pub fn resolve_spec_as(spec: &str, from_dir: &Path, esm: bool) -> Option<PathBuf> {
     // E12: memoize per (spec, from_dir, esm, cjs-first). native_require repeats the same
@@ -525,8 +530,7 @@ pub fn resolve_spec_as(spec: &str, from_dir: &Path, esm: bool) -> Option<PathBuf
     // flips the resolver conditions (mirrors resolver_for's own cache key).
     if e12_enabled() {
         thread_local! {
-            static RES_MEMO: RefCell<HashMap<(String, PathBuf, bool, bool), Option<PathBuf>>> =
-                RefCell::new(HashMap::new());
+            static RES_MEMO: RefCell<ResolveMemo> = RefCell::new(HashMap::new());
         }
         let cjs = CJS_FIRST_RESOLUTION.with(|c| c.get());
         let key = (spec.to_string(), from_dir.to_path_buf(), esm, cjs);
@@ -2483,7 +2487,7 @@ fn strip_test_blocks(text: &str) -> String {
                         b')' => { depth -= 1; if depth == 0 { k += 1; break; } }
                         b'\'' | b'"' | b'`' => {
                             let q = b[k]; k += 1;
-                            while k < b.len() { if b[k] == b'\\' { k += 2; continue; } if b[k] == q { break; } k += 1; }
+                            while k < b.len() { if b[k] == b'\\' { k += 2; continue; } else if b[k] == q { break; } k += 1; }
                         }
                         b'/' if k + 1 < b.len() && b[k + 1] == b'/' => { while k < b.len() && b[k] != b'\n' { k += 1; } }
                         b'/' if k + 1 < b.len() && b[k + 1] == b'*' => { k += 2; while k + 1 < b.len() && !(b[k] == b'*' && b[k + 1] == b'/') { k += 1; } k += 1; }
@@ -2947,7 +2951,7 @@ fn collect_named_imports(text: &str, abs: &str) -> Vec<String> {
             if let Some(close) = head.rfind('}') {
                 if let Some(open) = head.get(..close).unwrap_or("").rfind('{') {
                     for part in head.get(open + 1..close).unwrap_or("").split(',') {
-                        let name = part.trim().split_whitespace().last().unwrap_or("").trim();
+                        let name = part.split_whitespace().last().unwrap_or("").trim();
                         if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$') {
                             out.push(name.to_string());
                         }
@@ -5462,7 +5466,7 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
             }
             c.stop(context);
         }
-        collector = None; // drop the inspector while the isolate + scope are still alive
+        drop(collector); // drop the inspector while the isolate + scope are still alive
 
         // drop all Globals while the isolate is still alive
         clear_registry();

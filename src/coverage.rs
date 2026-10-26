@@ -298,15 +298,21 @@ fn glob_filter(rel: &str, inc: &[String], exc: &[String]) -> bool {
     true
 }
 
+/// Per-file coverage records: file -> (key -> value).
+type PerFile<K, V> = Mutex<Option<HashMap<PathBuf, HashMap<K, V>>>>;
+/// A branch: (block, branch).
+type BranchKey = (u32, u32);
+/// A branch's record: (line, reached, max taken).
+type BranchHit = (u32, bool, u64);
+
 // file -> (origLine -> max hit count). Presence of a line = it's executable; value > 0 = covered.
-static COV: Mutex<Option<HashMap<PathBuf, HashMap<u32, u64>>>> = Mutex::new(None);
+static COV: PerFile<u32, u64> = Mutex::new(None);
 // file -> ((origLine, fnName) -> max call count). Function coverage.
-static FN_COV: Mutex<Option<HashMap<PathBuf, HashMap<(u32, String), u64>>>> = Mutex::new(None);
+static FN_COV: PerFile<(u32, String), u64> = Mutex::new(None);
 // file -> ((block, branch) -> (line, reached, max taken)). Branch coverage.
-static BR_COV: Mutex<Option<HashMap<PathBuf, HashMap<(u32, u32), (u32, bool, u64)>>>> =
-    Mutex::new(None);
+static BR_COV: PerFile<BranchKey, BranchHit> = Mutex::new(None);
 // file -> (statement index -> (line, max hit count)). Statement coverage.
-static ST_COV: Mutex<Option<HashMap<PathBuf, HashMap<u32, (u32, u64)>>>> = Mutex::new(None);
+static ST_COV: PerFile<u32, (u32, u64)> = Mutex::new(None);
 
 /// Record one statement's hit count. Merges across the many test files exercising the same source
 /// (a statement is covered if any run hit it — max count).
@@ -735,10 +741,8 @@ pub fn map_script(file: &Path, ranges: &[(usize, usize, i64)], funcs: &[(String,
     let innermost_gen = |off: usize| -> Option<i64> {
         let mut best: Option<(usize, i64)> = None;
         for &(s, e, c) in ranges {
-            if s <= off && off < e {
-                if best.map(|(bs, _)| s >= bs).unwrap_or(true) {
-                    best = Some((s, c));
-                }
+            if s <= off && off < e && best.map(|(bs, _)| s >= bs).unwrap_or(true) {
+                best = Some((s, c));
             }
         }
         best.map(|(_, c)| c)
@@ -1105,7 +1109,7 @@ fn build_rows(
         // branches (BRDA), sorted by (block, branch)
         let (mut brf, mut brh) = (0u64, 0u64);
         if let Some(brs) = br_map.and_then(|m| m.get(*file)) {
-            let mut bv: Vec<(&(u32, u32), &(u32, bool, u64))> = brs.iter().collect();
+            let mut bv: Vec<(&BranchKey, &BranchHit)> = brs.iter().collect();
             bv.sort_by(|a, b| a.0.cmp(b.0));
             for ((block, branch), (line, reached, taken)) in &bv {
                 // lcov: taken is "-" when the containing block never executed.

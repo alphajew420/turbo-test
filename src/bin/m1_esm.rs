@@ -102,13 +102,8 @@ fn load_graph<'s>(
     for i in 0..requests.length() {
         let req = v8::Local::<v8::ModuleRequest>::try_from(requests.get(scope, i).unwrap()).unwrap();
         let spec = req.get_specifier().to_rust_string_lossy(scope);
-        if let Some(dep) = resolve_spec(&spec, &dir) {
-            if load_graph(scope, &dep).is_none() {
-                return None;
-            }
-        } else {
-            return None;
-        }
+        let dep = resolve_spec(&spec, &dir)?;
+        load_graph(scope, &dep)?;
     }
 
     Some(module)

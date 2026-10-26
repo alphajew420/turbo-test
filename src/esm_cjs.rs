@@ -112,7 +112,10 @@ pub(crate) struct ExportEntry {
 pub(crate) enum SourceRef {
     /// runtime `require("spec")` (bare import, or app mode where everything is external)
     External,
-    /// a bundled ESM module: `init_<id>()` then read `<id>_exports`
+    /// a bundled ESM module: `init_<id>()` then read `<id>_exports`. The lowering is unit-tested
+    /// (esm_cjs_tests.rs); the bundler resolves package files as CJS only so far (bundler.rs),
+    /// so outside the tests nothing constructs it.
+    #[cfg_attr(not(test), allow(dead_code))]
     BundledEsm { id: String },
     /// a bundled CJS module: `require_<id>()` returns its `module.exports`
     BundledCjs { id: String },
@@ -143,7 +146,6 @@ pub(crate) struct ModuleParts {
     pub re_exports: Vec<String>,
     pub exports: Vec<ExportEntry>,
     pub body_code: String,
-    pub default_needs_rewrite: bool,
     /// true if the module used any static ESM import/export (else it's CJS / a plain script).
     pub has_module_syntax: bool,
     /// true if the body references `__toESM` (a lowered dynamic `import()`). Only the module
@@ -514,7 +516,6 @@ fn lower<'a>(
             re_exports,
             exports,
             body_code,
-            default_needs_rewrite,
             has_module_syntax,
             uses_to_esm,
         },
@@ -577,7 +578,7 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
     let mut default_needs_rewrite = false;
     // (exported, local_name, local_symbol) for `export { a, b as c }` — resolved against `imports`
     // after all imports are collected.
-    let mut deferred_named: Vec<(String, String, Option<SymbolId>)> = Vec::new();
+    let mut deferred_named: Vec<DeferredNamed> = Vec::new();
 
     let stmts = std::mem::replace(&mut program.body, ast.vec());
     let mut seq = 0usize;
@@ -590,7 +591,7 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
             }
             Statement::ExportNamedDeclaration(decl) => {
                 seq += 1;
-                if !collect_export_named(scoping, decl.unbox(), seq, ctx, &mut requires, &mut exports, &mut deferred_named, &mut body_stmts) {
+                if !collect_export_named(scoping, decl.unbox(), seq, ctx, &mut requires, (&mut exports, &mut deferred_named), &mut body_stmts) {
                     return None;
                 }
             }
@@ -760,6 +761,9 @@ fn collect_import(
     }
 }
 
+/// An `export { a as b }` name: (exported, local name, local symbol).
+type DeferredNamed = (String, String, Option<SymbolId>);
+
 /// `export <decl>` / `export { ... } [from "s"]`.
 fn collect_export_named<'a>(
     scoping: &Scoping,
@@ -767,8 +771,8 @@ fn collect_export_named<'a>(
     seq: usize,
     ctx: &LowerCtx,
     requires: &mut Vec<String>,
-    exports: &mut Vec<ExportEntry>,
-    deferred_named: &mut Vec<(String, String, Option<SymbolId>)>,
+    // the export entries, and the `export { a as b }` names resolved once all imports are known
+    (exports, deferred_named): (&mut Vec<ExportEntry>, &mut Vec<DeferredNamed>),
     body_stmts: &mut Vec<Statement<'a>>,
 ) -> bool {
     if let Some(d) = decl.declaration {

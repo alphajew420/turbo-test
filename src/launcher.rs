@@ -149,7 +149,7 @@ fn extract_quoted(s: &str) -> Vec<String> {
     while i < bytes.len() {
         let c = bytes[i];
         if c == b'\'' || c == b'"' || c == b'`' {
-            if let Some(end_rel) = s[i + 1..].find(|ch| ch == '\'' || ch == '"' || ch == '`') {
+            if let Some(end_rel) = s[i + 1..].find(['\'', '"', '`']) {
                 let val = &s[i + 1..i + 1 + end_rel];
                 if !val.is_empty() {
                     out.push(val.to_string());

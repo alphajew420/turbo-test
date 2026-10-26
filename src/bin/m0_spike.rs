@@ -19,8 +19,8 @@ use std::time::Instant;
 
 /// Stand-in for the framework layer (expect/chai/snapshot/vi + turbo-dom).
 ///
-/// The real layer is heavy: @vitest/expect + chai + @vitest/snapshot + @vitest/spy
-/// + turbo-dom are hundreds of KB of JS that must be *evaluated* once per context.
+/// The real layer is heavy: @vitest/expect, chai, @vitest/snapshot, @vitest/spy and
+/// turbo-dom are hundreds of KB of JS that must be *evaluated* once per context.
 /// Without a snapshot every test file re-evaluates all of it; the snapshot bakes the
 /// post-evaluation heap so a fresh context skips it. The spike must therefore model a
 /// realistically heavy setup, not a 20-line toy — otherwise it measures nothing.

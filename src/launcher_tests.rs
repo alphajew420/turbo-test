@@ -1179,7 +1179,7 @@ fn plan_isolate_environment_and_root_flags() {
             ("TURBO_ENV", "jsdom".to_string())
         ]
     );
-    assert_eq!(argv(&p), args(&["--testTimeout", "1234", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout", "1234", a]));
     // flag beats config; --dir / inline forms
     let p = run_plan(
         &t,
@@ -1199,19 +1199,19 @@ fn plan_isolate_environment_and_root_flags() {
             ("TURBO_ENV", "happy-dom".to_string())
         ]
     );
-    assert_eq!(argv(&p), args(&["--testTimeout", "9", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout", "9", a]));
     let p = run_plan(
         &t,
         &["--environment=node", "--root", "proj", "--testTimeout=5"],
     );
     assert_eq!(env_of(&p, "TURBO_ENV"), Some("node"));
-    assert_eq!(argv(&p), args(&["--testTimeout=5", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout=5", a]));
     // --environment with no value (next token is a flag) falls back to the config
     let p = run_plan(&t, &["--environment", "--root", "proj"]);
     assert_eq!(env_of(&p, "TURBO_ENV"), Some("jsdom"));
     // an absolute --root; last of --root/--dir wins
     let p = run_plan(&t, &["--root", "nowhere", "--dir", &t.p("proj")]);
-    assert_eq!(argv(&p), args(&["--testTimeout", "1234", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout", "1234", a]));
     // a --root without a config: no env, no timeout injection
     t.file("plain/b.test.ts", T);
     let p = run_plan(&t, &["--root", "plain"]);
@@ -1222,7 +1222,7 @@ fn plan_isolate_environment_and_root_flags() {
     // a value-less trailing --testTimeout is dropped (turbo-test#32 item 3), so it no longer
     // counts as passed: the config's value is injected
     let p = run_plan(&t, &["--root", "proj", "--testTimeout"]);
-    assert_eq!(argv(&p), args(&["--testTimeout", "1234", &a]));
+    assert_eq!(argv(&p), args(&["--testTimeout", "1234", a]));
 }
 
 #[test]
