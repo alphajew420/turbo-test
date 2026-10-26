@@ -100,18 +100,19 @@ fn cached(p: &Project, prefix: &str) -> Vec<String> {
     v
 }
 
-/// Run the project under the native emitter in strict mode with a fresh cache, then under the
-/// esbuild baseline; both must pass `passed` tests. Under native, every app file must load from
+/// Run `files` of the project under the native emitter in strict mode with a fresh cache, then
+/// under the esbuild baseline; both must pass `passed` tests. Under native, every app file must load from
 /// the native emitter's output: the only esbuild app transform (`mr-*.cjs`) may be the runner's
 /// probe of the test entry, so a second one means a module's native output failed to compile and
 /// was silently re-transformed by esbuild.
-fn native_and_esbuild_agree(p: &Project, passed: u64) {
+fn native_and_esbuild_agree(p: &Project, files: &[&str], passed: u64) {
     for env in [
         &[("TURBO_NATIVE_CJS_STRICT", "1")][..],
         &[("TURBO_NATIVE_CJS", "0"), ("TURBO_NATIVE_DEPS", "0")][..],
     ] {
         let _ = std::fs::remove_dir_all(p.path(".tt-cache"));
-        let r = turbo_test(&p.dir, &["--reporter", "json"], env);
+        let args = [&["--reporter", "json"][..], files].concat();
+        let r = turbo_test(&p.dir, &args, env);
         assert_eq!(r.code, Some(0), "{env:?}: {}", r.all());
         let j = json_report(&r);
         assert_eq!(j["numPassedTests"], passed, "{env:?}: {}", r.all());
@@ -136,7 +137,57 @@ fn dynamic_import_in_a_module_without_static_imports() {
         "a.test.js",
         "test('dyn', async () => { const m = await import('./m.js'); expect(m.v).toBe(7); });\n",
     );
-    native_and_esbuild_agree(&p, 1);
+    native_and_esbuild_agree(&p, &[], 1);
+}
+
+#[test]
+fn dynamic_import_defers_the_load_and_rejects() {
+    // turbo-test#37 item 2: the lowered `import()` required the module synchronously, so a
+    // module that throws made `import()` throw instead of returning a rejected promise.
+    let p = mr_project("xform-dynreject");
+    p.file("t.js", "throw new Error('boom');\n");
+    p.file("m.js", "export const v = 7;\n");
+    p.file(
+        "node_modules/ddep/package.json",
+        "{\"name\":\"ddep\",\"main\":\"index.js\"}",
+    );
+    p.file("node_modules/ddep/n.js", "export const n = 1;\n");
+    p.file(
+        "node_modules/ddep/index.js",
+        "import * as ns from './n.js';\nexport { ns };\nexport const load = () => import('./n.js');\n",
+    );
+    p.file(
+        "a.test.js",
+        r#"import { ns, load } from 'ddep';
+test('rej', async () => {
+  const p = (() => { try { return import('./t.js'); } catch (e) { return 'sync:' + e.message; } })();
+  expect(typeof p).toBe('object');
+  await expect(p).rejects.toThrow('boom');
+});
+test('bundled dep import() reads the bundled instance', async () => {
+  expect(await load()).toBe(ns);
+});
+test('doMock before import() is seen', async () => {
+  vi.doMock('./m.js', () => ({ v: 'mocked' }));
+  expect((await import('./m.js')).v).toBe('mocked');
+  vi.doUnmock('./m.js');
+});
+"#,
+    );
+    native_and_esbuild_agree(&p, &["a.test.js"], 3);
+    // Node / vitest evaluate the specifier at the `import()` call; only the load is deferred.
+    // (esbuild's lowering, the TURBO_NATIVE_CJS=0 baseline, evaluates it lazily inside `.then`.)
+    p.file(
+        "eager.test.js",
+        "test('specifier is evaluated at the call', async () => {\n\
+         let s = './m.js';\nconst p = import(s);\ns = './t.js';\nexpect((await p).v).toBe(7);\n});\n",
+    );
+    let r = turbo_test(
+        &p.dir,
+        &["eager.test.js"],
+        &[("TURBO_NATIVE_CJS_STRICT", "1")],
+    );
+    assert_eq!(r.code, Some(0), "{}", r.all());
 }
 
 /// App file + dep package the native path can't lower (JSX namespace names) but esbuild can.

@@ -218,7 +218,32 @@ fn references_are_rewritten_scope_correctly() {
 fn dynamic_import_inside_dynamic_import_lowers_both() {
     let o = e("const m = import((await import(\"./a\")).name);");
     assert!(
-        o.contains("Promise.resolve(__toESM(require((await Promise.resolve(__toESM(require(\"./a\")))).name)))"),
+        o.contains(
+            "((__tt_spec) => Promise.resolve().then(() => __toESM(require(__tt_spec))))\
+             ((await Promise.resolve().then(() => __toESM(require(\"./a\")))).name)"
+        ),
+        "{o}"
+    );
+}
+
+#[test]
+fn dynamic_import_defers_the_load_and_evaluates_the_specifier_eagerly() {
+    // turbo-test#37 item 2: `Promise.resolve(__toESM(require(x)))` ran the module body
+    // synchronously, so a throwing module threw out of `import()` instead of rejecting. Node /
+    // vitest / esbuild defer the load to a later job: the promise rejects.
+    let o = e("const p = import(\"./t.js\");");
+    assert!(
+        o.contains("const p = Promise.resolve().then(() => __toESM(require(\"./t.js\")));"),
+        "{o}"
+    );
+    // a computed specifier is still evaluated at the `import()` call (Node semantics; a later
+    // reassignment must not change what is loaded), only the load is deferred
+    let o = e("let s = \"./a\"; const p = import(s + \".js\"); s = \"./b\";");
+    assert!(
+        o.contains(
+            "const p = ((__tt_spec) => Promise.resolve().then(() => __toESM(require(__tt_spec))))\
+             (s + \".js\");"
+        ),
         "{o}"
     );
 }
@@ -667,6 +692,37 @@ fn bundled_require_calls_are_rewritten_only_for_static_bundled_specs() {
     assert!(b.contains("const g = foo(\"./cjs\");"), "{b}");
     assert!(b.contains("const h = obj.require(\"./cjs\");"), "{b}");
     assert!(!p.has_module_syntax, "require() alone is not ESM syntax");
+}
+
+#[test]
+fn bundled_dynamic_imports_load_the_bundled_module_lazily() {
+    // a relative `import()` whose target is in the bundle (it is also imported statically)
+    // reads that bundled instance, like esbuild's bundle, instead of a second runtime require
+    let p = parts(
+        "const a = import(\"./cjs\"); const b = import(\"./esm\"); const c = import(\"bare\");\n\
+         const d = import(`./cjs`);",
+    );
+    let b = &p.body_code;
+    assert!(
+        b.contains("const a = Promise.resolve().then(() => __toESM(require_c()));"),
+        "{b}"
+    );
+    assert!(
+        b.contains("const b = Promise.resolve().then(() => (init_e(), e_exports));"),
+        "{b}"
+    );
+    assert!(
+        b.contains("const c = Promise.resolve().then(() => __toESM(require(\"bare\")));"),
+        "{b}"
+    );
+    assert!(
+        b.contains("require(__tt_spec))))(`./cjs`);"),
+        "a computed specifier stays a runtime require: {b}"
+    );
+    assert!(p.uses_to_esm);
+    assert!(!p.has_module_syntax, "import() alone is not ESM syntax");
+    let p = parts("const b = import(\"./esm\");");
+    assert!(!p.uses_to_esm, "a bundled ESM namespace needs no __toESM");
 }
 
 #[test]

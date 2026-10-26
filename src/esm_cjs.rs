@@ -196,27 +196,87 @@ impl<'a> EmitState<'a, '_> {
         self.ast.expression_call(SPAN, callee, NONE, self.ast.vec1(Argument::from(arg)), false)
     }
 
-    /// `obj.method(arg)`.
-    fn call_member(&self, obj: &str, method: &str, arg: Expression<'a>) -> Expression<'a> {
-        let object = self.ast.expression_identifier(SPAN, self.ast.ident(obj));
+    /// `object.method(args…)`.
+    fn call_method(
+        &self,
+        object: Expression<'a>,
+        method: &str,
+        args: Vec<Expression<'a>>,
+    ) -> Expression<'a> {
         let callee = Expression::StaticMemberExpression(self.ast.alloc_static_member_expression(
             SPAN,
             object,
             self.ast.identifier_name(SPAN, self.ast.ident(method)),
             false,
         ));
-        self.ast.expression_call(SPAN, callee, NONE, self.ast.vec1(Argument::from(arg)), false)
+        let args = self.ast.vec_from_iter(args.into_iter().map(Argument::from));
+        self.ast.expression_call(SPAN, callee, NONE, args, false)
     }
 
-    /// Convert a dynamic `import(x)` into `Promise.resolve(__toESM(require(x)))` — esbuild's
-    /// `--supported:dynamic-import=false` lowering. The runner's CJS `require` resolves relative
-    /// specifiers the same way static requires do, and `__toESM` preserves default/named interop
-    /// so `(await import('./m')).default` / `.named` keep working.
-    fn lower_dynamic_import(&mut self, source: Expression<'a>) -> Expression<'a> {
+    /// `(<param>) => body` (no parameter when `param` is `None`).
+    fn arrow(&self, param: Option<&str>, body: Expression<'a>) -> Expression<'a> {
+        let ast = self.ast;
+        let items = ast.vec_from_iter(param.map(|name| {
+            let pattern = ast.binding_pattern_binding_identifier(SPAN, ast.ident(name));
+            ast.plain_formal_parameter(SPAN, pattern)
+        }));
+        let kind = FormalParameterKind::ArrowFormalParameters;
+        let params = ast.alloc_formal_parameters(SPAN, kind, items, NONE);
+        let stmt = ast.statement_expression(SPAN, body);
+        let body = ast.alloc_function_body(SPAN, ast.vec(), ast.vec1(stmt));
+        ast.expression_arrow_function(SPAN, true, false, NONE, params, NONE, body)
+    }
+
+    /// `Promise.resolve().then(() => module)` — `module` is evaluated in a later job.
+    fn deferred(&self, module: Expression<'a>) -> Expression<'a> {
+        let promise = self
+            .ast
+            .expression_identifier(SPAN, self.ast.ident("Promise"));
+        let resolved = self.call_method(promise, "resolve", vec![]);
+        let load = self.arrow(None, module);
+        self.call_method(resolved, "then", vec![load])
+    }
+
+    /// `__toESM(<module.exports>)`, noting that the body now needs the helper.
+    fn wrap_to_esm(&mut self, module_exports: Expression<'a>) -> Expression<'a> {
         self.uses_to_esm = true;
-        let require_call = self.call_global("require", source);
-        let toesm = self.call_global("__toESM", require_call);
-        self.call_member("Promise", "resolve", toesm)
+        self.call_global("__toESM", module_exports)
+    }
+
+    /// Lower a dynamic `import(x)` like esbuild's `--supported:dynamic-import=false`:
+    /// `Promise.resolve().then(() => __toESM(require(x)))`. The load runs in a later job, so a
+    /// module that throws REJECTS the promise instead of throwing out of `import()` (Node / vitest),
+    /// and a `vi.doMock` registered before the call is seen. The runner's CJS `require` resolves
+    /// relative specifiers like static requires do, and `__toESM` keeps default/named interop so
+    /// `(await import('./m')).default` / `.named` work. A computed specifier is evaluated at the
+    /// call, as in Node (esbuild evaluates it inside the `.then`):
+    /// `((__tt_spec) => Promise.resolve().then(() => __toESM(require(__tt_spec))))(x)`. In bundler
+    /// mode a literal specifier of a bundled module loads that module's lazy init / `require_<id>`.
+    fn lower_dynamic_import(&mut self, source: Expression<'a>) -> Expression<'a> {
+        let Expression::StringLiteral(spec) = &source else {
+            let spec = self
+                .ast
+                .expression_identifier(SPAN, self.ast.ident("__tt_spec"));
+            let require_call = self.call_global("require", spec);
+            let load = self.wrap_to_esm(require_call);
+            let deferred = self.deferred(load);
+            let lower = self.arrow(Some("__tt_spec"), deferred);
+            let lower = self.ast.expression_parenthesized(SPAN, lower);
+            let args = self.ast.vec1(Argument::from(source));
+            return self.ast.expression_call(SPAN, lower, NONE, args, false);
+        };
+        let module = match self.resolve.map(|resolve| resolve(spec.value.as_str())) {
+            Some(SourceRef::BundledEsm { id }) => self.build_init_exports(&id),
+            Some(SourceRef::BundledCjs { id }) => {
+                let require_call = self.build_require_id(&id);
+                self.wrap_to_esm(require_call)
+            }
+            _ => {
+                let require_call = self.call_global("require", source);
+                self.wrap_to_esm(require_call)
+            }
+        };
+        self.deferred(module)
     }
 
     /// `init_<id>(), <id>_exports` as a parenthesized sequence — the namespace of a bundled ESM
@@ -1026,14 +1086,17 @@ mod tests_dynimport {
     #[test]
     fn dynamic_import_lowers_to_require() {
         let o = emit(Path::new("t.ts"), "const m = await import(\"./x\"); m.default;").unwrap();
-        assert!(o.contains("Promise.resolve(__toESM(require(\"./x\")))"), "{o}");
+        assert!(
+            o.contains("Promise.resolve().then(() => __toESM(require(\"./x\")))"),
+            "{o}"
+        );
         assert!(!o.contains(" import("), "raw import() must be gone: {o}");
     }
     #[test]
     fn dynamic_import_with_imported_specifier_var() {
         // import() whose arg references an imported binding gets the live access rewrite too.
         let o = emit(Path::new("t.ts"), "import { p } from \"s\"; await import(p);").unwrap();
-        assert!(o.contains("require(import_s_1.p)"), "{o}");
+        assert!(o.contains("require(__tt_spec))))(import_s_1.p)"), "{o}");
     }
 }
 

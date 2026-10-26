@@ -76,8 +76,8 @@ fn resolve_rel(resolver: &oxc_resolver::Resolver, importer: &Path, spec: &str) -
 }
 
 /// Collect static relative specifiers from a module's (TS-stripped) JS: import/export-from/`export
-/// *` sources + `require("…")` literals. Dynamic `import()` is intentionally excluded (left to
-/// runtime require, not bundled).
+/// *` sources + `require("…")` literals. Dynamic `import()` is intentionally excluded (not walked:
+/// left to a runtime require, unless its target is bundled via a static edge anyway).
 struct SpecCollector {
     specs: Vec<String>,
 }
