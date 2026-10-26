@@ -166,7 +166,37 @@ extern napi_status napi_get_reference_value(napi_env, napi_ref, napi_value *);
 extern napi_status napi_delete_reference(napi_env, napi_ref);
 extern napi_status napi_reference_ref(napi_env, napi_ref, uint32_t *);
 extern napi_status napi_reference_unref(napi_env, napi_ref, uint32_t *);
-extern napi_status napi_add_env_cleanup_hook(napi_env, void *, void *);
+extern napi_status napi_add_env_cleanup_hook(napi_env, void (*)(void *), void *);
+extern napi_status napi_remove_env_cleanup_hook(napi_env, void (*)(void *), void *);
+typedef void *napi_async_cleanup_hook_handle;
+extern napi_status napi_add_async_cleanup_hook(napi_env,
+                                               void (*)(napi_async_cleanup_hook_handle, void *),
+                                               void *, napi_async_cleanup_hook_handle *);
+extern napi_status napi_remove_async_cleanup_hook(napi_async_cleanup_hook_handle);
+extern napi_status napi_set_instance_data(napi_env, void *, napi_finalize, void *);
+extern napi_status napi_get_instance_data(napi_env, void **);
+extern napi_status napi_adjust_external_memory(napi_env, int64_t, int64_t *);
+typedef void *napi_handle_scope;
+typedef void *napi_escapable_handle_scope;
+extern napi_status napi_open_handle_scope(napi_env, napi_handle_scope *);
+extern napi_status napi_close_handle_scope(napi_env, napi_handle_scope);
+extern napi_status napi_open_escapable_handle_scope(napi_env, napi_escapable_handle_scope *);
+extern napi_status napi_close_escapable_handle_scope(napi_env, napi_escapable_handle_scope);
+extern napi_status napi_escape_handle(napi_env, napi_escapable_handle_scope, napi_value,
+                                      napi_value *);
+extern napi_status napi_run_script(napi_env, napi_value, napi_value *);
+extern napi_status node_api_get_module_file_name(napi_env, const char **);
+typedef napi_value (*napi_addon_register_func)(napi_env, napi_value);
+typedef struct {
+    int nm_version;
+    unsigned int nm_flags;
+    const char *nm_filename;
+    napi_addon_register_func nm_register_func;
+    const char *nm_modname;
+    void *nm_priv;
+    void *reserved[4];
+} napi_module;
+extern void napi_module_register(napi_module *);
 extern napi_status napi_stub(void);
 typedef enum {
     napi_default = 0,

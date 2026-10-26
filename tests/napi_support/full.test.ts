@@ -502,19 +502,15 @@ describe('arraybuffers, typed arrays, buffers', () => {
   });
 });
 
-describe('unsupported entrypoints throw catchable errors', () => {
-  test('napi_new_instance', () => {
-    expect(() => a.newInstance(class {})).toThrow(
-      'turbo-test: N-API napi_new_instance is not implemented (native addon called an unsupported entrypoint)',
-    );
-    expect(a.status()).toBe(PENDING_EXCEPTION);
-    let caught: unknown;
-    try {
-      a.newInstance(class {});
-    } catch (e) {
-      caught = e;
+describe('napi_new_instance', () => {
+  test('constructs an instance of a class', () => {
+    class C {
+      made = true;
     }
-    expect(caught).toBeInstanceOf(Error);
+    const o = a.newInstance(C);
+    expect(o).toBeInstanceOf(C);
+    expect(o.made).toBe(true);
+    expect(a.status()).toBe(OK);
   });
 });
 
@@ -687,6 +683,7 @@ describe('references', () => {
 
 describe('stubs', () => {
   test('cleanup hooks, napi_stub, threadsafe functions', () => {
-    expect(a.stubs()).toEqual([OK, GENERIC_FAILURE, OK, true, OK, OK]);
+    // a NULL cleanup hook is napi_invalid_arg, as Node
+    expect(a.stubs()).toEqual([INVALID_ARG, GENERIC_FAILURE, OK, true, OK, OK]);
   });
 });

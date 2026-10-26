@@ -162,11 +162,27 @@ pub struct Env {
     pub last_error: napi_extended_error_info,
     /// The Node-API version the addon declares (node_api_module_get_api_version_v1), else 8.
     pub module_api_version: i32,
+    /// What the addons of this env's isolate share (the teardown work).
+    shared: std::rc::Rc<Shared>,
+    /// Handle scopes opened and not closed (napi_open_handle_scope / _escapable_).
+    open_handle_scopes: i32,
+    /// The finalizer record of napi_set_instance_data's data.
+    instance_data: Option<u64>,
+    /// The addon's file as a file: URL (node_api_get_module_file_name).
+    filename: std::ffi::CString,
 }
 
 impl Env {
     /// A new env for an addon loaded in `scope`'s isolate and context.
     pub fn new(scope: &mut v8::PinScope) -> Env {
+        let shared = match scope.get_slot::<AddonEnvs>() {
+            Some(envs) => envs.0.clone(),
+            None => {
+                let shared = std::rc::Rc::<Shared>::default();
+                scope.set_slot(AddonEnvs(shared.clone()));
+                shared
+            }
+        };
         Env {
             isolate: unsafe { scope.as_raw_isolate_ptr() },
             scope: scope as *mut v8::PinScope as *mut c_void,
@@ -184,6 +200,10 @@ impl Env {
                 error_code: napi_ok,
             },
             module_api_version: DEFAULT_MODULE_API_VERSION,
+            shared,
+            open_handle_scopes: 0,
+            instance_data: None,
+            filename: std::ffi::CString::default(),
         }
     }
 }
@@ -211,6 +231,17 @@ impl Drop for Env {
 /// isolate is mid-disposal (OwnedIsolate::drop has exited it before dropping its slots, the env
 /// included) but not yet disposed: it is entered again for the scope.
 unsafe fn teardown_finalizers(env: napi_env) {
+    in_teardown_scope(env, || {
+        while let Some((_, fin)) = (*env).finalizers.pop_last() {
+            run_finalizer(env, &Box::from_raw(fin));
+        }
+    });
+}
+
+/// Run `f` at env teardown in a handle scope of `env`'s context, with JS disabled for the env
+/// (Node's !can_call_into_js()). The isolate is mid-disposal (OwnedIsolate::drop has exited it
+/// before dropping its slots, the envs included) but not yet disposed: it is entered again.
+unsafe fn in_teardown_scope(env: napi_env, f: impl FnOnce()) {
     let isolate = &mut v8::Isolate::from_raw_isolate_ptr((*env).isolate);
     isolate.enter();
     {
@@ -219,9 +250,7 @@ unsafe fn teardown_finalizers(env: napi_env) {
         let cs: &mut v8::PinScope = &mut v8::ContextScope::new(hs, context);
         (*env).scope = cs as *mut v8::PinScope as *mut c_void;
         (*env).tearing_down = true;
-        while let Some((_, fin)) = (*env).finalizers.pop_last() {
-            run_finalizer(env, &Box::from_raw(fin));
-        }
+        f();
         (*env).scope = std::ptr::null_mut();
     }
     isolate.exit();
@@ -345,16 +374,68 @@ pub struct Callback {
     data: *mut c_void,
 }
 
-/// The envs of every addon loaded into an isolate, kept in an isolate slot so they are freed
-/// with the isolate: the functions pointing into them cannot outlive it either.
-struct AddonEnvs(Vec<napi_env>);
+/// What the addons of one isolate share, kept in an isolate slot (`AddonEnvs`) so it goes with
+/// the isolate (the functions pointing into the envs cannot outlive it either): the teardown
+/// work of their envs, in registration order.
+#[derive(Default)]
+pub struct Shared {
+    teardown: std::cell::RefCell<Vec<Teardown>>,
+}
+
+/// One piece of an isolate's teardown work, run newest first (Node runs its environment
+/// cleanup hooks in reverse order of registration).
+enum Teardown {
+    /// An addon's env (registered when the addon loads): its finalizers run and it is freed.
+    Env(napi_env),
+    /// napi_add_env_cleanup_hook: `fun(arg)`.
+    Hook(napi_env, unsafe extern "C" fn(*mut c_void), *mut c_void),
+    /// napi_add_async_cleanup_hook: the hook is called with its handle, which the addon then
+    /// removes (napi_remove_async_cleanup_hook frees it).
+    AsyncHook(*mut AsyncCleanupHook),
+}
+
+/// The isolate slot owning `Shared`; dropping it (isolate disposal) runs the teardown work.
+struct AddonEnvs(std::rc::Rc<Shared>);
 
 impl Drop for AddonEnvs {
     fn drop(&mut self) {
-        for &env in &self.0 {
-            drop(unsafe { Box::from_raw(env) });
+        let shared = &self.0;
+        // as Node's environment cleanup: no addon's env can run JS any more
+        for item in shared.teardown.borrow().iter() {
+            if let Teardown::Env(env) = item {
+                unsafe { (**env).tearing_down = true };
+            }
+        }
+        // (a hook may register more work: it runs next)
+        loop {
+            let item = shared.teardown.borrow_mut().pop();
+            let Some(item) = item else { break };
+            unsafe {
+                match item {
+                    Teardown::Env(env) => drop(Box::from_raw(env)),
+                    Teardown::Hook(env, fun, arg) => in_teardown_scope(env, || {
+                        let _ = call_addon(|| fun(arg));
+                    }),
+                    Teardown::AsyncHook(h) => in_teardown_scope((*h).env, || {
+                        let _ = call_addon(|| ((*h).hook)(h, (*h).arg));
+                    }),
+                }
+            }
         }
     }
+}
+
+/// The teardown work list `env` registers into (its isolate's).
+unsafe fn teardown_of<'a>(env: napi_env) -> &'a std::cell::RefCell<Vec<Teardown>> {
+    let e = &*env;
+    &e.shared.teardown
+}
+
+/// A napi_async_cleanup_hook_handle: the hook and its argument, until removed.
+pub struct AsyncCleanupHook {
+    env: napi_env,
+    hook: unsafe extern "C" fn(*mut AsyncCleanupHook, *mut c_void),
+    arg: *mut c_void,
 }
 
 /// Process-global lock serializing native `.node` addon entry across worker threads (the shared
@@ -2572,6 +2653,19 @@ unsafe fn track_finalizer(
     finalize: Option<napi_finalize>,
     hint: *mut c_void,
 ) -> *mut Finalizer {
+    let fin = new_finalizer(env, native, finalize, hint);
+    let on_gc = Box::new(move |isolate: &mut v8::Isolate| finalizer_collected(isolate, fin));
+    (*fin).weak = Some(v8::Weak::with_finalizer(s, obj, on_gc));
+    fin
+}
+
+/// A new finalizer record held by the env (run at env teardown unless removed first).
+unsafe fn new_finalizer(
+    env: napi_env,
+    native: *mut c_void,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+) -> *mut Finalizer {
     let e = &mut *env;
     let id = e.next_finalizer;
     e.next_finalizer += 1;
@@ -2584,8 +2678,6 @@ unsafe fn track_finalizer(
         weak: None,
         own_ref: 0,
     }));
-    let on_gc = Box::new(move |isolate: &mut v8::Isolate| finalizer_collected(isolate, fin));
-    (*fin).weak = Some(v8::Weak::with_finalizer(s, obj, on_gc));
     e.finalizers.insert(id, fin);
     fin
 }
@@ -2929,30 +3021,29 @@ pub unsafe extern "C" fn napi_is_promise(
     is_kind(env, v, out, |v| v.is_promise())
 }
 
-// ---- new_instance: not supported; surface as a CATCHABLE JS throw ----------
-// Constructing a native class instance (napi_new_instance) is not modelled. Rather than leave it
-// UNEXPORTED (null pointer -> SIGSEGV when the addon calls it), export it and throw a clear,
-// catchable JS error so the require() fails as a normal load-error and the rest of the run
-// survives.
-unsafe fn throw_unsupported(env: napi_env, name: &str) -> napi_status {
-    js_call(env, |s| {
-        let msg = format!("turbo-test: N-API {name} is not implemented (native addon called an unsupported entrypoint)");
-        if let Some(m) = v8::String::new(s, &msg) {
-            let exc = v8::Exception::error(s, m);
-            s.throw_exception(exc);
-        }
-        Err(napi_pending_exception)
-    })
-}
 #[no_mangle]
 pub unsafe extern "C" fn napi_new_instance(
     env: napi_env,
-    _constructor: napi_value,
-    _argc: usize,
-    _argv: *const napi_value,
-    _result: *mut napi_value,
+    constructor: napi_value,
+    argc: usize,
+    argv: *const napi_value,
+    out: *mut napi_value,
 ) -> napi_status {
-    throw_unsupported(env, "napi_new_instance")
+    js_call(env, |s| {
+        let ctor = val_arg(constructor)?;
+        if argc > 0 && argv.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let out = out_arg(out)?;
+        let ctor: v8::Local<v8::Function> = ctor.try_into().map_err(|_| napi_invalid_arg)?;
+        let args: Vec<v8::Local<v8::Value>> = (0..argc).map(|i| to_local(*argv.add(i))).collect();
+        *out = to_napi(
+            ctor.new_instance(s, &args)
+                .ok_or(napi_pending_exception)?
+                .into(),
+        );
+        Ok(())
+    })
 }
 
 // ---- errors / exceptions --------------------------------------------------
@@ -3390,13 +3481,261 @@ pub unsafe extern "C" fn napi_reference_unref(
 
 // ---- stubs (threadsafe fns / cleanup hooks — not exercised by sync parse) ---
 
+// ---- instance data, cleanup hooks, scopes, scripts ---------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_set_instance_data(
+    env: napi_env,
+    data: *mut c_void,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+) -> napi_status {
+    basic(env, || {
+        // as Node: the previous data is dropped without its finalizer
+        if let Some(old) = (*env).instance_data.take() {
+            drop(Box::from_raw((*env).finalizers.remove(&old).unwrap()));
+        }
+        // the finalizer runs at env teardown, with the other finalizers
+        (*env).instance_data = Some((*new_finalizer(env, data, finalize, hint)).id);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_instance_data(
+    env: napi_env,
+    data: *mut *mut c_void,
+) -> napi_status {
+    basic(env, || {
+        let data = out_arg(data)?;
+        let e = &*env;
+        *data = e
+            .instance_data
+            .and_then(|id| e.finalizers.get(&id))
+            .map_or(std::ptr::null_mut(), |&fin| (*fin).native);
+        Ok(())
+    })
+}
+
+/// The cleanup hook argument of napi_add_env_cleanup_hook / napi_remove_env_cleanup_hook.
+type CleanupHook = unsafe extern "C" fn(*mut c_void);
+
 #[no_mangle]
 pub unsafe extern "C" fn napi_add_env_cleanup_hook(
     env: napi_env,
-    _fun: *mut c_void,
-    _arg: *mut c_void,
+    fun: Option<CleanupHook>,
+    arg: *mut c_void,
 ) -> napi_status {
-    checked(env, || napi_ok)
+    // as Node: the status is not recorded on success (no napi_clear_last_error)
+    if env.is_null() {
+        return napi_invalid_arg;
+    }
+    let Some(fun) = fun else {
+        return record(env, napi_invalid_arg);
+    };
+    let mut teardown = teardown_of(env).borrow_mut();
+    // (the same fun and arg twice: Node aborts the process)
+    if teardown
+        .iter()
+        .any(|t| matches!(*t, Teardown::Hook(_, f, a) if f == fun && a == arg))
+    {
+        return record(env, napi_invalid_arg);
+    }
+    teardown.push(Teardown::Hook(env, fun, arg));
+    napi_ok
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_remove_env_cleanup_hook(
+    env: napi_env,
+    fun: Option<CleanupHook>,
+    arg: *mut c_void,
+) -> napi_status {
+    if env.is_null() {
+        return napi_invalid_arg;
+    }
+    let Some(fun) = fun else {
+        return record(env, napi_invalid_arg);
+    };
+    // as Node: removing a hook that is not registered does nothing
+    let mut teardown = teardown_of(env).borrow_mut();
+    teardown.retain(|t| !matches!(*t, Teardown::Hook(_, f, a) if f == fun && a == arg));
+    napi_ok
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_add_async_cleanup_hook(
+    env: napi_env,
+    hook: Option<unsafe extern "C" fn(*mut AsyncCleanupHook, *mut c_void)>,
+    arg: *mut c_void,
+    remove_handle: *mut *mut AsyncCleanupHook,
+) -> napi_status {
+    basic(env, || {
+        let hook = hook.ok_or(napi_invalid_arg)?;
+        let h = Box::into_raw(Box::new(AsyncCleanupHook { env, hook, arg }));
+        teardown_of(env).borrow_mut().push(Teardown::AsyncHook(h));
+        if !remove_handle.is_null() {
+            *remove_handle = h;
+        }
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_remove_async_cleanup_hook(
+    remove_handle: *mut AsyncCleanupHook,
+) -> napi_status {
+    if remove_handle.is_null() {
+        return napi_invalid_arg;
+    }
+    // before teardown the hook is dropped; from (or after) the hook, its handle is freed
+    teardown_of((*remove_handle).env)
+        .borrow_mut()
+        .retain(|t| !matches!(*t, Teardown::AsyncHook(h) if h == remove_handle));
+    drop(Box::from_raw(remove_handle));
+    napi_ok
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_adjust_external_memory(
+    env: napi_env,
+    change_in_bytes: i64,
+    adjusted_value: *mut i64,
+) -> napi_status {
+    basic(env, || {
+        let out = out_arg(adjusted_value)?;
+        let isolate = &mut v8::Isolate::from_raw_isolate_ptr((*env).isolate);
+        *out = isolate.adjust_amount_of_external_allocated_memory(change_in_bytes);
+        Ok(())
+    })
+}
+
+/// A napi_handle_scope / napi_escapable_handle_scope: whether it has escaped a value. Values
+/// are not freed when a scope closes (they live until the native call returns); the scopes are
+/// counted, and an escapable one escapes once, as Node's.
+struct HandleScopeRecord {
+    escaped: bool,
+}
+
+unsafe fn open_scope(env: napi_env, out: *mut *mut HandleScopeRecord) -> napi_status {
+    basic(env, || {
+        *out_arg(out)? = Box::into_raw(Box::new(HandleScopeRecord { escaped: false }));
+        (*env).open_handle_scopes += 1;
+        Ok(())
+    })
+}
+
+unsafe fn close_scope(env: napi_env, scope: *mut HandleScopeRecord) -> napi_status {
+    if env.is_null() {
+        return napi_invalid_arg;
+    }
+    if scope.is_null() {
+        return record(env, napi_invalid_arg);
+    }
+    // as Node: more closes than opens is napi_handle_scope_mismatch (not recorded)
+    if (*env).open_handle_scopes == 0 {
+        return napi_handle_scope_mismatch;
+    }
+    (*env).open_handle_scopes -= 1;
+    drop(Box::from_raw(scope));
+    record(env, napi_ok)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_open_handle_scope(
+    env: napi_env,
+    out: *mut *mut HandleScopeRecord,
+) -> napi_status {
+    open_scope(env, out)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_close_handle_scope(
+    env: napi_env,
+    scope: *mut HandleScopeRecord,
+) -> napi_status {
+    close_scope(env, scope)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_open_escapable_handle_scope(
+    env: napi_env,
+    out: *mut *mut HandleScopeRecord,
+) -> napi_status {
+    open_scope(env, out)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_close_escapable_handle_scope(
+    env: napi_env,
+    scope: *mut HandleScopeRecord,
+) -> napi_status {
+    close_scope(env, scope)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_escape_handle(
+    env: napi_env,
+    scope: *mut HandleScopeRecord,
+    escapee: napi_value,
+    out: *mut napi_value,
+) -> napi_status {
+    basic(env, || {
+        if scope.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        val_arg(escapee)?;
+        let out = out_arg(out)?;
+        if (*scope).escaped {
+            return Err(napi_escape_called_twice);
+        }
+        (*scope).escaped = true;
+        *out = escapee;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_run_script(
+    env: napi_env,
+    script: napi_value,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let script = val_arg(script)?;
+        let out = out_arg(out)?;
+        let source: v8::Local<v8::String> = script.try_into().map_err(|_| napi_string_expected)?;
+        // as Node's CHECK_MAYBE_EMPTY: a script that fails to compile or throws is
+        // napi_generic_failure (its exception pending)
+        let compiled = v8::Script::compile(s, source, None).ok_or(napi_generic_failure)?;
+        *out = to_napi(compiled.run(s).ok_or(napi_generic_failure)?);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn node_api_get_module_file_name(
+    env: napi_env,
+    out: *mut *const c_char,
+) -> napi_status {
+    basic(env, || {
+        *out_arg(out)? = (*env).filename.as_ptr();
+        Ok(())
+    })
+}
+
+/// A path as a file: URL, as Node's url::FromFilePath: `%` and what the URL path
+/// percent-encode set holds (controls, space, `"#<>?\`{}`, non-ASCII bytes) are escaped.
+fn file_url(path: &Path) -> String {
+    let mut url = String::from("file://");
+    for &b in path.as_os_str().as_encoded_bytes() {
+        if b.is_ascii_graphic() && !b"%\"#<>?`{}".contains(&b) {
+            url.push(b as char);
+        } else {
+            url.push_str(&format!("%{b:02X}"));
+        }
+    }
+    url
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_stub() -> napi_status {
@@ -3657,6 +3996,55 @@ pub unsafe extern "C" fn napi_unref_threadsafe_function(
 /// The module init symbol exported by the addon.
 type RegisterFn = unsafe extern "C" fn(napi_env, napi_value) -> napi_value;
 
+/// A module an addon registers itself with napi_module_register (the NAPI_MODULE macro, from a
+/// static constructor while it is being loaded).
+#[repr(C)]
+pub struct napi_module {
+    nm_version: i32,
+    nm_flags: u32,
+    nm_filename: *const c_char,
+    nm_register_func: Option<RegisterFn>,
+    nm_modname: *const c_char,
+    nm_priv: *mut c_void,
+    reserved: [*mut c_void; 4],
+}
+
+thread_local! {
+    /// The init a library registered with napi_module_register while this thread loaded it.
+    static SELF_REGISTERED: std::cell::Cell<Option<RegisterFn>> = const { std::cell::Cell::new(None) };
+}
+
+/// The init of every self-registering library loaded, by its canonical path: a library loaded
+/// again (another worker, another path to the same file) does not run its constructors again,
+/// as Node's global handle map of saved modules.
+static SAVED_MODULES: std::sync::Mutex<Vec<(std::path::PathBuf, RegisterFn)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_module_register(module: *mut napi_module) {
+    if let Some(module) = module.as_ref() {
+        SELF_REGISTERED.with(|r| r.set(module.nm_register_func));
+    }
+}
+
+/// The init of the library just loaded from `path`: what it registered with
+/// napi_module_register (now or when it was first loaded), else its napi_register_module_v1.
+unsafe fn module_init(lib: &libloading::Library, path: &Path) -> Result<RegisterFn, String> {
+    let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut saved = SAVED_MODULES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(init) = SELF_REGISTERED.with(|r| r.take()) {
+        saved.push((key, init));
+        return Ok(init);
+    }
+    if let Some(&(_, init)) = saved.iter().find(|(p, _)| *p == key) {
+        return Ok(init);
+    }
+    let register: libloading::Symbol<RegisterFn> = lib
+        .get(b"napi_register_module_v1")
+        .map_err(|e| format!("no napi_register_module_v1: {}", loader_message(&e)))?;
+    Ok(*register)
+}
+
 /// dlopen the addon with every symbol bound now (RTLD_NOW), so an import the process does not
 /// provide fails the load instead of binding to NULL and crashing on its first call (macOS
 /// binds an unresolved flat-namespace import lazily, to address 0).
@@ -3710,24 +4098,23 @@ pub fn load_addon(
     path: &Path,
 ) -> Result<v8::Global<v8::Value>, String> {
     unsafe {
+        SELF_REGISTERED.with(|r| r.set(None));
         let lib = open_library(path).map_err(|e| dlopen_error(&loader_message(&e)))?;
-        let register: libloading::Symbol<RegisterFn> = lib
-            .get(b"napi_register_module_v1")
-            .map_err(|e| format!("no napi_register_module_v1: {}", loader_message(&e)))?;
+        let register = module_init(&lib, path)?;
 
-        let env_ptr: napi_env = Box::into_raw(Box::new(Env::new(scope_ref)));
-        // The isolate owns the env from here on (freed with it, like the functions using it).
-        match scope_ref.get_slot_mut::<AddonEnvs>() {
-            Some(envs) => envs.0.push(env_ptr),
-            None => {
-                scope_ref.set_slot(AddonEnvs(vec![env_ptr]));
-            }
-        }
+        let mut env = Box::new(Env::new(scope_ref));
+        env.filename = std::ffi::CString::new(file_url(path)).unwrap_or_default();
+        let env_ptr: napi_env = Box::into_raw(env);
+        // The isolate owns the env from here on (freed with it, like the functions using it), at
+        // its place in the teardown order (Node registers the env's own cleanup hook here).
+        teardown_of(env_ptr)
+            .borrow_mut()
+            .push(Teardown::Env(env_ptr));
 
         let exports = v8::Object::new(scope_ref);
         // The addon's module init runs arbitrary native code. Guard it two ways:
-        //  - A JS exception it leaves pending (napi_throw_*, an unsupported N-API call we route
-        //    through throw_unsupported, a throwing JS call) surfaces as a clean require() failure.
+        //  - A JS exception it leaves pending (napi_throw_*, a throwing JS call) surfaces as a
+        //    clean require() failure.
         //  - call_addon turns a Rust panic crossing the `extern "C"` FFI boundary (which is UB
         //    and can abort/segfault, taking the whole run down with no diagnostic) into a
         //    recoverable Err -> a thrown JS error in the loader. The rest of the run survives.

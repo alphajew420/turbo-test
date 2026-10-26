@@ -970,6 +970,105 @@ static napi_value f_external_tag_nulls(napi_env env, napi_callback_info info) {
     return nums(env, 3, st);
 }
 
+/* ---- instances, scripts, handle scopes, memory, module file name ---------------------------- */
+
+/* newInstance(ctor, a, b) -> [status, the instance, exception] */
+static napi_value f_new_instance(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value inst = NULL, argv[2] = {arg(env, &a, 1), arg(env, &a, 2)};
+    napi_status st = napi_new_instance(env, arg(env, &a, 0), 2, argv, &inst);
+    napi_value exc = take_exception(env);
+    napi_value it[3] = {num(env, st), or_undef(env, inst), exc};
+    return list(env, 3, it);
+}
+
+/* newInstanceChecks(ctor) -> statuses: NULL constructor / argv with argc > 0 / result, no
+ * arguments (argc 0, NULL argv) */
+static napi_value f_new_instance_checks(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value ctor = arg(env, &a, 0), out;
+    double st[] = {
+        napi_new_instance(env, NULL, 0, NULL, &out),
+        napi_new_instance(env, ctor, 1, NULL, &out),
+        napi_new_instance(env, ctor, 0, NULL, NULL),
+        napi_new_instance(env, ctor, 0, NULL, &out),
+    };
+    return nums(env, 4, st);
+}
+
+/* runScript(source) -> [status, the result, exception] */
+static napi_value f_run_script(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value out = NULL;
+    napi_status st = napi_run_script(env, arg(env, &a, 0), &out);
+    napi_value exc = take_exception(env);
+    napi_value it[3] = {num(env, st), or_undef(env, out), exc};
+    return list(env, 3, it);
+}
+
+/* handleScopes(v) -> [statuses..., the escaped value, last error after the mismatch] */
+static napi_value f_handle_scopes(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value v = arg(env, &a, 0), escaped = NULL, again = NULL, inner;
+    napi_handle_scope hs = NULL;
+    napi_escapable_handle_scope es = NULL;
+    double st[12];
+    st[0] = napi_open_handle_scope(env, &hs);
+    napi_create_object(env, &inner);
+    st[1] = napi_close_handle_scope(env, hs);
+    st[2] = napi_open_escapable_handle_scope(env, &es);
+    st[3] = napi_escape_handle(env, es, v, &escaped);
+    st[4] = napi_escape_handle(env, es, v, &again);
+    st[5] = napi_close_escapable_handle_scope(env, es);
+    /* a failing call, then a close with no scope open: napi_handle_scope_mismatch, which is
+     * not recorded (the last error stays the failing call's) */
+    double d;
+    napi_get_value_double(env, str(env, "x"), &d);
+    st[6] = napi_close_handle_scope(env, (napi_handle_scope)&st);
+    LastError after = snap(env);
+    st[7] = napi_close_escapable_handle_scope(env, (napi_escapable_handle_scope)&st);
+    st[8] = napi_open_handle_scope(env, NULL);
+    st[9] = napi_close_handle_scope(env, NULL);
+    st[10] = napi_open_escapable_handle_scope(env, NULL);
+    st[11] = napi_escape_handle(env, NULL, v, &escaped);
+    napi_value it[4] = {nums(env, 12, st), or_undef(env, escaped), or_undef(env, again),
+                        err_value(env, after)};
+    return list(env, 4, it);
+}
+
+/* escapeChecks(v) -> statuses of napi_escape_handle with a NULL escapee and result */
+static napi_value f_escape_checks(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_escapable_handle_scope es;
+    napi_value out;
+    napi_open_escapable_handle_scope(env, &es);
+    double st[2] = {napi_escape_handle(env, es, NULL, &out),
+                    napi_escape_handle(env, es, arg(env, &a, 0), NULL)};
+    napi_close_escapable_handle_scope(env, es);
+    return nums(env, 2, st);
+}
+
+/* externalMemory(change) -> [status, adjusted value >= change, status with a NULL result] */
+static napi_value f_external_memory(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    int64_t change = (int64_t)argd(env, &a, 0), adjusted = -1;
+    napi_status st = napi_adjust_external_memory(env, change, &adjusted);
+    napi_status st0 = napi_adjust_external_memory(env, 0, NULL);
+    napi_adjust_external_memory(env, -change, &adjusted);
+    double r[3] = {st, adjusted >= 0, st0};
+    return nums(env, 3, r);
+}
+
+/* moduleFileName() -> [status, the file name, status with a NULL result] */
+static napi_value f_module_file_name(napi_env env, napi_callback_info info) {
+    (void)info;
+    const char *name = NULL;
+    napi_status st = node_api_get_module_file_name(env, &name);
+    napi_value it[3] = {num(env, st), str(env, name),
+                        num(env, node_api_get_module_file_name(env, NULL))};
+    return list(env, 3, it);
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -1004,6 +1103,18 @@ static napi_value f_null_env(napi_env env, napi_callback_info info) {
         napi_create_dataview(NULL, 0, v, 0, &out),
         napi_create_promise(NULL, NULL, NULL),
         napi_create_external(NULL, NULL, NULL, NULL, &out),
+        napi_new_instance(NULL, v, 0, NULL, &out),
+        napi_run_script(NULL, v, &out),
+        napi_open_handle_scope(NULL, NULL),
+        napi_close_handle_scope(NULL, NULL),
+        napi_escape_handle(NULL, NULL, v, &out),
+        napi_set_instance_data(NULL, NULL, NULL, NULL),
+        napi_get_instance_data(NULL, NULL),
+        napi_add_env_cleanup_hook(NULL, NULL, NULL),
+        napi_remove_env_cleanup_hook(NULL, NULL, NULL),
+        napi_add_async_cleanup_hook(NULL, NULL, NULL, NULL),
+        napi_adjust_external_memory(NULL, 0, NULL),
+        node_api_get_module_file_name(NULL, NULL),
     };
     return nums(env, sizeof st / sizeof st[0], st);
 }
@@ -1066,6 +1177,13 @@ static const struct {
     {"externalFinalized", f_external_finalized},
     {"externalTags", f_external_tags},
     {"externalTagNulls", f_external_tag_nulls},
+    {"newInstance", f_new_instance},
+    {"newInstanceChecks", f_new_instance_checks},
+    {"runScript", f_run_script},
+    {"handleScopes", f_handle_scopes},
+    {"escapeChecks", f_escape_checks},
+    {"externalMemory", f_external_memory},
+    {"moduleFileName", f_module_file_name},
     {"nullEnv", f_null_env},
 };
 

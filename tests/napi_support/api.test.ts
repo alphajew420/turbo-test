@@ -17,6 +17,8 @@ const BIGINT_EXPECTED = 17;
 const DATE_EXPECTED = 18;
 const ARRAYBUFFER_EXPECTED = 19;
 const DETACHABLE_ARRAYBUFFER_EXPECTED = 20;
+const ESCAPE_CALLED_TWICE = 12;
+const HANDLE_SCOPE_MISMATCH = 13;
 
 // what `f` throws
 function thrown(f: () => unknown): any {
@@ -588,6 +590,60 @@ describe('promises and externals', () => {
   // host-only: Node dereferences a NULL tag or result for an External
   test('host-only: a NULL tag or result for an External is napi_invalid_arg', () => {
     expect(api.externalTagNulls(api.externals()[1])).toEqual([INVALID_ARG, INVALID_ARG, INVALID_ARG]);
+  });
+});
+
+describe('instances, scripts, handle scopes, memory, module file name', () => {
+  test('napi_new_instance', () => {
+    class P {
+      sum: number;
+      constructor(a: number, b: number) { this.sum = a + b; }
+    }
+    const [st, p, exc] = api.newInstance(P, 2, 3);
+    expect([st, exc]).toEqual([OK, undefined]);
+    expect(p).toBeInstanceOf(P);
+    expect(p.sum).toBe(5);
+    expect(api.newInstance({}, 1, 2)).toEqual([INVALID_ARG, undefined, undefined]);
+    class Throws { constructor() { throw new Error('ctor'); } }
+    const [st2, , exc2] = api.newInstance(Throws, 1, 2);
+    expect(st2).toBe(PENDING_EXCEPTION);
+    expect(exc2.message).toBe('ctor');
+    expect(api.newInstanceChecks(P)).toEqual([INVALID_ARG, INVALID_ARG, INVALID_ARG, OK]);
+  });
+
+  test('napi_run_script', () => {
+    expect(api.runScript('6 * 7')).toEqual([OK, 42, undefined]);
+    (globalThis as any).fromScript = undefined;
+    expect(api.runScript('globalThis.fromScript = "set"; 1')).toEqual([OK, 1, undefined]);
+    expect((globalThis as any).fromScript).toBe('set');
+    expect(api.runScript(5)).toEqual([STRING_EXPECTED, undefined, undefined]);
+    // a syntax error or a throwing script: napi_generic_failure, the exception pending
+    const [st, , exc] = api.runScript('(');
+    expect(st).toBe(GENERIC_FAILURE);
+    expect(exc).toBeInstanceOf(SyntaxError);
+    const [st2, , exc2] = api.runScript('throw new RangeError("ran")');
+    expect(st2).toBe(GENERIC_FAILURE);
+    expect(exc2).toBeInstanceOf(RangeError);
+  });
+
+  test('handle scopes: open / close, escape once, a close too many', () => {
+    const v = { escaping: true };
+    const [st, escaped, again, last] = api.handleScopes(v);
+    expect(st).toEqual([OK, OK, OK, OK, ESCAPE_CALLED_TWICE, OK, HANDLE_SCOPE_MISMATCH,
+      HANDLE_SCOPE_MISMATCH, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG]);
+    expect(escaped).toBe(v);
+    expect(again).toBe(undefined);
+    expect(last).toEqual([NUMBER_EXPECTED, 'A number was expected', 0]);
+    expect(api.escapeChecks(v)).toEqual([INVALID_ARG, INVALID_ARG]);
+  });
+
+  test('napi_adjust_external_memory, node_api_get_module_file_name', () => {
+    expect(api.externalMemory(1024)).toEqual([OK, 1, INVALID_ARG]);
+    const [st, name, nullResult] = api.moduleFileName();
+    expect([st, nullResult]).toEqual([OK, INVALID_ARG]);
+    // the addon's absolute path as a file: URL
+    expect(name.startsWith('file:///')).toBe(true);
+    expect(name.endsWith('/api.node')).toBe(true);
   });
 });
 

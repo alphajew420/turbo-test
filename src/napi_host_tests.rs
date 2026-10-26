@@ -260,3 +260,14 @@ fn dlopen_errors_name_the_missing_import() {
         Some("x")
     );
 }
+
+/// node_api_get_module_file_name's file: URL escapes `%` and the URL path percent-encode set
+/// (as Node's url::FromFilePath).
+#[test]
+fn module_file_names_are_file_urls() {
+    assert_eq!(file_url(Path::new("/a/b.node")), "file:///a/b.node");
+    assert_eq!(
+        file_url(Path::new("/x y/%#?\"<>`{}/é.node")),
+        "file:///x%20y/%25%23%3F%22%3C%3E%60%7B%7D/%C3%A9.node"
+    );
+}

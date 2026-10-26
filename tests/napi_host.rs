@@ -1,8 +1,8 @@
 //! The Node-API host (src/napi_host.rs) end to end: C addons compiled at test time are
 //! `require()`d from specs run by the real CLI, and the specs assert what every implemented
 //! `napi_*` entrypoint produced (values, statuses, thrown errors, pending exceptions), plus the
-//! module-init paths (exports vs returned value, throwing init, unsupported entrypoint, an
-//! import the host does not provide, missing init symbol, a file that fails to dlopen, a nested require() during init, init serialized
+//! module-init paths (exports vs returned value, throwing init, an import the host does not
+//! provide, a module registered with napi_module_register, missing init symbol, a file that fails to dlopen, a nested require() during init, init serialized
 //! across workers), re-entrant callbacks, several addons loaded side by side, and napi_wrap with
 //! its finalizers (on collection and at env teardown). The expected
 //! values are Node-API's: the same specs pass against Node 26 with the same fixtures, except for
@@ -55,7 +55,6 @@ fn module_init_outcomes() {
     for stem in [
         "init_custom",
         "init_throw",
-        "init_unsupported",
         "noreg",
         "init_nested",
         "second",
@@ -65,7 +64,7 @@ fn module_init_outcomes() {
     }
     p.file("garbage.node", "this is not a shared library\n");
     p.file("init.test.ts", spec("init.test.ts"));
-    assert_all_pass(&p, 7);
+    assert_all_pass(&p, 6);
 }
 
 /// Two workers require() the same addon at about the same time: its module init runs under the
@@ -202,8 +201,9 @@ fn references_count_up_and_down() {
 /// UTF-16, property keys, external strings), symbols, coercions, arrays, properties (by key
 /// value, own, named, elements, all names, prototype, freeze / seal), comparisons and type
 /// checks, arraybuffers / typed arrays / dataviews / buffers (external ones alias the addon's
-/// memory and run their finalizer on collection), promises, externals (with type tags), and a
-/// NULL env.
+/// memory and run their finalizer on collection), promises, externals (with type tags),
+/// napi_new_instance, napi_run_script, handle scopes, napi_adjust_external_memory,
+/// node_api_get_module_file_name, and a NULL env.
 #[test]
 fn every_node_api_family_behaves() {
     let p = project("napi-api");
@@ -217,7 +217,7 @@ fn every_node_api_family_behaves() {
     );
     let j = json_report(&r);
     assert_eq!(j["numFailedTests"], 0, "{}", r.all());
-    assert_eq!(j["numPassedTests"], 38, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 42, "{}", r.all());
     // napi_fatal_exception reported the error as uncaught (what a throwing timer callback gets)
     assert!(
         r.stderr.contains("uncaught reported as uncaught"),
@@ -244,4 +244,57 @@ fn fatal_error_aborts_the_process() {
         "{}",
         r.all()
     );
+}
+
+/// At env teardown, as Node at exit: the env cleanup hooks (napi_add_env_cleanup_hook, a removed
+/// one skipped) and async cleanup hooks run newest first, then the env's finalizers (a wrap, the
+/// instance data's; data replaced by napi_set_instance_data never gets its finalizer), and an
+/// external string still alive gets its finalizer with a NULL env once the env is gone. The
+/// expected lines are Node 26's.
+#[test]
+fn cleanup_hooks_and_instance_data_run_at_env_teardown() {
+    let p = project("napi-cleanup");
+    compile_addon(&p, "cleanup");
+    p.file("cleanup.test.ts", spec("cleanup.test.ts"));
+    let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
+    let j = json_report(&r);
+    assert_eq!(j["numPassedTests"], 1, "{}", r.all());
+    let lines: Vec<&str> = r
+        .stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("cleanup: "))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "instance data at init 0",
+            "async hook 101",
+            "async hook removed 0",
+            "hook 4",
+            "async hook 3",
+            "async hook removed 0",
+            "hook 1",
+            "wrap finalizer 7",
+            "instance data finalizer 6",
+            "external string finalizer, env is NULL: 1",
+            "external string finalizer hint 8",
+        ],
+        "{}",
+        r.all()
+    );
+}
+
+/// An addon registering itself with napi_module_register from a static constructor (the
+/// NAPI_MODULE macro) loads; loaded again by a second file, its constructors do not run again
+/// and its saved module's init does.
+#[test]
+fn self_registered_modules_load() {
+    let p = project("napi-selfreg");
+    compile_addon(&p, "selfreg");
+    p.file("a.test.ts", spec("selfreg.test.ts"));
+    p.file("b.test.ts", spec("selfreg.test.ts"));
+    let r = turbo_test(&p.dir, &["--reporter", "json"], &[("TURBO_JOBS", "1")]);
+    let j = json_report(&r);
+    assert_eq!(j["numFailedTests"], 0, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 2, "{}", r.all());
 }
