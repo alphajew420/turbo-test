@@ -1,3 +1,1150 @@
 //! Unit tests for runner.rs helpers in the resolution/config/transform/mock-text region.
 
 use super::*;
+use std::sync::atomic::AtomicUsize;
+
+static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+/// A fresh, empty, canonicalized temp directory for one test.
+fn tmp(name: &str) -> PathBuf {
+    let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    let base = std::env::temp_dir().join("turbo-test-unit-a");
+    std::fs::create_dir_all(&base).unwrap();
+    let dir = base
+        .canonicalize()
+        .unwrap()
+        .join(format!("{name}-{}-{n}", std::process::id()));
+    // leftover from an earlier process with the same pid: start empty
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Write `contents` at `dir/rel` (parents created); returns the path.
+fn put(dir: &Path, rel: &str, contents: &str) -> PathBuf {
+    let p = dir.join(rel);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, contents).unwrap();
+    p
+}
+
+// ---- TURBO_ALIAS / resolver options ------------------------------------------------------
+
+#[test]
+fn parse_alias_list_keeps_complete_records_only() {
+    let raw = "@\u{1f}/abs/src\u{1e}~utils\u{1f}/abs/utils\u{1e}\u{1f}/no-key\u{1e}no-path\u{1f}\u{1e}no-separator";
+    let path = |p: &str| vec![oxc_resolver::AliasValue::Path(p.to_string())];
+    assert_eq!(
+        parse_alias_list(raw),
+        vec![
+            ("@".to_string(), path("/abs/src")),
+            ("~utils".to_string(), path("/abs/utils")),
+        ]
+    );
+    assert!(parse_alias_list("").is_empty());
+}
+
+#[test]
+fn config_alias_list_is_empty_without_env() {
+    // The unit-test process never sets TURBO_ALIAS; the value is cached per thread.
+    assert!(config_alias_list().is_empty());
+    assert!(config_alias_list().is_empty());
+}
+
+#[test]
+fn base_resolve_options_esm_first_and_cjs_first() {
+    CJS_FIRST_RESOLUTION.with(|c| c.set(false));
+    let o = base_resolve_options(None, true);
+    assert_eq!(
+        o.condition_names,
+        vec!["import", "module", "browser", "default", "require"]
+    );
+    assert_eq!(o.main_fields, vec!["module", "browser", "main"]);
+    assert!(o.tsconfig.is_none());
+    assert!(o.extensions.contains(&".tsx".to_string()));
+
+    CJS_FIRST_RESOLUTION.with(|c| c.set(true));
+    let o = base_resolve_options(Some(PathBuf::from("/p/tsconfig.json")), false);
+    CJS_FIRST_RESOLUTION.with(|c| c.set(false));
+    assert_eq!(o.condition_names, vec!["require", "node", "default"]);
+    assert_eq!(o.main_fields, vec!["main", "module", "browser"]);
+    match o.tsconfig {
+        Some(oxc_resolver::TsconfigDiscovery::Manual(t)) => {
+            assert_eq!(t.config_file, PathBuf::from("/p/tsconfig.json"))
+        }
+        other => panic!("expected a manual tsconfig, got {other:?}"),
+    }
+}
+
+// ---- tsconfig / package type / ESM detection ---------------------------------------------
+
+#[test]
+fn nearest_tsconfig_walks_up_and_stops_at_a_node_modules_package_dir() {
+    let d = tmp("tsc");
+    put(&d, "tsconfig.json", "{}");
+    put(&d, "src/deep/a.ts", "");
+    assert_eq!(
+        nearest_tsconfig_uncached(&d.join("src/deep")),
+        Some(d.join("tsconfig.json"))
+    );
+    // memoized wrapper agrees (twice: miss then hit)
+    assert_eq!(
+        nearest_tsconfig(&d.join("src/deep")),
+        Some(d.join("tsconfig.json"))
+    );
+    assert_eq!(
+        nearest_tsconfig(&d.join("src/deep")),
+        Some(d.join("tsconfig.json"))
+    );
+    // a nearer tsconfig wins
+    put(&d, "src/tsconfig.json", "{}");
+    assert_eq!(
+        nearest_tsconfig_uncached(&d.join("src/deep")),
+        Some(d.join("src/tsconfig.json"))
+    );
+    // a `node_modules` dir that carries a package.json is a hard stop
+    put(&d, "node_modules/package.json", "{}");
+    put(&d, "node_modules/pkg/package.json", "{}");
+    std::fs::create_dir_all(d.join("node_modules/pkg/lib")).unwrap();
+    assert_eq!(
+        nearest_tsconfig_uncached(&d.join("node_modules/pkg/lib")),
+        None
+    );
+}
+
+#[test]
+fn is_esm_module_by_extension_and_package_type() {
+    let d = tmp("esm");
+    for (f, esm) in [
+        ("a.mjs", true),
+        ("a.mts", true),
+        ("a.ts", true),
+        ("a.tsx", true),
+        ("a.jsx", true),
+        ("a.cjs", false),
+        ("a.cts", false),
+    ] {
+        assert_eq!(is_esm_module_uncached(&d.join(f)), esm, "{f}");
+    }
+    put(&d, "m/package.json", r#"{ "type": "module" }"#);
+    put(&d, "m2/package.json", r#"{"type":"module"}"#);
+    put(&d, "c/package.json", r#"{ "name": "c" }"#);
+    assert!(is_esm_module_uncached(&d.join("m/x.js")));
+    assert!(is_esm_module_uncached(&d.join("m2/sub/x.js")));
+    assert!(!is_esm_module_uncached(&d.join("c/x.js")));
+    // no package.json anywhere up the tree -> CommonJS
+    assert!(!is_esm_module_uncached(Path::new(
+        "/turbo-test-no-such-dir/sub/x.js"
+    )));
+    // memoized wrapper: miss then hit
+    assert!(is_esm_module(&d.join("m/y.js")));
+    assert!(is_esm_module(&d.join("m/y.js")));
+    assert!(!is_esm_module(&d.join("c/y.js")));
+}
+
+#[test]
+fn nearest_pkg_type_reads_the_closest_package_json() {
+    let d = tmp("pkgtype");
+    put(&d, "m/package.json", r#"{ "type": "module" }"#);
+    put(&d, "m2/package.json", r#"{"type":"module"}"#);
+    put(&d, "c/package.json", r#"{ "type": "commonjs" }"#);
+    put(&d, "c2/package.json", r#"{"type":"commonjs"}"#);
+    put(&d, "n/package.json", r#"{ "name": "n" }"#);
+    put(&d, "m/inner/package.json", r#"{ "name": "inner" }"#);
+    assert_eq!(nearest_pkg_type_uncached(&d.join("m/a.js")), Some("module"));
+    assert_eq!(
+        nearest_pkg_type_uncached(&d.join("m2/a.js")),
+        Some("module")
+    );
+    assert_eq!(
+        nearest_pkg_type_uncached(&d.join("c/a.js")),
+        Some("commonjs")
+    );
+    assert_eq!(
+        nearest_pkg_type_uncached(&d.join("c2/a.js")),
+        Some("commonjs")
+    );
+    assert_eq!(nearest_pkg_type_uncached(&d.join("n/a.js")), None);
+    // the nearest package.json decides, even without a type
+    assert_eq!(nearest_pkg_type_uncached(&d.join("m/inner/a.js")), None);
+    assert_eq!(nearest_pkg_type(&d.join("c/b.js")), Some("commonjs"));
+    // no package.json up to the filesystem root; and a path without a parent directory
+    assert_eq!(
+        nearest_pkg_type_uncached(Path::new("/turbo-test-no-such-dir/sub/a.js")),
+        None
+    );
+    assert_eq!(nearest_pkg_type(Path::new("/")), None);
+    assert_eq!(nearest_pkg_type(&d.join("c/b.js")), Some("commonjs"));
+    // no package.json up to the filesystem root; and a path without a parent directory
+    assert_eq!(
+        nearest_pkg_type_uncached(Path::new("/turbo-test-no-such-dir/sub/a.js")),
+        None
+    );
+    assert_eq!(nearest_pkg_type(Path::new("/")), None);
+}
+
+#[test]
+fn kind_of_and_detect_kind() {
+    assert_eq!(kind_of(Path::new("/x/a.cjs")), Kind::Cjs);
+    assert_eq!(kind_of(Path::new("/x/a.js")), Kind::Esm);
+    assert_eq!(kind_of(Path::new("/x/noext")), Kind::Esm);
+
+    let d = tmp("kind");
+    assert_eq!(detect_kind(&d.join("a.cjs")), Kind::Cjs);
+    for f in ["a.mjs", "a.mts", "a.ts", "a.tsx", "a.jsx"] {
+        assert_eq!(detect_kind(&d.join(f)), Kind::Esm, "{f}");
+    }
+    put(&d, "m/package.json", r#"{"type":"module"}"#);
+    let m = put(&d, "m/a.js", "module.exports = 1;");
+    assert_eq!(detect_kind(&m), Kind::Esm);
+    put(&d, "c/package.json", r#"{"type":"commonjs"}"#);
+    let c = put(&d, "c/a.js", "export default 1;");
+    assert_eq!(detect_kind(&c), Kind::Cjs);
+    // no explicit type -> syntax sniff
+    put(&d, "s/package.json", r#"{"name":"s"}"#);
+    let cases = [
+        ("cjs1.js", "module.exports = 1;", Kind::Cjs),
+        ("cjs2.js", "exports.a = 1;", Kind::Cjs),
+        ("cjs3.js", "exports['a'] = 1;", Kind::Cjs),
+        ("cjs4.js", "const x = require('x');", Kind::Cjs),
+        ("esm1.js", "import x from 'x';", Kind::Esm),
+        ("esm2.js", "import{x}from'x';", Kind::Esm),
+        ("esm3.js", "export const a = 1;", Kind::Esm),
+        ("esm4.js", "export{a};", Kind::Esm),
+        ("esm5.js", "export*from'x';", Kind::Esm),
+        ("esm6.js", "x;export default 1", Kind::Esm),
+        (
+            "mixed.js",
+            "import x from 'x'; module.exports = x;",
+            Kind::Esm,
+        ),
+        ("plain.js", "var a = 1;", Kind::Esm),
+    ];
+    for (f, src, k) in cases {
+        let p = put(&d, &format!("s/{f}"), src);
+        assert_eq!(detect_kind(&p), k, "{f}");
+    }
+    // unreadable file -> empty source -> ESM
+    assert_eq!(detect_kind(&d.join("s/missing.js")), Kind::Esm);
+}
+
+// ---- project kind / resolution -------------------------------------------------------------
+
+#[test]
+fn cjs_first_project_detection() {
+    let d = tmp("cjsfirst");
+    // vitest config -> ESM-first, even next to a jest config
+    put(&d, "v/vitest.config.ts", "export default {}");
+    put(&d, "v/jest.config.js", "module.exports = {}");
+    assert!(!cjs_first_project_uncached(&d.join("v/a.test.ts")));
+    put(&d, "vite/vite.config.js", "export default {}");
+    assert!(!cjs_first_project_uncached(&d.join("vite/a.test.ts")));
+    // jest config with the default (node) environment -> CJS-first, also from a nested dir
+    put(
+        &d,
+        "j/jest.config.js",
+        "module.exports = { testEnvironment: 'node' }",
+    );
+    assert!(cjs_first_project_uncached(
+        &d.join("j/sub/deeper/a.test.ts")
+    ));
+    put(&d, "j2/jest.config.json", "{}");
+    assert!(cjs_first_project_uncached(&d.join("j2/a.test.ts")));
+    // jest config with a DOM env -> ESM-first
+    for env in ["jsdom", "happy-dom", "jest-environment-jsdom"] {
+        let sub = format!("dom-{env}");
+        put(
+            &d,
+            &format!("{sub}/jest.config.ts"),
+            &format!("export default {{ testEnvironment: '{env}' }}"),
+        );
+        assert!(
+            !cjs_first_project_uncached(&d.join(format!("{sub}/a.test.ts"))),
+            "{env}"
+        );
+    }
+    // (A package.json "jest" block is not detected: see the JSON-key note on jest_setup_files.)
+    // memoized wrapper: miss then hit, same answer
+    assert!(cjs_first_project(&d.join("j/b.test.ts")));
+    assert!(cjs_first_project(&d.join("j/c.test.ts")));
+    assert!(!cjs_first_project(&d.join("v/b.test.ts")));
+}
+
+#[test]
+fn resolve_spec_relative_bare_query_and_fallback_probing() {
+    let d = tmp("resolve");
+    let a = put(&d, "src/a.ts", "export const a = 1;");
+    let idx = put(&d, "src/dir/index.js", "module.exports = 1;");
+    let json = put(&d, "src/data.json", "{}");
+    let png = put(&d, "src/img.png", "");
+    let svg = put(&d, "src/icon.svg", "<svg/>");
+    let mts = put(&d, "src/only.mts", "export {};");
+    let src = d.join("src");
+    assert_eq!(resolve_spec("./a", &src), Some(a.clone()));
+    assert_eq!(resolve_spec("./dir", &src), Some(idx.clone()));
+    // `?query` suffixes resolve the base file
+    assert_eq!(resolve_spec("./data.json?raw", &src), Some(json.clone()));
+    assert_eq!(resolve_spec("./img.png?url", &src), Some(png.clone()));
+    // `react` must be a bare flag token to select the svgr stub; as a value it is just a query
+    assert_eq!(
+        resolve_spec("./icon.svg?foo=react", &src),
+        Some(svg.clone())
+    );
+    assert_eq!(resolve_spec("./img.png?react", &src), Some(png.clone()));
+    // oxc's extension list has no .mts -> manual probing finds it
+    assert_eq!(
+        resolve_spec_as_uncached("./only", &src, true),
+        Some(mts.clone())
+    );
+    // absolute spec
+    assert_eq!(
+        resolve_spec_as_uncached(&a.to_string_lossy(), &d, false),
+        Some(a.clone())
+    );
+    assert_eq!(resolve_spec("./missing", &src), None);
+    assert_eq!(resolve_spec("not-a-package", &src), None);
+    // memo: a second lookup is answered identically
+    assert_eq!(resolve_spec("./a", &src), Some(a));
+}
+
+#[test]
+fn resolve_spec_bare_package_conditions_follow_cjs_first() {
+    let d = tmp("resolve-pkg");
+    put(
+        &d,
+        "node_modules/dual/package.json",
+        r#"{ "name": "dual", "exports": { ".": { "import": "./esm.mjs", "require": "./cjs.js" } } }"#,
+    );
+    let esm = put(&d, "node_modules/dual/esm.mjs", "export default 1;");
+    let cjs = put(&d, "node_modules/dual/cjs.js", "module.exports = 1;");
+    let deep = put(&d, "node_modules/plain/lib/x.js", "module.exports = 1;");
+    put(
+        &d,
+        "node_modules/plain/package.json",
+        r#"{ "name": "plain" }"#,
+    );
+    CJS_FIRST_RESOLUTION.with(|c| c.set(false));
+    assert_eq!(resolve_spec_as_uncached("dual", &d, true), Some(esm));
+    CJS_FIRST_RESOLUTION.with(|c| c.set(true));
+    let got = resolve_spec_as_uncached("dual", &d, false);
+    CJS_FIRST_RESOLUTION.with(|c| c.set(false));
+    assert_eq!(got, Some(cjs));
+    // `node_modules/<pkg>/...` is a bare specifier in disguise
+    assert_eq!(
+        resolve_spec_as_uncached("node_modules/plain/lib/x", &d.join("sub"), true),
+        Some(deep)
+    );
+}
+
+#[test]
+fn resolver_for_is_cached_per_tsconfig_kind_and_mode() {
+    let d = tmp("resolver-for");
+    put(&d, "tsconfig.json", "{}");
+    let r1 = resolver_for(&d, true);
+    let r2 = resolver_for(&d, true);
+    assert!(std::rc::Rc::ptr_eq(&r1, &r2));
+    let r3 = resolver_for(&d, false);
+    assert!(!std::rc::Rc::ptr_eq(&r1, &r3));
+}
+
+#[test]
+fn is_asset_extensions() {
+    for f in [
+        "a.css", "a.scss", "a.sass", "a.less", "a.styl", "a.svg", "a.png", "a.jpg", "a.jpeg",
+        "a.gif", "a.webp", "a.avif", "a.ico", "a.woff", "a.woff2", "a.ttf", "a.eot", "a.otf",
+        "a.mp4", "a.webm", "a.wav", "a.mp3", "a.txt", "a.md",
+    ] {
+        assert!(is_asset(Path::new(f)), "{f}");
+    }
+    for f in ["a.js", "a.ts", "a.json", "a.node", "noext"] {
+        assert!(!is_asset(Path::new(f)), "{f}");
+    }
+}
+
+// ---- __dirname injection + identifier helpers ---------------------------------------------
+
+#[test]
+fn inject_dirname_esm_only_when_referenced_and_undeclared() {
+    let abs = Path::new("/proj/src/file.ts");
+    assert_eq!(inject_dirname_esm(abs, "export const a = 1;"), None);
+    assert_eq!(
+        inject_dirname_esm(abs, "export const d = __dirname;").as_deref(),
+        Some("const __dirname=\"/proj/src\";export const d = __dirname;")
+    );
+    assert_eq!(
+        inject_dirname_esm(abs, "export const f = __filename;").as_deref(),
+        Some("const __filename=\"/proj/src/file.ts\";export const f = __filename;")
+    );
+    assert_eq!(
+        inject_dirname_esm(abs, "f(__filename, __dirname)").as_deref(),
+        Some("const __filename=\"/proj/src/file.ts\";const __dirname=\"/proj/src\";f(__filename, __dirname)")
+    );
+    // declared locally (bundle shim) -> untouched
+    assert_eq!(
+        inject_dirname_esm(abs, "var __dirname = '/x'; use(__dirname);"),
+        None
+    );
+    // only a member access -> no global reference
+    assert_eq!(inject_dirname_esm(abs, "x.__dirname + y.__filename"), None);
+    // a root-level file uses `/` as its directory
+    assert_eq!(
+        inject_dirname_esm(Path::new("/"), "__dirname").as_deref(),
+        Some("const __dirname=\"/\";__dirname")
+    );
+    // path metacharacters are escaped
+    let odd = Path::new("/p/a\"b\\c/f.ts");
+    assert_eq!(
+        inject_dirname_esm(odd, "__dirname").as_deref(),
+        Some("const __dirname=\"/p/a\\\"b\\\\c\";__dirname")
+    );
+}
+
+#[test]
+fn references_and_declares_ident() {
+    assert!(references_ident("__dirname", "__dirname"));
+    assert!(references_ident("(__dirname)", "__dirname"));
+    assert!(!references_ident("a__dirname", "__dirname"));
+    assert!(!references_ident("__dirnameX", "__dirname"));
+    assert!(!references_ident("x.__dirname", "__dirname"));
+    assert!(!references_ident("", "__dirname"));
+    // a later standalone occurrence after rejected ones
+    assert!(references_ident(
+        "x.__dirname; $__dirname; __dirname",
+        "__dirname"
+    ));
+
+    assert!(declares_ident("const __dirname = 1", "__dirname"));
+    assert!(declares_ident("let __dirname;", "__dirname"));
+    assert!(declares_ident("var __dirname", "__dirname"));
+    assert!(!declares_ident("let __dirnameX = 1", "__dirname"));
+    assert!(declares_ident(
+        "let __dirnameX = 1; const __dirname=2",
+        "__dirname"
+    ));
+    assert!(!declares_ident("__dirname = 1", "__dirname"));
+    assert!(is_ident_byte(b'$') && is_ident_byte(b'_') && is_ident_byte(b'z'));
+    assert!(!is_ident_byte(b'.') && !is_ident_byte(b' '));
+}
+
+#[test]
+fn js_string_literal_escapes() {
+    assert_eq!(js_string_literal("plain"), "\"plain\"");
+    assert_eq!(
+        js_string_literal("a\\b\"c\nd\re"),
+        "\"a\\\\b\\\"c\\nd\\re\""
+    );
+    assert_eq!(js_string_literal(""), "\"\"");
+}
+
+// ---- cache helpers --------------------------------------------------------------------------
+
+#[test]
+fn write_atomic_publishes_whole_file_without_temp_leftovers() {
+    let d = tmp("atomic");
+    let p = d.join("out.js");
+    write_atomic(&p, "hello");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello");
+    write_atomic(&p, "replaced");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "replaced");
+    let names: Vec<_> = std::fs::read_dir(&d)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["out.js".to_string()]);
+    // unwritable destination (missing parent): silently skipped
+    let missing = d.join("no/such/dir/out.js");
+    write_atomic(&missing, "x");
+    assert!(!missing.exists());
+}
+
+#[test]
+fn cache_key_depends_on_source_and_extension() {
+    let ts = Path::new("/a/x.ts");
+    let k = cache_key(ts, "src");
+    assert_eq!(k, cache_key(Path::new("/other/y.ts"), "src"));
+    assert_ne!(k, cache_key(ts, "src2"));
+    assert_ne!(k, cache_key(Path::new("/a/x.tsx"), "src"));
+    assert_ne!(
+        cache_key(Path::new("/a/noext"), "src"),
+        cache_key(Path::new("/a/x.js"), "src")
+    );
+}
+
+#[test]
+fn transform_cache_stats_are_monotonic_counters() {
+    let (h0, m0) = transform_cache_stats();
+    let (h1, m1) = transform_cache_stats();
+    assert!(h1 >= h0 && m1 >= m0);
+}
+
+#[test]
+fn project_root_and_tsc_root_find_their_markers() {
+    let d = tmp("roots");
+    put(&d, "node_modules/.bin/esbuild", "");
+    put(&d, "node_modules/typescript/package.json", "{}");
+    let f = put(&d, "a/b/c.ts", "");
+    assert_eq!(project_root_uncached(&f), Some(d.clone()));
+    assert_eq!(project_root(&f), Some(d.clone()));
+    assert_eq!(project_root(&f), Some(d.clone()));
+    assert_eq!(tsc_root(&f), Some(d.clone()));
+    let lone = tmp("roots-none");
+    let g = put(&lone, "x/y.ts", "");
+    assert_eq!(project_root_uncached(&g), None);
+    assert_eq!(tsc_root(&g), None);
+}
+
+#[test]
+fn mock_specifiers_collects_unique_literal_specs() {
+    let d = tmp("mockspecs");
+    let f = put(
+        &d,
+        "a.test.ts",
+        "vi.mock('./a', () => ({}));\nvi.doMock(\"b\");\njest.mock(`c`);\njest.doMock( './a');\nvi.mock(dynamic);\nvi.mock('unterminated",
+    );
+    assert_eq!(mock_specifiers(&f), vec!["./a", "b", "c"]);
+    assert!(mock_specifiers(&d.join("missing.ts")).is_empty());
+    let empty = put(&d, "e.ts", "vi.mock(");
+    assert!(mock_specifiers(&empty).is_empty());
+}
+
+#[test]
+fn spec_basename_takes_the_last_segment() {
+    assert_eq!(spec_basename("../../x/analytics"), "analytics");
+    assert_eq!(spec_basename("pkg/"), "pkg");
+    assert_eq!(spec_basename("plain"), "plain");
+    assert_eq!(spec_basename("@scope/pkg"), "pkg");
+}
+
+#[test]
+fn esbuild_bundle_full_uses_the_root_override() {
+    // The file's own project has an esbuild marker, but the override root has no esbuild
+    // binary: the override wins, esbuild can't be spawned, and bundling reports None.
+    let proj = tmp("bundle-own");
+    put(&proj, "node_modules/.bin/esbuild", "");
+    let f = put(&proj, "a.ts", "export const a = 1;");
+    let other = tmp("bundle-override");
+    assert_eq!(
+        esbuild_bundle_full(&f, &[], &HashMap::new(), Some(&other)),
+        None
+    );
+}
+
+#[test]
+fn publish_bundle_renames_or_reuses_an_existing_output() {
+    let d = tmp("publish");
+    // normal case: the temp file becomes the output
+    let tmp1 = put(&d, "b.tmp1", "bundle");
+    let out1 = d.join("b.mjs");
+    assert!(publish_bundle(&tmp1, &out1));
+    assert_eq!(std::fs::read_to_string(&out1).unwrap(), "bundle");
+    assert!(!tmp1.exists());
+    // rename fails (the output is a non-empty directory), but an output exists: reuse it and
+    // clean up the temp
+    let tmp2 = put(&d, "c.tmp2", "bundle");
+    let out2 = d.join("c.mjs");
+    put(&out2, "occupied", "");
+    assert!(publish_bundle(&tmp2, &out2));
+    assert!(!tmp2.exists());
+    // rename fails and there is no output: unusable
+    assert!(!publish_bundle(
+        &d.join("missing.tmp"),
+        &d.join("missing.mjs")
+    ));
+}
+
+// ---- environment pragmas / reuse / config parsing ------------------------------------------
+
+#[test]
+fn env_pragma_variants_and_forced_env() {
+    assert_eq!(
+        file_env_pragma("/* @vitest-environment\thappy-dom */").as_deref(),
+        Some("happy-dom")
+    );
+    assert_eq!(file_env_pragma("// @vitest-environment"), None);
+    assert_eq!(
+        forced_env("// @vitest-environment Node").as_deref(),
+        Some("node")
+    );
+}
+
+#[test]
+fn needs_dom_honours_pragmas_extension_and_content() {
+    let d = tmp("needsdom");
+    let node_tsx = put(&d, "a.test.tsx", "// @vitest-environment node\n");
+    assert!(!needs_dom(&node_tsx));
+    for env in ["jsdom", "happy-dom", "happydom"] {
+        let f = put(
+            &d,
+            &format!("{env}.test.ts"),
+            &format!("// @vitest-environment {env}\n"),
+        );
+        assert!(needs_dom(&f), "{env}");
+    }
+    // an unknown environment falls through to the heuristic
+    let edge = put(&d, "edge.test.ts", "// @vitest-environment edge-runtime\n");
+    assert!(
+        needs_dom(&edge),
+        "the pragma text itself mentions @vitest-environment"
+    );
+    assert!(needs_dom(&put(&d, "x.test.jsx", "")));
+    assert!(needs_dom(&put(&d, "x.test.tsx", "")));
+    for (i, s) in [
+        "import '@testing-library/react'",
+        "react-dom",
+        "ReactDOM.render",
+        "document.body",
+        "window.foo",
+        "getComputedStyle(x)",
+        "happy-dom",
+        "jsdom",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(needs_dom(&put(&d, &format!("c{i}.test.ts"), s)), "{s}");
+    }
+    assert!(!needs_dom(&put(&d, "plain.test.ts", "test('x', () => {})")));
+    assert!(!needs_dom(&d.join("missing.test.ts")));
+}
+
+#[test]
+fn vitest_isolate_false_detection() {
+    let d = tmp("isolate");
+    put(&d, "package.json", "{}");
+    put(
+        &d,
+        "vitest.config.ts",
+        "export default { test: { isolate : false } }",
+    );
+    assert!(vitest_isolate_false(&d.join("src/a.test.ts")));
+    let c = tmp("isolate-comment");
+    put(&c, "package.json", "{}");
+    put(
+        &c,
+        "vitest.config.ts",
+        "// isolate: false would be faster\nexport default { test: { isolate: true } }",
+    );
+    assert!(!vitest_isolate_false(&c.join("a.test.ts")));
+    // the project root (package.json) stops the walk: a parent's config is not consulted
+    let p = tmp("isolate-parent");
+    put(
+        &p,
+        "vite.config.ts",
+        "export default { test: { isolate: false } }",
+    );
+    put(&p, "child/package.json", "{}");
+    assert!(!vitest_isolate_false(&p.join("child/a.test.ts")));
+    // ...but without one the walk continues upward
+    assert!(vitest_isolate_false(&p.join("nopkg/a.test.ts")));
+}
+
+#[test]
+fn find_config_key_skips_comments_and_non_keys() {
+    let s = "// setupFiles: ['x']\nconst setupFiles = 1;\n  setupFiles : ['./s.ts']";
+    let at = find_config_key(s, "setupFiles").unwrap();
+    assert!(s[at..].starts_with("setupFiles : ["));
+    assert_eq!(find_config_key("setupFiles = 3", "setupFiles"), None);
+    assert_eq!(find_config_key("nothing here", "setupFiles"), None);
+    assert_eq!(find_config_key("  // jest: {}", "jest"), None);
+}
+
+#[test]
+fn config_string_value_quotes() {
+    assert_eq!(
+        config_string_value("rootDir: '<x>'", "rootDir").as_deref(),
+        Some("<x>")
+    );
+    assert_eq!(
+        config_string_value("\"rootDir\" : \"src\"", "rootDir"),
+        None,
+        "the quote after the key name means `rootDir\"` is not followed by ':'"
+    );
+    assert_eq!(
+        config_string_value("{ rootDir: \"src\" }", "rootDir").as_deref(),
+        Some("src")
+    );
+    assert_eq!(
+        config_string_value("rootDir: `tpl`", "rootDir").as_deref(),
+        Some("tpl")
+    );
+    assert_eq!(
+        config_string_value("rootDir: path.join(a)", "rootDir"),
+        None
+    );
+    assert_eq!(config_string_value("rootDir: 'open", "rootDir"), None);
+    assert_eq!(config_string_value("rootDir:", "rootDir"), None);
+    assert_eq!(config_string_value("other: 'x'", "rootDir"), None);
+}
+
+#[test]
+fn normalize_path_is_lexical() {
+    assert_eq!(
+        normalize_path(Path::new("/a/b/../c/./d")),
+        PathBuf::from("/a/c/d")
+    );
+    assert_eq!(normalize_path(Path::new("a/./b/..")), PathBuf::from("a"));
+    assert_eq!(normalize_path(Path::new("/..")), PathBuf::from("/"));
+    // a leading `.` is the only CurDir component `components()` yields
+    assert_eq!(normalize_path(Path::new("./a/b")), PathBuf::from("a/b"));
+}
+
+#[test]
+fn vitest_setup_files_from_vitest_config() {
+    let d = tmp("setup-vitest");
+    let s1 = put(&d, "s1.ts", "");
+    let s2 = put(&d, "test/s2.js", "");
+    put(
+        &d,
+        "vitest.config.ts",
+        "// setupFiles: ['./ignored.ts']\nexport default { test: { setupFiles: ['./s1.ts', \"./test/s2\", `./missing.ts`, ] } }",
+    );
+    assert_eq!(
+        vitest_setup_files_uncached(&d.join("src/a.test.ts")),
+        vec![s1.clone(), s2.clone()]
+    );
+    // memoized wrapper (miss then hit)
+    assert_eq!(
+        vitest_setup_files(&d.join("src/b.test.ts")),
+        vec![s1.clone(), s2]
+    );
+    assert_eq!(vitest_setup_files(&d.join("src/b.test.ts")).len(), 2);
+
+    // config present but no setupFiles / only unresolvable ones / not an array -> empty
+    for (name, cfg) in [
+        ("none", "export default { test: {} }"),
+        (
+            "unresolved",
+            "export default { test: { setupFiles: ['./nope.ts'] } }",
+        ),
+        (
+            "scalar",
+            "export default { test: { setupFiles: './s1.ts' } }",
+        ),
+        ("open", "export default { test: { setupFiles: ['./s1.ts' "),
+    ] {
+        let e = tmp(&format!("setup-{name}"));
+        put(&e, "s1.ts", "");
+        put(&e, "vitest.config.mts", cfg);
+        assert!(
+            vitest_setup_files_uncached(&e.join("a.test.ts")).is_empty(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn vitest_setup_files_falls_back_to_jest_config_up_the_tree() {
+    let d = tmp("setup-jest-walk");
+    let s = put(&d, "jest.setup.js", "");
+    put(
+        &d,
+        "jest.config.js",
+        "module.exports = { setupFilesAfterEnv: ['<rootDir>/jest.setup.js'] }",
+    );
+    assert_eq!(
+        vitest_setup_files_uncached(&d.join("pkg/src/a.test.ts")),
+        vec![s]
+    );
+    let none = tmp("setup-nothing");
+    assert!(vitest_setup_files_uncached(&none.join("a.test.ts")).is_empty());
+}
+
+#[test]
+fn jest_setup_files_root_dir_absolute_and_resolution() {
+    let d = tmp("jest-setup");
+    let a = put(&d, "config/a.js", "");
+    let b = put(&d, "b.ts", "");
+    let c = put(&d, "c/index.js", "");
+    let abs = put(&d, "abs/setup.js", "");
+    put(
+        &d,
+        "jest.config.cjs",
+        &format!(
+            "module.exports = {{ rootDir: './config/..', setupFiles: ['<rootDir>/config/a.js', './b', ''], setupFilesAfterEnv: [\"{}\", './c', './gone.js'] }}",
+            abs.display()
+        ),
+    );
+    assert_eq!(jest_setup_files(&d), Some(vec![a, b, abs, c]));
+
+    // NOTE: JSON-form jest config (package.json "jest" block / jest.config.json) is not parsed
+    // today: find_config_key needs `key:` but JSON keys are quoted (`"jest":`). Reported as a
+    // pre-existing bug; not asserted here.
+    // package.json without jest / no config at all -> None (keep walking)
+    let r = tmp("jest-none");
+    assert_eq!(jest_setup_files(&r), None);
+    put(&r, "package.json", r#"{ "name": "plain" }"#);
+    assert_eq!(jest_setup_files(&r), None);
+    // non-array values are ignored
+    let t = tmp("jest-scalar");
+    put(
+        &t,
+        "jest.config.js",
+        "module.exports = { setupFiles: './x.js' }",
+    );
+    assert_eq!(jest_setup_files(&t), Some(vec![]));
+    let u = tmp("jest-open");
+    put(
+        &u,
+        "jest.config.mjs",
+        "export default { setupFiles: ['./x.js' ",
+    );
+    assert_eq!(jest_setup_files(&u), Some(vec![]));
+}
+
+// ---- vi.hoisted / decorators ----------------------------------------------------------------
+
+#[test]
+fn extract_hoisted_statements() {
+    let src = "import x from 'x';\nconst { a } = vi.hoisted(() => ({ a: fn(1) }));\nlet b = vi.hoisted(() => 2)\nfoo();";
+    assert_eq!(
+        extract_hoisted(src),
+        vec![
+            "const { a } = vi.hoisted(() => ({ a: fn(1) }));".to_string(),
+            // no `;`: the whitespace scanned while looking for one is kept
+            "let b = vi.hoisted(() => 2)\n".to_string(),
+        ]
+    );
+    // no declaring keyword before it -> skipped
+    assert!(extract_hoisted("vi.hoisted(() => 1);").is_empty());
+    // unbalanced: runs to the end of the source
+    assert_eq!(
+        extract_hoisted("var h = vi.hoisted(() => (1"),
+        vec!["var h = vi.hoisted(() => (1".to_string()]
+    );
+    // trailing whitespace then `;` is swallowed
+    assert_eq!(
+        extract_hoisted("const q = vi.hoisted(() => 1)  ;rest"),
+        vec!["const q = vi.hoisted(() => 1)  ;".to_string()]
+    );
+    assert!(extract_hoisted("nothing").is_empty());
+}
+
+#[test]
+fn file_has_decorator_detects_line_and_parameter_decorators() {
+    assert!(file_has_decorator(
+        "class A { constructor(@Inject() x) {} }"
+    ));
+    assert!(file_has_decorator("@Injectable()\nclass A {}"));
+    assert!(file_has_decorator("class A {\n  @Prop() x;\n}"));
+    assert!(file_has_decorator("@_private\nclass A {}"));
+    assert!(file_has_decorator("@$dollar\nclass A {}"));
+    assert!(!file_has_decorator("const email = 'a@b.c';"));
+    assert!(!file_has_decorator("@ 1"));
+    assert!(!file_has_decorator("@1"));
+    assert!(!file_has_decorator("@"));
+    assert!(!file_has_decorator(""));
+}
+
+#[test]
+fn decorator_metadata_enabled_reads_nearest_tsconfig() {
+    let d = tmp("decometa");
+    put(
+        &d,
+        "on/tsconfig.json",
+        "{ \"compilerOptions\": { \"emitDecoratorMetadata\" : true } }",
+    );
+    put(
+        &d,
+        "off/tsconfig.json",
+        "{ \"compilerOptions\": {\n // \"emitDecoratorMetadata\": true\n \"emitDecoratorMetadata\": false } }",
+    );
+    assert!(decorator_metadata_enabled(&d.join("on/src/a.ts")));
+    assert!(decorator_metadata_enabled(&d.join("on/b.ts")), "cached");
+    assert!(!decorator_metadata_enabled(&d.join("off/a.ts")));
+    let none = tmp("decometa-none");
+    assert!(!decorator_metadata_enabled(&none.join("a.ts")));
+}
+
+// ---- vi.mock hoisting on esbuild CJS --------------------------------------------------------
+
+const HOIST_IN: &str = r#""use strict";
+var import_vitest = require("vitest");
+var import_dep = require("./dep");
+var import_helper = require("./helper");
+var import_other = __toESM(require("./other"));
+var mockFn = import_vitest.vi.fn();
+import_vitest.vi.mock("./dep", () => ({
+  dep: mockFn
+}));
+const spied = import_vitest.vi.mocked(import_dep.dep);
+import_vitest.vi.mock("./other");
+(0, import_vitest.it)("x", () => {
+  (0, import_helper.h)(import_other.o);
+});"#;
+
+#[test]
+fn hoist_mock_setup_moves_consumers_after_mocks_and_rebinds() {
+    let out = hoist_mock_setup(HOIST_IN);
+    let want = r#""use strict";
+var import_vitest = require("vitest");
+var import_dep = require("./dep");
+var mockFn = import_vitest.vi.fn();
+import_vitest.vi.mock("./dep", () => ({
+  dep: mockFn
+}));
+import_vitest.vi.mock("./other");
+import_dep = require("./dep");
+import_other = __toESM(require("./other"));
+const spied = import_vitest.vi.mocked(import_dep.dep);
+var import_helper = require("./helper");
+var import_other = __toESM(require("./other"));
+(0, import_vitest.it)("x", () => {
+  (0, import_helper.h)(import_other.o);
+});"#;
+    assert_eq!(out, want);
+}
+
+#[test]
+fn hoist_mock_setup_keeps_requires_used_at_top_level() {
+    let src = "var import_react = require(\"react\");\nvar import_a = require(\"./a\");\nclass X extends import_react.Component {}\nvi.mock(\"./a\");";
+    // react is used at top level -> stays before; ./a is mocked and only consumed -> after,
+    // and the mocked require is re-bound after registration.
+    assert_eq!(
+        hoist_mock_setup(src),
+        "var import_react = require(\"react\");\nclass X extends import_react.Component {}\nvi.mock(\"./a\");\nimport_a = require(\"./a\");\nvar import_a = require(\"./a\");"
+    );
+}
+
+#[test]
+fn hoist_mock_setup_no_op_cases() {
+    // no mock at all
+    let plain = "var import_a = require(\"a\");\nfoo();";
+    assert_eq!(hoist_mock_setup(plain), plain);
+    // mock but no esbuild require block
+    let no_req = "const a = require('a');\nvi.mock('a');";
+    assert_eq!(hoist_mock_setup(no_req), no_req);
+    // the only mock sits above/inside the require block
+    let early = "vi.mock(\"a\");\nvar import_a = require(\"a\");";
+    assert_eq!(hoist_mock_setup(early), early);
+    // trailing newline is dropped by the line join (lines() semantics)
+    let unbalanced = "var import_a = require(\"a\");\nvi.mock(\"a\", () => {";
+    assert_eq!(
+        hoist_mock_setup(unbalanced),
+        "vi.mock(\"a\", () => {\nimport_a = require(\"a\");\nvar import_a = require(\"a\");"
+    );
+}
+
+#[test]
+fn extract_string_literal_and_require_spec() {
+    assert_eq!(
+        extract_first_string_literal("(x, \"a b\", 'c')").as_deref(),
+        Some("a b")
+    );
+    assert_eq!(
+        extract_first_string_literal("'single'").as_deref(),
+        Some("single")
+    );
+    assert_eq!(
+        extract_first_string_literal("'unterminated").as_deref(),
+        Some("unterminated")
+    );
+    assert_eq!(extract_first_string_literal("no quotes"), None);
+    assert_eq!(
+        extract_require_spec("var import_x = __toESM(require(\"./x\"), 1);").as_deref(),
+        Some("./x")
+    );
+    assert_eq!(extract_require_spec("var a = b;"), None);
+    assert_eq!(extract_require_spec("require(dynamic)"), None);
+}
+
+// ---- shared mock lets -------------------------------------------------------------------------
+
+#[test]
+fn shared_mock_lets_selects_factory_bound_mutables() {
+    let src = r#"let capturedValue;
+let capturedValue;
+let hookValue = 1;
+const capturedQueryFns = [];
+const capturedThingsList: Array<() => void> = [
+];
+const shortArr = [];
+const notAnArrayValue = {};
+let short;
+var notUsedInFactory = 1;
+let shorthandName;
+let neverAssigned1;
+let [destructured] = x;
+vi.mock('./x', () => { capturedValue = 1; capturedQueryFns.push(1); capturedThingsList.push(2); shortArr.push(1); short = 2; notAnArrayValue.a = 1; return { useX: () => hookValue + neverAssigned1, shorthandName }; });
+it('t', () => { hookValue = 2; shorthandName = 3; });
+"#;
+    assert_eq!(
+        shared_mock_lets(src),
+        vec![
+            "capturedValue".to_string(),
+            "hookValue".to_string(),
+            "capturedQueryFns".to_string(),
+            "capturedThingsList".to_string(),
+        ]
+    );
+    assert!(shared_mock_lets("let capturedValue = 1; capturedValue = 2;").is_empty());
+}
+
+#[test]
+fn used_in_shorthand_cases() {
+    assert!(used_in_shorthand("return { foo }", "foo"));
+    assert!(used_in_shorthand("({foo, bar})", "foo"));
+    assert!(used_in_shorthand("{ a,\n  foo\n}", "foo"));
+    assert!(!used_in_shorthand("f(a, foo, b)", "foo"));
+    assert!(!used_in_shorthand("[foo]", "foo"));
+    assert!(!used_in_shorthand("foo", "foo"));
+    assert!(!used_in_shorthand("{ foobar }", "foo"));
+    assert!(!used_in_shorthand("{ afoo }", "foo"));
+    assert!(!used_in_shorthand("{ foo: 1 }", "foo"));
+}
+
+#[test]
+fn assigns_word_cases() {
+    assert!(assigns_word("foo = 1", "foo"));
+    assert!(assigns_word("x; foo\t= 1", "foo"));
+    assert!(assigns_word("foo == 1; foo = 2", "foo"));
+    assert!(!assigns_word("foo == 1", "foo"));
+    assert!(!assigns_word("foo === 1", "foo"));
+    assert!(!assigns_word("foo => 1", "foo"));
+    assert!(!assigns_word("afoo = 1", "foo"));
+    assert!(!assigns_word("foo2 = 1", "foo"));
+    assert!(!assigns_word("foo += 1", "foo"));
+    assert!(!assigns_word("x = foo", "foo"));
+}
+
+#[test]
+fn strip_test_blocks_drops_callback_bodies() {
+    assert_eq!(
+        strip_test_blocks("it('a', () => { x(); });\nconst y = 1;"),
+        "it;\nconst y = 1;"
+    );
+    assert_eq!(
+        strip_test_blocks("item(1); description(2)"),
+        "item(1); description(2)"
+    );
+    assert_eq!(
+        strip_test_blocks("describe.only('x', fn); beforeEach(() => a())"),
+        "describe.only; beforeEach"
+    );
+    assert_eq!(
+        strip_test_blocks("(0, import_vitest.it)(\"x\", () => {}); keep"),
+        "(0, import_vitest.it); keep"
+    );
+    assert_eq!(strip_test_blocks("it = 5"), "it = 5");
+    assert_eq!(strip_test_blocks("it"), "it");
+    assert_eq!(strip_test_blocks("test('a)', f) z"), "test z");
+    assert_eq!(strip_test_blocks("test(`x${y})`) z"), "test z");
+    assert_eq!(strip_test_blocks("test('a\\')', f) z"), "test z");
+    assert_eq!(strip_test_blocks("test(() => { // )\n }) z"), "test z");
+    assert_eq!(strip_test_blocks("test(/* ) */ 1) z"), "test z");
+    assert_eq!(strip_test_blocks("é it(1) ü"), "é it ü");
+    assert_eq!(strip_test_blocks("pre it(unclosed"), "pre it");
+}
+
+#[test]
+fn contains_and_replace_word() {
+    assert!(contains_word("a foo b", "foo"));
+    assert!(contains_word("foobar foo", "foo"));
+    assert!(!contains_word("foobar afoo", "foo"));
+    assert!(!contains_word("", "foo"));
+
+    let r = |t: &str| replace_word(t, "foo", "X");
+    assert_eq!(r("a foo b"), "a X b");
+    assert_eq!(r("foobar foo"), "foobar X");
+    assert_eq!(r("obj.foo"), "obj.foo");
+    assert_eq!(r("[...foo]"), "[...X]");
+    assert_eq!(
+        r("'foo' \"foo\" `foo ${foo}`"),
+        "'foo' \"foo\" `foo ${foo}`"
+    );
+    assert_eq!(r("'a\\'foo' foo"), "'a\\'foo' X");
+    assert_eq!(r("'é' foo"), "'é' X");
+    assert_eq!(r("get foo() { return foo; }"), "get foo() { return X; }");
+    assert_eq!(r("set  foo(v) {}"), "set  foo(v) {}");
+    assert_eq!(r("target foo"), "target X");
+    assert_eq!(r("getfoo"), "getfoo");
+    assert_eq!(r("({ foo: 1 })"), "({ foo: 1 })");
+    assert_eq!(r("é foo"), "é X");
+    assert_eq!(r("x=foo"), "x=X");
+    assert_eq!(r("foo"), "X");
+    assert_eq!(r("'unterminated foo"), "'unterminated foo");
+}
+
+#[test]
+fn rewrite_shared_lets_routes_through_global() {
+    let code = "let capturedValue;\nvar other = 1;\nconst list = [];\nfn(() => { capturedValue = 42; list.push(other); });";
+    let names = vec![
+        "capturedValue".to_string(),
+        "other".to_string(),
+        "list".to_string(),
+    ];
+    assert_eq!(
+        rewrite_shared_lets(code, &names),
+        "globalThis.__ms = globalThis.__ms || {};\nglobalThis.__ms.capturedValue;\nglobalThis.__ms.other = 1;\nglobalThis.__ms.list = [];\nfn(() => { globalThis.__ms.capturedValue = 42; globalThis.__ms.list.push(globalThis.__ms.other); });"
+    );
+    assert_eq!(
+        rewrite_shared_lets("x", &[]),
+        "globalThis.__ms = globalThis.__ms || {};\nx"
+    );
+}
+
+#[test]
+fn postprocess_mr_cjs_rewrites_esbuild_helpers() {
+    let src = "var __defProp = Object.defineProperty;\nvar __toESM = (mod) => mod;\nrest";
+    let out = postprocess_mr_cjs(src.to_string());
+    assert!(out.contains(
+        "var __defProp = (o, k, d) => Object.defineProperty(o, k, Object.assign({ configurable: true }, d));"
+    ));
+    assert!(out.contains("var __toESM = (m) => (m && m.__esModule ? m :"));
+    assert!(out.contains("var __toESM_unused = (mod) => mod;"));
+    assert!(out.ends_with("\nrest"));
+    assert_eq!(postprocess_mr_cjs("plain".to_string()), "plain");
+}
+
+#[test]
+fn feature_switches_default_on() {
+    // the unit-test process never sets TURBO_NO_MR / TURBO_NO_E12
+    assert!(mr_enabled());
+    assert!(e12_enabled());
+}
+
+#[test]
+fn is_react_family_cases() {
+    for s in [
+        "react",
+        "/p/node_modules/react",
+        "/p/node_modules/react/index.js",
+        "react-dom/client",
+        "react/jsx-runtime",
+        "scheduler",
+        "/p/node_modules/scheduler",
+    ] {
+        assert!(is_react_family(s), "{s}");
+    }
+    for s in ["preact", "reactive", "/p/node_modules/lodash/index.js"] {
+        assert!(!is_react_family(s), "{s}");
+    }
+}
+
+#[test]
+fn esbuild_fallbacks_need_an_esbuild_project() {
+    let d = tmp("fallback");
+    let app = put(&d, "src/a.ts", "export const a = 1;");
+    let dep = put(&d, "node_modules/x/index.js", "module.exports = 1;");
+    assert_eq!(esbuild_cjs_fallback(&app, false), None);
+    assert_eq!(esbuild_cjs_fallback(&dep, false), None);
+    assert_eq!(esbuild_transform_cjs(&app, true), None);
+    assert_eq!(esbuild_bundle_dep_cjs(&dep), None);
+}
+
+#[test]
+fn read_transformed_passes_plain_js_through_on_the_esm_path() {
+    let d = tmp("readtx");
+    let f = put(&d, "a.js", "export const a = 1;\n");
+    assert_eq!(
+        read_transformed(&f, false, false).as_deref(),
+        Some("export const a = 1;\n")
+    );
+    assert_eq!(read_transformed(&d.join("missing.js"), false, false), None);
+}
+
+#[test]
+fn tsc_transform_esm_requires_typescript() {
+    let d = tmp("tsc-none");
+    let f = put(&d, "a.ts", "export const a: number = 1;");
+    assert_eq!(tsc_transform_esm(&f, &d), None);
+}
