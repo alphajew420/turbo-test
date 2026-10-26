@@ -605,3 +605,46 @@ fn transform_to_parts_bails_on_parse_and_semantic_errors() {
         "TS is not accepted here"
     );
 }
+
+// ---- defensive arms of `lower` (unreachable through `emit`, which strips TS and bails on
+// parse errors first) ----------------------------------------------------------------------------
+
+/// Run `lower` (app mode) directly on `src` parsed as `stype`, parse errors tolerated.
+fn lower_raw(src: &str, stype: SourceType) -> Option<Vec<String>> {
+    let alloc = Allocator::default();
+    let mut program = Parser::new(&alloc, src, stype).parse().program;
+    let scoping = SemanticBuilder::new()
+        .build(&program)
+        .semantic
+        .into_scoping();
+    let ctx = LowerCtx {
+        exports_obj: "__tt_exports".into(),
+        resolve: None,
+    };
+    let (parts, _) = lower(AstBuilder::new(&alloc), scoping, &ctx, &mut program, None)?;
+    Some(
+        parts
+            .exports
+            .iter()
+            .map(|e| format!("{}={}", e.name, e.value_js))
+            .collect(),
+    )
+}
+
+#[test]
+fn lower_rejects_unstripped_typescript_exports() {
+    let ts = SourceType::ts();
+    assert_eq!(lower_raw("export interface I { a: number }", ts), None);
+    assert_eq!(lower_raw("export type T = string;", ts), None);
+    assert_eq!(
+        lower_raw("export const x = 1;", ts),
+        Some(vec!["x=x".to_string()])
+    );
+}
+
+#[test]
+fn lower_registers_a_string_local_by_name() {
+    // `export { "a" as b }` without `from` is a syntax error the parser recovers from.
+    let exports = lower_raw("const a = 1; export { \"a\" as b };", SourceType::mjs());
+    assert_eq!(exports, Some(vec!["b=a".to_string()]));
+}
