@@ -782,6 +782,66 @@ fn vitest_setup_files_from_vitest_config() {
     }
 }
 
+/// turbo-test#43 item 1: setupFiles are read from every config name vitest 4 resolves
+/// (`vitest.config` then `vite.config`, each `.ts .mts .cts .js .mjs .cjs`), the first one in
+/// that order winning — checked against vitest 4.1.12.
+#[test]
+fn vitest_setup_files_follow_vitest_config_resolution_order() {
+    for name in [
+        "vitest.config.ts",
+        "vitest.config.mts",
+        "vitest.config.cts",
+        "vitest.config.js",
+        "vitest.config.mjs",
+        "vitest.config.cjs",
+        "vite.config.ts",
+        "vite.config.mts",
+        "vite.config.cts",
+        "vite.config.js",
+        "vite.config.mjs",
+        "vite.config.cjs",
+    ] {
+        let d = tmp(&format!("setup-name-{name}"));
+        let s = put(&d, "setup.js", "");
+        put(
+            &d,
+            name,
+            "export default { test: { setupFiles: ['./setup.js'] } }",
+        );
+        assert_eq!(
+            vitest_setup_files_uncached(&d.join("a.test.ts")),
+            vec![s],
+            "{name}"
+        );
+    }
+    // precedence: vitest.config.js before vite.config.ts, vitest.config.cts before .js
+    for (first, second) in [
+        ("vitest.config.js", "vite.config.ts"),
+        ("vitest.config.cts", "vitest.config.js"),
+        ("vite.config.cjs", "vitest.config.cjs"),
+    ] {
+        let d = tmp(&format!("setup-prec-{first}-{second}"));
+        let a = put(&d, "a.js", "");
+        let b = put(&d, "b.js", "");
+        put(
+            &d,
+            first,
+            "export default { test: { setupFiles: ['./a.js'] } }",
+        );
+        put(
+            &d,
+            second,
+            "export default { test: { setupFiles: ['./b.js'] } }",
+        );
+        let want = if first.starts_with("vitest") { a } else { b };
+        assert_eq!(
+            vitest_setup_files_uncached(&d.join("a.test.ts")),
+            vec![want],
+            "{first} {second}"
+        );
+    }
+}
+
 #[test]
 fn vitest_setup_files_falls_back_to_jest_config_up_the_tree() {
     let d = tmp("setup-jest-walk");

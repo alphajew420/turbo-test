@@ -1209,10 +1209,27 @@ fn vitest_setup_files(entry: &Path) -> Vec<PathBuf> {
     vitest_setup_files_uncached(entry)
 }
 
+/// The config files vitest 4 resolves, in its order (`configFiles` in vitest's constants:
+/// `vitest.config` then `vite.config`, each with `.ts .mts .cts .js .mjs .cjs`).
+const VITEST_CONFIG_FILES: [&str; 12] = [
+    "vitest.config.ts",
+    "vitest.config.mts",
+    "vitest.config.cts",
+    "vitest.config.js",
+    "vitest.config.mjs",
+    "vitest.config.cjs",
+    "vite.config.ts",
+    "vite.config.mts",
+    "vite.config.cts",
+    "vite.config.js",
+    "vite.config.mjs",
+    "vite.config.cjs",
+];
+
 fn vitest_setup_files_uncached(entry: &Path) -> Vec<PathBuf> {
     let mut dir = entry.parent();
     while let Some(d) = dir {
-        for cfg in ["vitest.config.ts", "vitest.config.mts", "vite.config.ts", "vitest.config.js"] {
+        for cfg in VITEST_CONFIG_FILES {
             let p = d.join(cfg);
             if let Ok(s) = std::fs::read_to_string(&p) {
                 if let Some(start) = find_config_key(&s, "setupFiles") {
