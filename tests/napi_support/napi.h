@@ -36,6 +36,29 @@ extern napi_status napi_get_value_uint32(napi_env, napi_value, uint32_t *);
 extern napi_status napi_create_string_utf8(napi_env, const char *, size_t, napi_value *);
 extern napi_status napi_get_value_string_utf8(napi_env, napi_value, char *, size_t, size_t *);
 extern napi_status napi_coerce_to_string(napi_env, napi_value, napi_value *);
+extern napi_status napi_coerce_to_bool(napi_env, napi_value, napi_value *);
+extern napi_status napi_coerce_to_number(napi_env, napi_value, napi_value *);
+extern napi_status napi_coerce_to_object(napi_env, napi_value, napi_value *);
+extern napi_status napi_create_string_latin1(napi_env, const char *, size_t, napi_value *);
+extern napi_status napi_create_string_utf16(napi_env, const uint16_t *, size_t, napi_value *);
+extern napi_status napi_get_value_string_latin1(napi_env, napi_value, char *, size_t, size_t *);
+extern napi_status napi_get_value_string_utf16(napi_env, napi_value, uint16_t *, size_t,
+                                               size_t *);
+extern napi_status node_api_create_property_key_latin1(napi_env, const char *, size_t,
+                                                       napi_value *);
+extern napi_status node_api_create_property_key_utf8(napi_env, const char *, size_t,
+                                                     napi_value *);
+extern napi_status node_api_create_property_key_utf16(napi_env, const uint16_t *, size_t,
+                                                      napi_value *);
+extern napi_status node_api_create_external_string_latin1(napi_env, char *, size_t,
+                                                          napi_finalize, void *, napi_value *,
+                                                          bool *);
+extern napi_status node_api_create_external_string_utf16(napi_env, uint16_t *, size_t,
+                                                         napi_finalize, void *, napi_value *,
+                                                         bool *);
+extern napi_status napi_create_symbol(napi_env, napi_value, napi_value *);
+extern napi_status node_api_symbol_for(napi_env, const char *, size_t, napi_value *);
+extern napi_status napi_create_array(napi_env, napi_value *);
 extern napi_status napi_create_object(napi_env, napi_value *);
 extern napi_status napi_create_array_with_length(napi_env, size_t, napi_value *);
 extern napi_status napi_set_named_property(napi_env, napi_value, const char *, napi_value);

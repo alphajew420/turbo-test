@@ -198,6 +198,7 @@ impl Drop for Env {
                 teardown_finalizers(env);
             }
         }
+        forget_external_strings(env);
         for &f in &self.fns {
             drop(unsafe { Box::from_raw(f) });
         }
@@ -635,23 +636,280 @@ pub unsafe extern "C" fn napi_create_string_utf8(
     len: usize,
     out: *mut napi_value,
 ) -> napi_status {
-    checked(env, || {
-        let s = scope(env);
-        let bytes = utf8_arg(str_, len);
-        // V8's String::NewFromUtf8 (what Node uses) replaces invalid sequences with U+FFFD.
-        match v8::String::new_from_utf8(s, bytes, v8::NewStringType::Normal) {
-            Some(v) => {
-                put(out, v.into());
-                napi_ok
-            }
-            None => napi_generic_failure,
+    // V8's String::NewFromUtf8 (what Node uses) replaces invalid sequences with U+FFFD.
+    new_string(env, str_.is_null(), len, out, |s| {
+        v8::String::new_from_utf8(s, utf8_arg(str_, len), v8::NewStringType::Normal)
+    })
+}
+
+/// Node's v8impl::NewString: a NULL string with a non-zero length, a NULL result or a length
+/// over INT_MAX (but NAPI_AUTO_LENGTH) are napi_invalid_arg; a string V8 cannot make (over its
+/// maximum length) napi_generic_failure.
+unsafe fn new_string(
+    env: napi_env,
+    str_is_null: bool,
+    len: usize,
+    out: *mut napi_value,
+    make: impl FnOnce(&mut v8::PinScope<'static, 'static>) -> Option<v8::Local<'static, v8::String>>,
+) -> napi_status {
+    basic(env, || {
+        if len > 0 && str_is_null {
+            return Err(napi_invalid_arg);
         }
+        let out = out_arg(out)?;
+        if len != NAPI_AUTO_LENGTH && len > i32::MAX as usize {
+            return Err(napi_invalid_arg);
+        }
+        *out = to_napi(make(scope(env)).ok_or(napi_generic_failure)?.into());
+        Ok(())
+    })
+}
+
+/// NAPI_AUTO_LENGTH: the string argument is NUL-terminated.
+const NAPI_AUTO_LENGTH: usize = usize::MAX;
+
+/// The bytes of a `(const char*, size_t)` Latin-1 argument.
+unsafe fn latin1_arg<'a>(str_: *const c_char, len: usize) -> &'a [u8] {
+    utf8_arg(str_, len)
+}
+
+/// The code units of a `(const char16_t*, size_t)` argument; NAPI_AUTO_LENGTH means
+/// NUL-terminated.
+unsafe fn utf16_arg<'a>(str_: *const u16, len: usize) -> &'a [u16] {
+    if str_.is_null() {
+        return &[];
+    }
+    let len = if len == NAPI_AUTO_LENGTH {
+        (0..).take_while(|&i| *str_.add(i) != 0).count()
+    } else {
+        len
+    };
+    std::slice::from_raw_parts(str_, len)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_string_latin1(
+    env: napi_env,
+    str_: *const c_char,
+    len: usize,
+    out: *mut napi_value,
+) -> napi_status {
+    new_string(env, str_.is_null(), len, out, |s| {
+        v8::String::new_from_one_byte(s, latin1_arg(str_, len), v8::NewStringType::Normal)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_string_utf16(
+    env: napi_env,
+    str_: *const u16,
+    len: usize,
+    out: *mut napi_value,
+) -> napi_status {
+    new_string(env, str_.is_null(), len, out, |s| {
+        v8::String::new_from_two_byte(s, utf16_arg(str_, len), v8::NewStringType::Normal)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn node_api_create_property_key_latin1(
+    env: napi_env,
+    str_: *const c_char,
+    len: usize,
+    out: *mut napi_value,
+) -> napi_status {
+    new_string(env, str_.is_null(), len, out, |s| {
+        v8::String::new_from_one_byte(s, latin1_arg(str_, len), v8::NewStringType::Internalized)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn node_api_create_property_key_utf8(
+    env: napi_env,
+    str_: *const c_char,
+    len: usize,
+    out: *mut napi_value,
+) -> napi_status {
+    new_string(env, str_.is_null(), len, out, |s| {
+        v8::String::new_from_utf8(s, utf8_arg(str_, len), v8::NewStringType::Internalized)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn node_api_create_property_key_utf16(
+    env: napi_env,
+    str_: *const u16,
+    len: usize,
+    out: *mut napi_value,
+) -> napi_status {
+    new_string(env, str_.is_null(), len, out, |s| {
+        v8::String::new_from_two_byte(s, utf16_arg(str_, len), v8::NewStringType::Internalized)
+    })
+}
+
+/// The finalizer of an external string, by its buffer: what the string's destructor runs (V8
+/// hands the destructor only the buffer). An env torn down first leaves NULL, as Node's
+/// TrackedStringResource::Finalize.
+struct ExternalString {
+    env: napi_env,
+    finalize: napi_finalize,
+    hint: *mut c_void,
+}
+
+// SAFETY: the records are only touched on the isolate's thread (creation, GC, teardown); the
+// lock is for the process-wide map.
+unsafe impl Send for ExternalString {}
+
+static EXTERNAL_STRINGS: std::sync::Mutex<Vec<(usize, ExternalString)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The destructor of an external string: its finalizer (if any) runs with the env that made it
+/// (NULL once that env is gone), the buffer as its data, as Node's ~TrackedStringResource.
+unsafe fn external_string_gone(buffer: usize) {
+    let found = {
+        let mut list = EXTERNAL_STRINGS.lock().unwrap_or_else(|e| e.into_inner());
+        let at = list.iter().position(|(b, _)| *b == buffer);
+        at.map(|at| list.remove(at).1)
+    };
+    if let Some(ExternalString {
+        env,
+        finalize,
+        hint,
+    }) = found
+    {
+        let _ = call_addon(|| finalize(env, buffer as *mut c_void, hint));
+    }
+}
+unsafe extern "C" fn external_onebyte_gone(buffer: *mut c_char, _len: usize) {
+    external_string_gone(buffer as usize)
+}
+unsafe extern "C" fn external_twobyte_gone(buffer: *mut u16, _len: usize) {
+    external_string_gone(buffer as usize)
+}
+
+/// The external strings `env` made lose their env (it is being torn down): their finalizers,
+/// run when V8 frees the strings, get NULL.
+fn forget_external_strings(env: napi_env) {
+    let mut list = EXTERNAL_STRINGS.lock().unwrap_or_else(|e| e.into_inner());
+    for (_, rec) in list.iter_mut().filter(|(_, rec)| rec.env == env) {
+        rec.env = std::ptr::null_mut();
+    }
+}
+
+/// node_api_create_external_string_latin1 / _utf16, as Node without the V8 sandbox: the string
+/// is external (`*copied` false), its buffer the caller's, and the finalizer runs when the
+/// string is collected. `make` builds the string over the buffer with the destructor.
+unsafe fn external_string(
+    env: napi_env,
+    buffer: *mut c_void,
+    len: usize,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+    out: *mut napi_value,
+    copied: *mut bool,
+    make: impl FnOnce(&mut v8::PinScope<'static, 'static>) -> Option<v8::Local<'static, v8::String>>,
+) -> napi_status {
+    let status = new_string(env, buffer.is_null(), len, out, |s| {
+        if let Some(finalize) = finalize {
+            let rec = ExternalString {
+                env,
+                finalize,
+                hint,
+            };
+            let mut list = EXTERNAL_STRINGS.lock().unwrap_or_else(|e| e.into_inner());
+            list.push((buffer as usize, rec));
+        }
+        make(s)
+    });
+    if status == napi_ok && !copied.is_null() {
+        *copied = false;
+    }
+    status
+}
+
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn node_api_create_external_string_latin1(
+    env: napi_env,
+    str_: *mut c_char,
+    len: usize,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+    out: *mut napi_value,
+    copied: *mut bool,
+) -> napi_status {
+    external_string(env, str_.cast(), len, finalize, hint, out, copied, |s| {
+        let len = latin1_arg(str_, len).len();
+        v8::String::new_external_onebyte_raw(s, str_, len, external_onebyte_gone)
+    })
+}
+
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn node_api_create_external_string_utf16(
+    env: napi_env,
+    str_: *mut u16,
+    len: usize,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+    out: *mut napi_value,
+    copied: *mut bool,
+) -> napi_status {
+    external_string(env, str_.cast(), len, finalize, hint, out, copied, |s| {
+        let len = utf16_arg(str_, len).len();
+        v8::String::new_external_twobyte_raw(s, str_, len, external_twobyte_gone)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_symbol(
+    env: napi_env,
+    description: napi_value,
+    out: *mut napi_value,
+) -> napi_status {
+    basic(env, || {
+        let out = out_arg(out)?;
+        let description = if description.is_null() {
+            None
+        } else {
+            // as Node: a description must be a string
+            let d: v8::Local<v8::String> = to_local(description)
+                .try_into()
+                .map_err(|_| napi_string_expected)?;
+            Some(d)
+        };
+        *out = to_napi(v8::Symbol::new(scope(env), description).into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn node_api_symbol_for(
+    env: napi_env,
+    description: *const c_char,
+    len: usize,
+    out: *mut napi_value,
+) -> napi_status {
+    basic(env, || {
+        let out = out_arg(out)?;
+        // as Node: the description is made like napi_create_string_utf8 (its checks and status)
+        let mut key: napi_value = std::ptr::null_mut();
+        let status = napi_create_string_utf8(env, description, len, &mut key);
+        if status != napi_ok {
+            return Err(status);
+        }
+        let key: v8::Local<v8::String> = to_local(key).try_into().unwrap();
+        *out = to_napi(v8::Symbol::for_key(scope(env), key).into());
+        Ok(())
     })
 }
 
 /// The bytes of a `(const char*, size_t)` string argument; NAPI_AUTO_LENGTH means NUL-terminated.
 unsafe fn utf8_arg<'a>(str_: *const c_char, len: usize) -> &'a [u8] {
-    if len == usize::MAX {
+    // (a NULL string of length 0 is allowed: Node's NewString checks it only for a length)
+    if str_.is_null() {
+        &[]
+    } else if len == usize::MAX {
         std::ffi::CStr::from_ptr(str_).to_bytes()
     } else {
         std::slice::from_raw_parts(str_ as *const u8, len)
@@ -697,6 +955,107 @@ pub unsafe extern "C" fn napi_get_value_string_utf8(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn napi_get_value_string_latin1(
+    env: napi_env,
+    v: napi_value,
+    buf: *mut c_char,
+    bufsize: usize,
+    result: *mut usize,
+) -> napi_status {
+    get_string_units(env, v, buf.cast::<u8>(), bufsize, result, |s, str_, dst| {
+        str_.write_one_byte_v2(s, 0, dst, v8::WriteFlags::empty())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_value_string_utf16(
+    env: napi_env,
+    v: napi_value,
+    buf: *mut u16,
+    bufsize: usize,
+    result: *mut usize,
+) -> napi_status {
+    get_string_units(env, v, buf, bufsize, result, |s, str_, dst| {
+        str_.write_v2(s, 0, dst, v8::WriteFlags::empty())
+    })
+}
+
+/// napi_get_value_string_latin1 / _utf16, as Node: a NULL buffer is a length query (in code
+/// units; it needs `result`), a bufsize of 0 writes nothing, otherwise up to bufsize - 1 code
+/// units are written and NUL-terminated.
+unsafe fn get_string_units<T: Copy + Default>(
+    env: napi_env,
+    v: napi_value,
+    buf: *mut T,
+    bufsize: usize,
+    result: *mut usize,
+    write: impl FnOnce(&mut v8::PinScope<'static, 'static>, v8::Local<v8::String>, &mut [T]),
+) -> napi_status {
+    basic(env, || {
+        let str_: v8::Local<v8::String> =
+            val_arg(v)?.try_into().map_err(|_| napi_string_expected)?;
+        if buf.is_null() {
+            *out_arg(result)? = str_.length();
+            return Ok(());
+        }
+        let n = if bufsize == 0 {
+            0
+        } else {
+            let n = (bufsize - 1).min(str_.length());
+            write(scope(env), str_, std::slice::from_raw_parts_mut(buf, n));
+            *buf.add(n) = T::default();
+            n
+        };
+        if !result.is_null() {
+            *result = n;
+        }
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_coerce_to_bool(
+    env: napi_env,
+    v: napi_value,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let value = val_arg(v)?;
+        *out_arg(out)? = to_napi(value.to_boolean(s).into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_coerce_to_number(
+    env: napi_env,
+    v: napi_value,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let value = val_arg(v)?;
+        let out = out_arg(out)?;
+        // as Node's CHECK_TO_NUMBER: a ToNumber that throws is napi_number_expected
+        *out = to_napi(value.to_number(s).ok_or(napi_number_expected)?.into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_coerce_to_object(
+    env: napi_env,
+    v: napi_value,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        val_arg(v)?;
+        let out = out_arg(out)?;
+        *out = to_napi(to_object(s, v)?.into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn napi_coerce_to_string(
     env: napi_env,
     v: napi_value,
@@ -711,6 +1070,14 @@ pub unsafe extern "C" fn napi_coerce_to_string(
 }
 
 // ---- objects / arrays -----------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_array(env: napi_env, out: *mut napi_value) -> napi_status {
+    basic(env, || {
+        *out_arg(out)? = to_napi(v8::Array::new(scope(env), 0).into());
+        Ok(())
+    })
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn napi_create_object(env: napi_env, out: *mut napi_value) -> napi_status {

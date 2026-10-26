@@ -321,6 +321,195 @@ static napi_value f_dates(napi_env env, napi_callback_info info) {
     return list(env, 5, it);
 }
 
+/* ---- strings, symbols, coercions, arrays --------------------------------------------- */
+
+/* strings() -> [latin1 (auto, cut), utf16 (auto, cut), property keys (latin1, utf8, utf16),
+ * statuses: a NULL string of length 0 / 1, a NULL result, a length over INT_MAX] */
+static napi_value f_strings(napi_env env, napi_callback_info info) {
+    (void)info;
+    static const uint16_t U16[] = {0x68, 0xe9, 0xd83d, 0xde00, 0};
+    napi_value it[8], out;
+    napi_create_string_latin1(env, "caf\xe9", NAPI_AUTO_LENGTH, &it[0]);
+    napi_create_string_latin1(env, "caf\xe9", 3, &it[1]);
+    napi_create_string_utf16(env, U16, NAPI_AUTO_LENGTH, &it[2]);
+    napi_create_string_utf16(env, U16, 2, &it[3]);
+    node_api_create_property_key_latin1(env, "k\xe9y", NAPI_AUTO_LENGTH, &it[4]);
+    node_api_create_property_key_utf8(env, "k\xc3\xa9y", NAPI_AUTO_LENGTH, &it[5]);
+    node_api_create_property_key_utf16(env, U16, 4, &it[6]);
+    double st[] = {
+        napi_create_string_latin1(env, NULL, 0, &out),
+        napi_create_string_latin1(env, NULL, 1, &out),
+        napi_create_string_latin1(env, "x", 1, NULL),
+        napi_create_string_latin1(env, "x", (size_t)INT32_MAX + 1, &out),
+        napi_create_string_utf16(env, NULL, NAPI_AUTO_LENGTH, &out),
+        napi_create_string_utf16(env, NULL, 0, &out),
+        napi_create_string_utf16(env, U16, 1, NULL),
+        node_api_create_property_key_latin1(env, NULL, 2, &out),
+        node_api_create_property_key_utf8(env, "x", 1, NULL),
+        node_api_create_property_key_utf16(env, U16, (size_t)INT32_MAX + 1, &out),
+        napi_create_string_utf8(env, NULL, 3, &out),
+        napi_create_string_utf8(env, "x", 1, NULL),
+    };
+    it[7] = nums(env, sizeof st / sizeof st[0], st);
+    return list(env, 8, it);
+}
+
+/* getLatin1(v, bufsize) / getUtf16(v, bufsize) -> [status, the copy, *result];
+ * bufsize -1: a length query (NULL buffer) */
+static napi_value f_get_latin1(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    int bufsize = (int)argd(env, &a, 1);
+    char buf[16];
+    memset(buf, 'Z', sizeof buf);
+    size_t res = 999;
+    napi_status st = napi_get_value_string_latin1(env, arg(env, &a, 0), bufsize < 0 ? NULL : buf,
+                                                  bufsize < 0 ? 0 : (size_t)bufsize, &res);
+    napi_value it[3], copy;
+    napi_create_string_latin1(env, buf, bufsize > 0 ? res + 1 : 0, &copy);
+    it[0] = num(env, st);
+    it[1] = copy;
+    it[2] = num(env, (double)res);
+    return list(env, 3, it);
+}
+static napi_value f_get_utf16(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    int bufsize = (int)argd(env, &a, 1);
+    uint16_t buf[16];
+    for (int i = 0; i < 16; i++) buf[i] = 'Z';
+    size_t res = 999;
+    napi_status st = napi_get_value_string_utf16(env, arg(env, &a, 0), bufsize < 0 ? NULL : buf,
+                                                 bufsize < 0 ? 0 : (size_t)bufsize, &res);
+    napi_value it[3], copy;
+    napi_create_string_utf16(env, buf, bufsize > 0 ? res + 1 : 0, &copy);
+    it[0] = num(env, st);
+    it[1] = copy;
+    it[2] = num(env, (double)res);
+    return list(env, 3, it);
+}
+
+/* getStringChecks(notAString) -> statuses: NULL value, a non-string, a NULL buffer and result,
+ * and a NULL result with a buffer (allowed), for latin1 then utf16 */
+static napi_value f_get_string_checks(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value other = arg(env, &a, 0), s = str(env, "abc");
+    char b[4];
+    uint16_t w[4];
+    size_t r;
+    double st[] = {
+        napi_get_value_string_latin1(env, NULL, b, 4, &r),
+        napi_get_value_string_latin1(env, other, b, 4, &r),
+        napi_get_value_string_latin1(env, s, NULL, 0, NULL),
+        napi_get_value_string_latin1(env, s, b, 4, NULL),
+        napi_get_value_string_utf16(env, NULL, w, 4, &r),
+        napi_get_value_string_utf16(env, other, w, 4, &r),
+        napi_get_value_string_utf16(env, s, NULL, 0, NULL),
+        napi_get_value_string_utf16(env, s, w, 4, NULL),
+    };
+    return nums(env, sizeof st / sizeof st[0], st);
+}
+
+static int g_ext_finalized;
+static void ext_finalize(napi_env env, void *data, void *hint) {
+    (void)env;
+    /* the data is the buffer, the hint what was passed */
+    if (hint == (void *)&g_ext_finalized) g_ext_finalized++;
+    free(data);
+}
+
+/* externalStrings() -> [latin1 [status, string, copied], utf16 [...], an external string with
+ * no finalizer, statuses of a NULL string / result] */
+static napi_value f_external_strings(napi_env env, napi_callback_info info) {
+    (void)info;
+    char *l1 = malloc(13);
+    memcpy(l1, "external \xe9\xe9\xe9", 13);
+    uint16_t *u16 = malloc(4 * sizeof *u16);
+    u16[0] = 0x20ac;
+    u16[1] = 0xd83d;
+    u16[2] = 0xde00;
+    u16[3] = 0;
+    static char fixed[] = "fixed";
+    bool c1 = true, c2 = true;
+    napi_value s1 = NULL, s2 = NULL, s3 = NULL, out;
+    napi_status st1 = node_api_create_external_string_latin1(env, l1, 12, ext_finalize,
+                                                             &g_ext_finalized, &s1, &c1);
+    napi_status st2 = node_api_create_external_string_utf16(env, u16, NAPI_AUTO_LENGTH,
+                                                            ext_finalize, &g_ext_finalized, &s2,
+                                                            &c2);
+    node_api_create_external_string_latin1(env, fixed, NAPI_AUTO_LENGTH, NULL, NULL, &s3, NULL);
+    double st[] = {
+        node_api_create_external_string_latin1(env, NULL, 1, NULL, NULL, &out, NULL),
+        node_api_create_external_string_utf16(env, u16, 1, NULL, NULL, NULL, NULL),
+    };
+    napi_value b1, b2, it[4];
+    napi_get_boolean(env, c1, &b1);
+    napi_get_boolean(env, c2, &b2);
+    napi_value r1[3] = {num(env, st1), or_undef(env, s1), b1};
+    napi_value r2[3] = {num(env, st2), or_undef(env, s2), b2};
+    it[0] = list(env, 3, r1);
+    it[1] = list(env, 3, r2);
+    it[2] = or_undef(env, s3);
+    it[3] = nums(env, 2, st);
+    return list(env, 4, it);
+}
+static napi_value f_ext_finalized(napi_env env, napi_callback_info info) {
+    (void)info;
+    return num(env, g_ext_finalized);
+}
+
+/* symbols(desc | undefined) -> [status, symbol, Symbol.for("tt.key"), statuses] */
+static napi_value f_symbols(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value d = arg(env, &a, 0), sym = NULL, sym_for = NULL, out;
+    napi_status st = napi_create_symbol(env, is_undefined(env, d) ? NULL : d, &sym);
+    node_api_symbol_for(env, "tt.key and more", 6, &sym_for);
+    double checks[] = {
+        napi_create_symbol(env, NULL, NULL),
+        node_api_symbol_for(env, NULL, 2, &out),
+        node_api_symbol_for(env, "k", 1, NULL),
+    };
+    napi_value it[4] = {num(env, st), or_undef(env, sym), or_undef(env, sym_for),
+                        nums(env, 3, checks)};
+    return list(env, 4, it);
+}
+
+/* coerce(v) -> [[status, ToBoolean], [status, ToNumber], what ToNumber left pending,
+ * [status, ToObject], what ToObject left pending] (each exception cleared) */
+static napi_value f_coerce(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value v = arg(env, &a, 0), b = NULL, n = NULL, o = NULL, e1 = NULL, e2 = NULL;
+    napi_status sb = napi_coerce_to_bool(env, v, &b);
+    napi_status sn = napi_coerce_to_number(env, v, &n);
+    napi_get_and_clear_last_exception(env, &e1);
+    napi_status so = napi_coerce_to_object(env, v, &o);
+    napi_get_and_clear_last_exception(env, &e2);
+    napi_value rb[2] = {num(env, sb), or_undef(env, b)};
+    napi_value rn[2] = {num(env, sn), or_undef(env, n)};
+    napi_value ro[2] = {num(env, so), or_undef(env, o)};
+    napi_value it[5] = {list(env, 2, rb), list(env, 2, rn), e1, list(env, 2, ro), e2};
+    return list(env, 5, it);
+}
+
+/* coerceChecks() -> statuses: NULL value / result for each coercion */
+static napi_value f_coerce_checks(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value v = num(env, 1), out;
+    double st[] = {
+        napi_coerce_to_bool(env, NULL, &out),  napi_coerce_to_bool(env, v, NULL),
+        napi_coerce_to_number(env, NULL, &out), napi_coerce_to_number(env, v, NULL),
+        napi_coerce_to_object(env, NULL, &out), napi_coerce_to_object(env, v, NULL),
+    };
+    return nums(env, sizeof st / sizeof st[0], st);
+}
+
+/* createArray() -> [the array, status with a NULL result] */
+static napi_value f_create_array(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value arr = NULL;
+    napi_create_array(env, &arr);
+    napi_value it[2] = {or_undef(env, arr), num(env, napi_create_array(env, NULL))};
+    return list(env, 2, it);
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -340,6 +529,11 @@ static napi_value f_null_env(napi_env env, napi_callback_info info) {
         napi_get_value_bigint_words(NULL, v, NULL, NULL, NULL),
         napi_create_bigint_words(NULL, 0, 0, NULL, &out),
         napi_create_date(NULL, 0, &out),
+        napi_create_string_latin1(NULL, "x", 1, &out),
+        node_api_create_external_string_latin1(NULL, NULL, 0, NULL, NULL, &out, NULL),
+        napi_create_symbol(NULL, NULL, &out),
+        napi_coerce_to_bool(NULL, v, &out),
+        napi_create_array(NULL, &out),
     };
     return nums(env, sizeof st / sizeof st[0], st);
 }
@@ -361,6 +555,16 @@ static const struct {
     {"getWords", f_get_words},
     {"bigintChecks", f_bigint_checks},
     {"dates", f_dates},
+    {"strings", f_strings},
+    {"getLatin1", f_get_latin1},
+    {"getUtf16", f_get_utf16},
+    {"getStringChecks", f_get_string_checks},
+    {"externalStrings", f_external_strings},
+    {"extFinalized", f_ext_finalized},
+    {"symbols", f_symbols},
+    {"coerce", f_coerce},
+    {"coerceChecks", f_coerce_checks},
+    {"createArray", f_create_array},
     {"nullEnv", f_null_env},
 };
 

@@ -8,6 +8,7 @@ const OK = 0;
 const INVALID_ARG = 1;
 const STRING_EXPECTED = 3;
 const NUMBER_EXPECTED = 6;
+const OBJECT_EXPECTED = 2;
 const PENDING_EXCEPTION = 10;
 const BIGINT_EXPECTED = 17;
 const DATE_EXPECTED = 18;
@@ -166,6 +167,92 @@ describe('dates', () => {
     expect(Number.isNaN(bad.getTime())).toBe(true);
     expect(Number.isNaN(badValue)).toBe(true);
     expect(api.dates(0, new Date(0))[2]).toBe(true);
+  });
+});
+
+describe('strings', () => {
+  test('napi_create_string_latin1 / _utf16 and node_api_create_property_key_*', () => {
+    const [l1, l1cut, u16, u16cut, k1, k8, k16, st] = api.strings();
+    expect([l1, l1cut]).toEqual(['café', 'caf']);
+    expect([u16, u16cut]).toEqual(['hé😀', 'hé']);
+    expect([k1, k8, k16]).toEqual(['kéy', 'kéy', 'hé😀']);
+    // a NULL string of length 0 is the empty string; of length 1 (or NAPI_AUTO_LENGTH), a NULL
+    // result or a length over INT_MAX are napi_invalid_arg
+    expect(st).toEqual([OK, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, OK, INVALID_ARG,
+      INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG]);
+  });
+
+  test('napi_get_value_string_latin1 / _utf16 copy code units', () => {
+    expect(api.getLatin1('café', -1)).toEqual([OK, '', 4]);
+    expect(api.getLatin1('café', 16)).toEqual([OK, 'café\0', 4]);
+    expect(api.getLatin1('café', 3)).toEqual([OK, 'ca\0', 2]);
+    expect(api.getLatin1('café', 0)).toEqual([OK, '', 0]);
+    // a code unit past Latin-1 keeps its low byte
+    expect(api.getLatin1('€', 16)).toEqual([OK, '\xac\0', 1]);
+    expect(api.getUtf16('h😀', -1)).toEqual([OK, '', 3]);
+    expect(api.getUtf16('h😀', 16)).toEqual([OK, 'h😀\0', 3]);
+    // a cut may split a surrogate pair
+    expect(api.getUtf16('h😀', 3)).toEqual([OK, 'h\ud83d\0', 2]);
+    expect(api.getUtf16('h😀', 0)).toEqual([OK, '', 0]);
+    expect(api.getStringChecks(5)).toEqual([INVALID_ARG, STRING_EXPECTED, INVALID_ARG, OK,
+      INVALID_ARG, STRING_EXPECTED, INVALID_ARG, OK]);
+  });
+
+  test('node_api_create_external_string_latin1 / _utf16: the finalizer runs on collection', async () => {
+    const before = api.extFinalized();
+    // (in a function of its own, so nothing holds the strings afterwards)
+    (() => {
+      const [l1, u16, fixed, st] = api.externalStrings();
+      expect(l1).toEqual([OK, 'external ééé', false]);
+      expect(u16).toEqual([OK, '€😀', false]);
+      expect(fixed).toBe('fixed');
+      expect(st).toEqual([INVALID_ARG, INVALID_ARG]);
+    })();
+    expect(api.extFinalized()).toBe(before);
+    for (let i = 0; i < 3; i++) {
+      (globalThis as any).gc();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(api.extFinalized()).toBe(before + 2);
+  });
+});
+
+describe('symbols, coercions, arrays', () => {
+  test('napi_create_symbol / node_api_symbol_for', () => {
+    const [st, sym, symFor, checks] = api.symbols('desc');
+    expect(st).toBe(OK);
+    expect(typeof sym).toBe('symbol');
+    expect(sym.description).toBe('desc');
+    expect(symFor).toBe(Symbol.for('tt.key'));
+    expect(checks).toEqual([INVALID_ARG, INVALID_ARG, INVALID_ARG]);
+    const [st2, plain] = api.symbols(undefined);
+    expect([st2, plain.description]).toEqual([OK, undefined]);
+    expect(api.symbols(5).slice(0, 2)).toEqual([STRING_EXPECTED, undefined]);
+  });
+
+  test('napi_coerce_to_bool / _number / _object', () => {
+    const [b, n, e1, o, e2] = api.coerce('12');
+    expect([b, n, e1, e2]).toEqual([[OK, true], [OK, 12], undefined, undefined]);
+    expect(o[0]).toBe(OK);
+    expect(o[1]).toBeInstanceOf(String);
+    expect(api.coerce(0)[0]).toEqual([OK, false]);
+    // ToNumber of a symbol throws (napi_number_expected, the TypeError pending)
+    const [, sn, se] = api.coerce(Symbol('s'));
+    expect(sn).toEqual([NUMBER_EXPECTED, undefined]);
+    expect(se).toBeInstanceOf(TypeError);
+    // ToObject of null throws
+    const [nb, nn, , no, ne] = api.coerce(null);
+    expect([nb, nn]).toEqual([[OK, false], [OK, 0]]);
+    expect(no).toEqual([OBJECT_EXPECTED, undefined]);
+    expect(ne).toBeInstanceOf(TypeError);
+    expect(api.coerceChecks()).toEqual(Array(6).fill(INVALID_ARG));
+  });
+
+  test('napi_create_array', () => {
+    const [arr, st] = api.createArray();
+    expect(Array.isArray(arr)).toBe(true);
+    expect(arr.length).toBe(0);
+    expect(st).toBe(INVALID_ARG);
   });
 });
 
