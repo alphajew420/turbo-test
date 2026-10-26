@@ -350,6 +350,8 @@ npm ci
 cargo test --locked          # unit + CLI integration tests
 npm test                     # node --test test/*.mjs (CLI compat + tsc type checks)
 cargo tarpaulin              # line-coverage gate (tarpaulin.toml), fails below 99.98%
+cargo fmt --check            # CI job `lint`, with:
+cargo clippy --all-targets -- -D warnings
 ```
 
 The Rust crate is gated at **>= 99.98% line coverage** (8318/8319 lines; cargo-tarpaulin,

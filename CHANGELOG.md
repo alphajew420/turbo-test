@@ -63,6 +63,10 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   with code N` with its filter / include / exclude lines (turbo-test#59). A missing file
   argument is no longer dropped with a warning: like any filter, it matches nothing.
 
+### CI
+- `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain
+  1.98.0). The 28 clippy findings are fixed and the crate is rustfmt-clean (turbo-test#62).
+
 ### Tests
 - Node-API fixtures `api.c`, `async.c`, `cleanup.c`, `apiversion.c`, `refs.c`, `selfreg.c`,
   `fatal.c` and `unknown.c` with their specs; every spec also passes against Node 26.11 with the

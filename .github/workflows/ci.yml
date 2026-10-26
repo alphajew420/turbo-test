@@ -142,6 +142,25 @@ jobs:
           path: target/cov/report/
           if-no-files-found: ignore
 
+  # ---- Lints: clippy with warnings as errors, and rustfmt (turbo-test#62) ----
+  # Pinned to the toolchain the crate was cleaned with, so a new stable's new lints land as a
+  # deliberate toolchain bump rather than a red build.
+  lint:
+    name: clippy -D warnings, rustfmt --check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lint
+      - name: cargo fmt --check
+        run: cargo fmt --check
+      - name: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
   # ---- The lockfile must install cleanly with npm 10 AND npm 11 (turbo-test#30) ----
   # npm 11 rejects a lock that lacks the optional @esbuild/* platform entries
   # (EUSAGE "Missing: @esbuild/aix-ppc64 from lock file") while npm 10 accepts it, so
