@@ -54,3 +54,12 @@ fn module_init_outcomes() {
     p.file("init.test.ts", spec("init.test.ts"));
     assert_all_pass(&p, 5);
 }
+
+#[test]
+fn reentrant_callbacks_work() {
+    let p = project("napi-reentry");
+    compile_addon(&p, "full");
+    compile_addon(&p, "second");
+    p.file("reentry.test.ts", spec("reentry.test.ts"));
+    assert_all_pass(&p, 3);
+}

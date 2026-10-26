@@ -119,7 +119,7 @@ unsafe extern "C" fn record_call(_env: napi_env, _info: napi_callback_info) -> n
 #[test]
 fn trampoline_without_env_or_slot_returns_undefined() {
     with_scope(|s| {
-        ENV.with(|e| *e.borrow_mut() = None);
+        let saved = ENVS.with(|e| std::mem::take(&mut *e.borrow_mut()));
         let mut env = env_for(s);
         let mut f: napi_value = std::ptr::null_mut();
         let status = unsafe {
@@ -139,11 +139,13 @@ fn trampoline_without_env_or_slot_returns_undefined() {
         let r = func.call(s, recv, &[]).unwrap();
         assert!(r.is_undefined());
         // an env without this function's slot
-        ENV.with(|e| *e.borrow_mut() = Some(env_for(s)));
+        let other = Box::into_raw(env_for(s));
+        ENVS.with(|e| e.borrow_mut().push(other));
         let r = func.call(s, recv, &[]).unwrap();
         assert!(r.is_undefined());
         assert!(!CALLED.load(Ordering::SeqCst));
-        ENV.with(|e| *e.borrow_mut() = None);
+        ENVS.with(|e| *e.borrow_mut() = saved);
+        drop(unsafe { Box::from_raw(other) });
         // control: the sentinel does record a real invocation
         let ret = unsafe { record_call(&mut *env, std::ptr::null_mut()) };
         assert!(ret.is_null());

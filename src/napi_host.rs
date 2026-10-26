@@ -61,7 +61,16 @@ pub struct Env {
 static ADDON_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 thread_local! {
     static IN_ADDON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static ENV: std::cell::RefCell<Option<Box<Env>>> = const { std::cell::RefCell::new(None) };
+    /// Every env loaded on this thread; the last one is current. Envs are never freed while the
+    /// thread lives, so a callback still running in an older env (a `require()` of another
+    /// addon from inside a native callback) keeps a valid env pointer.
+    static ENVS: std::cell::RefCell<Vec<*mut Env>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The current env on this thread. The `ENVS` borrow ends before this returns, so napi
+/// callbacks that re-enter (directly or through JS) never hit a held `RefCell` borrow.
+fn current_env() -> Option<*mut Env> {
+    ENVS.with(|e| e.borrow().last().copied())
 }
 
 #[inline]
@@ -352,37 +361,41 @@ fn napi_fn_trampoline(
         .to_integer(scope)
         .map(|i| i.value() as usize)
         .unwrap_or(usize::MAX);
-    ENV.with(|e| {
-        let mut b = e.borrow_mut();
-        let Some(env) = b.as_mut() else { return };
-        let Some(&(cb, data)) = env.fns.get(idx) else { return };
-        let argv: Vec<napi_value> =
-            (0..args.length()).map(|i| unsafe { to_napi(args.get(i)) }).collect();
-        let mut info = CbInfo {
-            args: argv,
-            this: unsafe { to_napi(args.this().into()) },
-            data,
-        };
-        let env_ptr: napi_env = env.as_mut() as *mut Env;
-        (env.as_mut()).scope = scope as *mut v8::PinScope as *mut c_void;
-        // The .node addon (turbo-dom parser) is one shared library across all worker threads, so
-        // its internal (C/Rust) state is process-global and NOT thread-safe — concurrent calls
-        // race (intermittent "document is not defined" / load flakiness). Serialize native addon
-        // entry across threads with a global lock; a thread-local guard allows same-thread
-        // re-entry (the addon calling a JS callback that re-enters) without self-deadlock.
-        let (reentrant, _guard) = enter_addon();
-        // Calling the addon's native callback crosses the FFI boundary. A panic there is UB and
-        // can crash the process; catch_unwind converts it into a thrown JS error instead.
-        let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            cb(env_ptr, &mut info as *mut CbInfo)
-        }));
-        if !reentrant {
-            IN_ADDON.with(|f| f.set(false));
-        }
-        if let Some(ret) = callback_return(scope, ret) {
-            rv.set(unsafe { to_local(ret) });
-        }
-    });
+    let Some(env_ptr) = current_env() else { return };
+    let Some(&(cb, data)) = (unsafe { &(*env_ptr).fns }).get(idx) else {
+        return;
+    };
+    let argv: Vec<napi_value> = (0..args.length())
+        .map(|i| unsafe { to_napi(args.get(i)) })
+        .collect();
+    let mut info = CbInfo {
+        args: argv,
+        this: unsafe { to_napi(args.this().into()) },
+        data,
+    };
+    // Point the env at this call's scope for the callback's duration and restore it after: a
+    // nested call (the addon calling JS that calls the addon again) must not leave the outer
+    // callback with the inner, already-dead scope.
+    let here = scope as *mut v8::PinScope as *mut c_void;
+    let outer = unsafe { std::mem::replace(&mut (*env_ptr).scope, here) };
+    // The .node addon (turbo-dom parser) is one shared library across all worker threads, so
+    // its internal (C/Rust) state is process-global and NOT thread-safe — concurrent calls
+    // race (intermittent "document is not defined" / load flakiness). Serialize native addon
+    // entry across threads with a global lock; a thread-local guard allows same-thread
+    // re-entry (the addon calling a JS callback that re-enters) without self-deadlock.
+    let (reentrant, _guard) = enter_addon();
+    // Calling the addon's native callback crosses the FFI boundary. A panic there is UB and
+    // can crash the process; catch_unwind converts it into a thrown JS error instead.
+    let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        cb(env_ptr, &mut info as *mut CbInfo)
+    }));
+    if !reentrant {
+        IN_ADDON.with(|f| f.set(false));
+    }
+    unsafe { (*env_ptr).scope = outer };
+    if let Some(ret) = callback_return(scope, ret) {
+        rv.set(unsafe { to_local(ret) });
+    }
 }
 
 /// Enter native addon code on this thread: `(reentrant, guard)`. The outermost entry marks the
@@ -1075,15 +1088,15 @@ pub fn load_addon(
 
         let isolate = std::ptr::null_mut();
         let context = v8::Global::new(scope_ref, scope_ref.get_current_context());
-        let env = Box::new(Env {
+        let env_ptr: napi_env = Box::into_raw(Box::new(Env {
             isolate,
             scope: scope_ref as *mut v8::PinScope as *mut c_void,
             context: Some(context),
             last_exception: None,
             fns: Vec::new(),
             refs: Vec::new(),
-        });
-        ENV.with(|e| *e.borrow_mut() = Some(env));
+        }));
+        ENVS.with(|e| e.borrow_mut().push(env_ptr));
 
         let exports = v8::Object::new(scope_ref);
         // The addon's module init runs arbitrary native code. Guard it two ways:
@@ -1099,14 +1112,9 @@ pub fn load_addon(
         // scope, so hand the addon that pointer (valid for the duration of register()).
         let scope_addr =
             (&mut **tc) as *mut v8::PinScope as *mut c_void;
+        (*env_ptr).scope = scope_addr;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            ENV.with(|e| {
-                let mut b = e.borrow_mut();
-                let env = b.as_mut().unwrap();
-                env.scope = scope_addr;
-                let env_ptr: napi_env = env.as_mut() as *mut Env;
-                register(env_ptr, exports_napi)
-            })
+            register(env_ptr, exports_napi)
         }));
         let result = init_outcome(result, path)?;
         if tc.has_caught() {
