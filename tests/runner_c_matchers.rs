@@ -63,3 +63,42 @@ fn failed_matchers_throw_what_vitest_throws() {
         }
     }
 }
+
+#[test]
+#[ignore = "turbo-test#73: fails until the fix"]
+fn snapshot_files_are_vitests() {
+    // turbo-test#73: turbo-test wrote (and expected) its own snapshot format, so a file vitest
+    // wrote mismatched. `f.test.js.snap` is the file vitest 4.1.12 writes for `f.test.js`.
+    let test_file = include_str!("data/snapshots/f.test.js");
+    let vitest_snap = include_str!("data/snapshots/f.test.js.snap");
+    let p = Project::new("rc-snapshots");
+    p.file("package.json", r#"{ "type": "module" }"#);
+    p.file("f.test.js", test_file);
+    let snap = p.path("__snapshots__/f.test.js.snap");
+    // written fresh, and rewritten by -u: vitest's bytes
+    for args in [&[][..], &["-u"]] {
+        let r = turbo_test(&p.dir, &[&["f.test.js"][..], args].concat(), &[]);
+        assert_eq!(r.code, Some(0), "{args:?}\n{}", r.all());
+        assert_eq!(
+            std::fs::read_to_string(&snap).unwrap(),
+            vitest_snap,
+            "{args:?}"
+        );
+    }
+    // vitest's own file passes
+    p.file("__snapshots__/f.test.js.snap", vitest_snap);
+    let r = turbo_test(&p.dir, &["f.test.js"], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    // and a changed value is a mismatch of that snapshot
+    p.file(
+        "__snapshots__/f.test.js.snap",
+        &vitest_snap.replace("exports[`t 9 1`] = `9`;", "exports[`t 9 1`] = `8`;"),
+    );
+    let r = turbo_test(&p.dir, &["f.test.js"], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout.contains("✗ t 9: Snapshot `t 9 1` mismatched"),
+        "{}",
+        r.all()
+    );
+}
