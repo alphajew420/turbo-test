@@ -2165,9 +2165,9 @@ dependencies = [
 [[package]]
 name = "turbo-dom"
 version = "0.5.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5adc7f11b1ce74d816e23d713bb824fa2375188e31b90fd0f37d88aa4e22502"
+source = "git+https://github.com/miaskiewicz/turbo-dom?rev=c7f92a4e49095fe98813d67dd20bdf766385176d#c7f92a4e49095fe98813d67dd20bdf766385176d"
 dependencies = [
+ "cssparser",
  "html5ever",
  "log",
  "markup5ever_rcdom",
@@ -2177,10 +2177,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "turbo-surf-v8"
+name = "turbo-dom-browser-env"
+version = "0.6.0"
+source = "git+https://github.com/miaskiewicz/turbo-dom?rev=c7f92a4e49095fe98813d67dd20bdf766385176d#c7f92a4e49095fe98813d67dd20bdf766385176d"
+dependencies = [
+ "cssparser",
+ "lightningcss",
+ "psl",
+ "serde",
+ "serde_json",
+ "turbo-dom",
+ "turbo-dom-v8",
+ "url",
+]
+
+[[package]]
+name = "turbo-dom-v8"
 version = "150.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c120db93d7df8c391e904ae6cee92aff7fe780f20e4fc68c8d5d63a6c446fb0"
+source = "git+https://github.com/miaskiewicz/turbo-dom?rev=e9b36c8733ef1cf1073f7053a8c5931381c978c5#e9b36c8733ef1cf1073f7053a8c5931381c978c5"
 dependencies = [
  "bindgen",
  "bitflags",
@@ -2215,7 +2229,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "turbo-dom",
- "turbo-surf-v8",
+ "turbo-dom-browser-env",
+ "turbo-dom-v8",
  "url",
 ]
 

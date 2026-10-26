@@ -30,11 +30,14 @@ name = "m5-affected"
 path = "src/bin/m5_affected.rs"
 
 [dependencies]
-url = "2.5"
-# Public-suffix registry for document.domain's top-level-domain check (Blink
-# includes private registries such as github.io).
-psl = "2"
-v8 = { package = "turbo-surf-v8", version = "=150.4.0" }
+# V8 bindings for the runner, the Node-API host and the module loader: turbo-dom's
+# rusty_v8 fork (the interceptor ShouldThrowOnError fix). `~150.4` admits fork patch
+# releases only and must resolve to the same single turbo-dom-v8 that
+# turbo-dom-browser-env links (scripts/check-single-v8.sh).
+v8 = { package = "turbo-dom-v8", version = "~150.4" }
+# The browser environment (window, document, CSSOM, forms, events) the runner
+# installs into each test context.
+turbo-dom-browser-env = { version = "0.6.0" }
 oxc_allocator = "0.134"
 oxc_parser = "0.134"
 oxc_span = "0.134"
@@ -48,14 +51,12 @@ oxc_resolver = "11.21.0"
 libloading = "0.9.0"
 serde_json = "1"
 base64 = "0.22"
-# CSS Syntax, selector and declaration validation for the DOM's CSSOM facade.
+# BINDING-ONLY (removed with src/browser_env*): kept until the in-tree binding is deleted.
+url = "2.5"
+psl = "2"
 lightningcss = { version = "1.0.0-alpha.71", default-features = false }
 cssparser = "0.37"
-# Public native rtdom API only. The published 0.5.8 release supplies custom
-# state selectors, bounded storage accounting and actual-context fragments.
-# Keep the existing turbo_dom_parser import name through the package alias.
 turbo-dom-parser = { package = "turbo-dom", version = "0.5.8" }
-
 
 [profile.release]
 opt-level = 3
@@ -64,3 +65,14 @@ codegen-units = 1
 
 [dev-dependencies]
 sha2 = "0.10"
+
+# Pre-publish only (turbo-dom consolidation): resolve the unreleased turbo-dom crates
+# from git. turbo-dom and turbo-dom-browser-env come from the refactor branch of
+# miaskiewicz/turbo-dom; turbo-dom-v8 is generated there and pushed to the orphan
+# candidate branch consolidation/turbo-dom-v8-candidate. Remove this whole section
+# and re-lock (`cargo update -p turbo-dom -p turbo-dom-browser-env -p turbo-dom-v8`)
+# once those versions are on crates.io, before tagging (RELEASING.md).
+[patch.crates-io]
+turbo-dom = { git = "https://github.com/miaskiewicz/turbo-dom", rev = "c7f92a4e49095fe98813d67dd20bdf766385176d" }
+turbo-dom-browser-env = { git = "https://github.com/miaskiewicz/turbo-dom", rev = "c7f92a4e49095fe98813d67dd20bdf766385176d" }
+turbo-dom-v8 = { git = "https://github.com/miaskiewicz/turbo-dom", rev = "e9b36c8733ef1cf1073f7053a8c5931381c978c5" }
