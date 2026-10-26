@@ -79,6 +79,7 @@ extern napi_status napi_get_and_clear_last_exception(napi_env, napi_value *);
 extern napi_status napi_create_reference(napi_env, napi_value, uint32_t, napi_ref *);
 extern napi_status napi_get_reference_value(napi_env, napi_ref, napi_value *);
 extern napi_status napi_delete_reference(napi_env, napi_ref);
+extern napi_status napi_reference_ref(napi_env, napi_ref, uint32_t *);
 extern napi_status napi_reference_unref(napi_env, napi_ref, uint32_t *);
 extern napi_status napi_add_env_cleanup_hook(napi_env, void *, void *);
 extern napi_status napi_stub(void);

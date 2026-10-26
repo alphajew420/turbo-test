@@ -138,15 +138,79 @@ unsafe fn teardown_finalizers(env: napi_env) {
     isolate.exit();
 }
 
-/// A napi_ref: napi_create_reference holds its value strongly; the reference napi_wrap and
-/// napi_add_finalizer hand back is weak (as Node's, refcount 0), so it does not keep the object
-/// alive.
-pub enum Ref {
+/// A napi_ref, as Node's v8impl::Reference: a value with a reference count. Above 0 the value
+/// is held strongly; at 0 weakly (it goes when collected), which only objects and symbols can be
+/// (any other value is dropped). The references napi_wrap and napi_add_finalizer hand back start
+/// at 0, so they do not keep the object alive.
+pub struct Ref {
+    count: u32,
+    value: RefValue,
+}
+
+pub enum RefValue {
     Strong(v8::Global<v8::Value>),
     Weak(v8::Weak<v8::Value>),
-    /// The weak reference of a finalizer record whose finalizer has run (or is running): it has
-    /// no value any more, as Node's Reference::Finalize resets it first.
-    Cleared,
+    /// No value any more: collected, dropped at count 0, or the reference of a finalizer record
+    /// whose finalizer has run (or is running), as Node's Reference::Finalize resets it first.
+    Empty,
+}
+
+impl Ref {
+    /// A reference to `value` with `count`, weak at 0 (Node's Reference::New).
+    fn new(s: &mut v8::PinScope<'_, '_>, value: v8::Local<v8::Value>, count: u32) -> Ref {
+        let value = if count > 0 {
+            RefValue::Strong(v8::Global::new(s, value))
+        } else {
+            weak_value(s, value)
+        };
+        Ref { count, value }
+    }
+
+    /// The value, None when it is gone.
+    fn get<'s>(&self, s: &v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Value>> {
+        match &self.value {
+            RefValue::Strong(g) => Some(v8::Local::new(s, g)),
+            RefValue::Weak(w) => w.to_local(s),
+            RefValue::Empty => None,
+        }
+    }
+
+    /// Reference::Ref: the new count, 0 (unchanged) once the value is gone; at 1 the value
+    /// becomes strong.
+    fn inc(&mut self, s: &mut v8::PinScope<'_, '_>) -> u32 {
+        let Some(value) = self.get(s) else {
+            self.value = RefValue::Empty;
+            return 0;
+        };
+        self.count += 1;
+        if self.count == 1 {
+            self.value = RefValue::Strong(v8::Global::new(s, value));
+        }
+        self.count
+    }
+
+    /// Reference::Unref of a count above 0: the new count; at 0 the value becomes weak.
+    fn dec(&mut self, s: &mut v8::PinScope<'_, '_>) -> u32 {
+        let Some(value) = self.get(s) else {
+            self.value = RefValue::Empty;
+            return 0;
+        };
+        self.count -= 1;
+        if self.count == 0 {
+            self.value = weak_value(s, value);
+        }
+        self.count
+    }
+}
+
+/// `value` held weakly: objects (functions included) and symbols, what V8 can hold weakly (Node's
+/// CanBeHeldWeakly); any other value is dropped (Reference::SetWeak resets it).
+fn weak_value(s: &mut v8::PinScope<'_, '_>, value: v8::Local<v8::Value>) -> RefValue {
+    if value.is_object() || value.is_symbol() {
+        RefValue::Weak(v8::Weak::new(s, value))
+    } else {
+        RefValue::Empty
+    }
 }
 
 /// A native pointer tied to a JS object's lifetime, with its optional finalizer, which runs
@@ -174,8 +238,8 @@ unsafe fn run_finalizer(env: napi_env, fin: &Finalizer) {
         // deleted one stays deleted)
         let refs = &mut (*env).refs;
         if let Some(slot) = refs.get_mut(fin.own_ref.wrapping_sub(1)) {
-            if slot.is_some() {
-                *slot = Some(Ref::Cleared);
+            if let Some(r) = slot {
+                r.value = RefValue::Empty;
             }
         }
         let pending = (*env).last_exception.take();
@@ -1215,8 +1279,7 @@ unsafe fn weak_ref(
     env: napi_env,
     obj: v8::Local<v8::Object>,
 ) -> napi_ref {
-    let weak = v8::Weak::new(s, v8::Local::<v8::Value>::from(obj));
-    new_ref(&mut *env, Ref::Weak(weak))
+    new_ref(&mut *env, Ref::new(s, obj.into(), 0))
 }
 
 /// GC finalizer of an object with a finalizer record: the record leaves its env and its
@@ -1520,18 +1583,23 @@ pub unsafe extern "C" fn napi_get_and_clear_last_exception(
     napi_ok
 }
 
-// ---- references (minimal: hold a Global) ----------------------------------
+// ---- references ------------------------------------------------------------
 
 #[no_mangle]
 pub unsafe extern "C" fn napi_create_reference(
     env: napi_env,
     v: napi_value,
-    _initial_refcount: u32,
+    initial_refcount: u32,
     out: *mut napi_ref,
 ) -> napi_status {
     let s = scope(env);
-    let g = v8::Global::new(s, to_local(v));
-    let r = new_ref(&mut *env, Ref::Strong(g));
+    // as Node for an addon without a declared module API version (8): only objects, functions
+    // and symbols can be referenced
+    let value = to_local(v);
+    if !(value.is_object() || value.is_symbol()) {
+        return napi_invalid_arg;
+    }
+    let r = new_ref(&mut *env, Ref::new(s, value, initial_refcount));
     if !out.is_null() {
         *out = r;
     }
@@ -1556,10 +1624,8 @@ pub unsafe extern "C" fn napi_get_reference_value(
         return napi_invalid_arg;
     }
     let value = match e.refs[id - 1].as_ref() {
-        Some(Ref::Strong(g)) => Some(v8::Local::new(s, g)),
         // as Node: a weak reference whose value was collected (or finalized) yields NULL
-        Some(Ref::Weak(w)) => w.to_local(s),
-        Some(Ref::Cleared) => None,
+        Some(r) => r.get(s),
         None => Some(v8::undefined(s).into()),
     };
     if !out.is_null() {
@@ -1580,13 +1646,55 @@ pub unsafe extern "C" fn napi_delete_reference(env: napi_env, r: napi_ref) -> na
     }
     napi_ok
 }
+/// The live reference `r` of the env, as napi_reference_ref / napi_reference_unref take it: a
+/// NULL, unknown or deleted reference is napi_invalid_arg (Node: CHECK_ARG, then undefined
+/// behaviour).
+unsafe fn live_ref<'a>(env: napi_env, r: napi_ref) -> Result<&'a mut Ref, napi_status> {
+    let id = r as usize;
+    let refs = &mut (*env).refs;
+    refs.get_mut(id.wrapping_sub(1))
+        .and_then(|slot| slot.as_mut())
+        .ok_or(napi_invalid_arg)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_reference_ref(
+    env: napi_env,
+    r: napi_ref,
+    result: *mut u32,
+) -> napi_status {
+    let s = scope(env);
+    match live_ref(env, r) {
+        Ok(r) => {
+            let count = r.inc(s);
+            if !result.is_null() {
+                *result = count;
+            }
+            napi_ok
+        }
+        Err(status) => status,
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn napi_reference_unref(
-    _env: napi_env,
-    _r: napi_ref,
-    _result: *mut u32,
+    env: napi_env,
+    r: napi_ref,
+    result: *mut u32,
 ) -> napi_status {
-    napi_ok
+    let s = scope(env);
+    match live_ref(env, r) {
+        // as Node: unref of a count of 0 is napi_generic_failure
+        Ok(r) if r.count == 0 => napi_generic_failure,
+        Ok(r) => {
+            let count = r.dec(s);
+            if !result.is_null() {
+                *result = count;
+            }
+            napi_ok
+        }
+        Err(status) => status,
+    }
 }
 
 // ---- stubs (threadsafe fns / cleanup hooks — not exercised by sync parse) ---

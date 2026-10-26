@@ -657,15 +657,19 @@ describe('references', () => {
     expect(a.status()).toBe(OK);
     expect(id).toBeGreaterThan(0);
     expect(a.deref(id)).toBe(target);
-    const id2 = a.ref('second');
+    const second = { id: 2 };
+    const id2 = a.ref(second);
     expect(id2).not.toBe(id);
-    expect(a.deref(id2)).toBe('second');
+    expect(a.deref(id2)).toBe(second);
+    // as Node (module API version 8): a primitive cannot be referenced
+    expect(a.ref('third')).toBe(0);
+    expect(a.status()).toBe(INVALID_ARG);
     expect(a.refUnref(id)).toBe(OK);
     expect(a.deref(id)).toBe(target);
     expect(a.delRef(id)).toBe(OK);
     expect(a.deref(id)).toBe(undefined);
     expect(a.status()).toBe(OK);
-    expect(a.deref(id2)).toBe('second');
+    expect(a.deref(id2)).toBe(second);
   });
 
   test('unknown references', () => {

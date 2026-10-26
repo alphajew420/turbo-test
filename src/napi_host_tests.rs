@@ -187,3 +187,36 @@ fn js_call_parks_exceptions_but_not_a_termination() {
         assert_eq!(v8::Local::new(s, &parked).int32_value(s), Some(7));
     });
 }
+
+/// napi_reference_ref / napi_reference_unref of a NULL, unknown or deleted reference are
+/// napi_invalid_arg (Node checks NULL; an unknown handle is undefined behaviour there).
+#[test]
+fn ref_and_unref_of_a_dead_reference_are_invalid_arg() {
+    with_scope(|s| {
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        let mut count = 7u32;
+        unsafe {
+            for r in [std::ptr::null_mut(), 99usize as napi_ref] {
+                assert_eq!(napi_reference_ref(e, r, &mut count), napi_invalid_arg);
+                assert_eq!(napi_reference_unref(e, r, &mut count), napi_invalid_arg);
+            }
+            let obj = to_napi(v8::Object::new(s).into());
+            let mut r: napi_ref = std::ptr::null_mut();
+            assert_eq!(napi_create_reference(e, obj, 1, &mut r), napi_ok);
+            assert_eq!(napi_delete_reference(e, r), napi_ok);
+            assert_eq!(napi_reference_ref(e, r, &mut count), napi_invalid_arg);
+            assert_eq!(napi_reference_unref(e, r, &mut count), napi_invalid_arg);
+        }
+        assert_eq!(count, 7);
+        // a counted reference whose value a finalizer cleared: ref / unref leave it at 0, as
+        // Node's Reference::Ref / Unref of an empty persistent
+        let mut cleared = Ref {
+            count: 1,
+            value: RefValue::Empty,
+        };
+        assert_eq!(cleared.dec(s), 0);
+        assert_eq!(cleared.inc(s), 0);
+        assert_eq!(cleared.count, 1);
+    });
+}

@@ -173,3 +173,23 @@ fn wrap_finalizers_run_at_env_teardown() {
     };
     assert_eq!(lines, [line(42), line(43), line(41)], "{}", r.all());
 }
+
+/// Reference counts, as Node (turbo-test#43 item 3): napi_create_reference honours its initial
+/// count, napi_reference_ref / napi_reference_unref move it up and down, a reference at 0 is
+/// weak (its value goes when the object is collected; only objects, functions and symbols can be
+/// referenced) and above 0 strong, including a wrap's own reference.
+#[test]
+fn references_count_up_and_down() {
+    let p = project("napi-refs");
+    compile_addon(&p, "refs");
+    p.file("refs.test.ts", spec("refs.test.ts"));
+    // --expose-gc: the spec collects referenced objects
+    let r = turbo_test(
+        &p.dir,
+        &["--reporter", "json"],
+        &[("TURBO_V8_FLAGS", "--expose-gc")],
+    );
+    let j = json_report(&r);
+    assert_eq!(j["numFailedTests"], 0, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 4, "{}", r.all());
+}
