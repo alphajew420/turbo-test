@@ -495,3 +495,79 @@ fn a_directory_argument_runs_the_test_files_under_it() {
         r.all()
     );
 }
+
+#[test]
+#[ignore = "turbo-test#63: fails until the fix"]
+fn root_names_files_relative_to_the_root() {
+    // turbo-test#63 item 2: with --root, files were named relative to the working directory
+    // (`sub/inner/a.test.js`, or absolute for a root above it). vitest 4.1.12 names them
+    // relative to the root in every reporter; `--dir` (scan directory only) keeps the
+    // working-directory-relative names.
+    let p = Project::new("launch-root-names");
+    p.file(
+        "sub/inner/a.test.js",
+        "test('ok', () => {}); test('bad', () => { expect(1).toBe(2) })\n",
+    );
+    p.file("sub/b.test.js", "test('ok2', () => {})\n");
+    let lines = |r: &Run| -> Vec<String> {
+        r.stdout
+            .lines()
+            .filter(|l| l.starts_with("PASS") || l.starts_with("FAIL"))
+            .map(str::to_string)
+            .collect()
+    };
+    let r = tt(&p, &["--root", "sub"]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert_eq!(
+        lines(&r),
+        [
+            "PASS  b.test.js  (1 passed, 0 failed)",
+            "FAIL  inner/a.test.js  (1 passed, 1 failed)"
+        ],
+        "{}",
+        r.all()
+    );
+    // a positional filter is root-relative too
+    let r = tt(&p, &["--root", "sub", "inner"]);
+    assert_eq!(
+        lines(&r),
+        ["FAIL  inner/a.test.js  (1 passed, 1 failed)"],
+        "{}",
+        r.all()
+    );
+    let r = tt(&p, &["--root=sub", "--reporter", "junit"]);
+    assert!(
+        r.stdout.contains("<testsuite name=\"b.test.js\"")
+            && r.stdout
+                .contains("<testcase name=\"bad\" classname=\"inner/a.test.js\""),
+        "{}",
+        r.all()
+    );
+    // the JSON report keeps absolute names
+    let r = tt(&p, &["--root", "sub", "--reporter", "json"]);
+    assert_eq!(
+        json_report(&r)["testResults"][0]["name"],
+        p.path("sub/b.test.js").display().to_string()
+    );
+    // a root above the working directory, and --dir (the root stays the working directory)
+    let r = turbo_test(&p.path("sub"), &["--root", ".."], &[]);
+    assert_eq!(
+        lines(&r),
+        [
+            "PASS  sub/b.test.js  (1 passed, 0 failed)",
+            "FAIL  sub/inner/a.test.js  (1 passed, 1 failed)"
+        ],
+        "{}",
+        r.all()
+    );
+    let r = tt(&p, &["--dir", "sub"]);
+    assert_eq!(
+        lines(&r),
+        [
+            "PASS  sub/b.test.js  (1 passed, 0 failed)",
+            "FAIL  sub/inner/a.test.js  (1 passed, 1 failed)"
+        ],
+        "{}",
+        r.all()
+    );
+}
