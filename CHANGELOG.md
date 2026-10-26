@@ -79,6 +79,12 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - `test.for` / `it.for` / `describe.for` (turbo-test#68): a file using one failed to load
   (`TypeError: test.for is not a function`). Each row is one argument (not spread), followed for
   a test by its context; titles are formatted like `.each`. Typed in the `.d.ts` shim.
+- Suite-level outcomes follow vitest (turbo-test#69): a throwing `beforeAll` skips its suite's
+  tests and nested suites (its `afterAll` still runs) instead of running them, and neither a
+  throwing `beforeAll` nor `afterAll` counts as a failed test any more — it fails the suite and
+  file. An empty `describe` fails its file with `No test found in suite <name>` (it passed). A
+  file that reports such an error with no failed test fails the run (FAIL line, dot `x`, the
+  `Test Files` count, JSON `status` / `success`, exit code 1).
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

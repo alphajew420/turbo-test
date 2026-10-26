@@ -261,7 +261,6 @@ test.for([[1, 2]])('opts %i', { timeout: 100 }, ([a]) => { expect(a).toBe(1) })
 }
 
 #[test]
-#[ignore = "turbo-test#69: fails until the fix"]
 fn a_failing_before_all_skips_its_suite_and_an_empty_describe_fails() {
     // turbo-test#69: a throwing beforeAll still ran its suite's tests (counted as one more failed
     // test), and an empty describe passed. vitest 4.1.12: the suite's tests (nested ones too) are
@@ -308,7 +307,8 @@ fn a_failing_before_all_skips_its_suite_and_an_empty_describe_fails() {
         r.all()
     );
     assert!(
-        r.stdout.contains("\n Test Files  2 failed | 0 passed (2)\n      Tests  2 passed (2)\n"),
+        r.stdout
+            .contains("\n Test Files  2 failed | 0 passed (2)\n      Tests  2 passed (2)\n"),
         "{}",
         r.all()
     );

@@ -1198,4 +1198,43 @@ fn footer_summary_and_exit_code() {
         ),
         1
     );
+    // a suite / file-level error (a throwing beforeAll, an empty describe) with no failed test
+    assert_eq!(
+        exit_code(
+            &Totals {
+                failed_files: 1,
+                ..Default::default()
+            },
+            true
+        ),
+        1
+    );
+}
+
+#[test]
+fn a_suite_error_without_a_failed_test_fails_the_file() {
+    // turbo-test#69: a throwing beforeAll / an empty describe is a file-level failure with no
+    // failed test — the file fails (FAIL line, dot `x`, footer, exit 1) and no test is invented.
+    let file = PathBuf::from("a.test.ts");
+    let rep = TestReport {
+        failures: vec!["No test found in suite empty".into()],
+        ..report(1, 0)
+    };
+    let res = vec![file_result(0, &file, Ok(rep), 1.0)];
+    assert!(res[0].failed_file && !res[0].load_error);
+    assert_eq!(
+        res[0].line,
+        "FAIL  a.test.ts  (1 passed, 0 failed)\n        ✗ No test found in suite empty"
+    );
+    assert_eq!(render_human(Reporter::Dot, &res), "x\n");
+    let t = tally(&res);
+    assert_eq!((t.passed, t.failed, t.errors, t.failed_files), (1, 0, 0, 1));
+    assert_eq!(
+        footer(1, &res, &t, 1.0),
+        "\n Test Files  1 failed | 0 passed (1)\n      Tests  1 passed (1)\n   Duration  1ms"
+    );
+    assert_eq!(exit_code(&t, true), 1);
+    let j: serde_json::Value = serde_json::from_str(&render_json(&[file], &res, &t)).unwrap();
+    assert_eq!(j["success"], false);
+    assert_eq!(j["testResults"][0]["status"], "failed");
 }

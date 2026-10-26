@@ -38,6 +38,9 @@ pub struct FileResult {
     pub passed: u32,
     pub failed: u32,
     pub load_error: bool,
+    /// The file failed: it failed to load, a test failed, or a suite / file-level error was
+    /// reported (a throwing `beforeAll` / `afterAll`, an empty `describe`) with no failed test.
+    pub failed_file: bool,
     /// Load-error message (for the synthetic JUnit/TAP failing case); empty otherwise.
     pub error_msg: String,
     /// Per-test cases (name/status/duration/message) for the per-testcase reporters.
@@ -550,6 +553,7 @@ pub fn file_result(idx: usize, file: &Path, r: FileOutcome, dur_ms: f64) -> File
                 passed: rep.passed,
                 failed: rep.failed,
                 load_error: false,
+                failed_file: !rep.ok(),
                 error_msg: String::new(),
                 tests: rep.tests,
                 setup_us: rep.setup_us,
@@ -562,6 +566,7 @@ pub fn file_result(idx: usize, file: &Path, r: FileOutcome, dur_ms: f64) -> File
             passed: 0,
             failed: 0,
             load_error: true,
+            failed_file: true,
             error_msg: e,
             tests: Vec::new(),
             setup_us: 0.0,
@@ -626,6 +631,8 @@ pub struct Totals {
     pub failed: u32,
     /// Files that failed to load.
     pub errors: u32,
+    /// Files that failed (to load, a test, or a suite / file-level error).
+    pub failed_files: u32,
     /// Sum / count of env-setup µs over the files that loaded.
     pub setup_sum: f64,
     pub setup_n: u32,
@@ -636,6 +643,7 @@ pub fn tally(res: &[FileResult]) -> Totals {
     for r in res {
         t.passed += r.passed;
         t.failed += r.failed;
+        t.failed_files += u32::from(r.failed_file);
         if r.load_error {
             t.errors += 1;
         } else {
@@ -658,7 +666,7 @@ pub fn render_human(reporter: Reporter, res: &[FileResult]) -> String {
             }
             Reporter::Dot => out.push_str(if r.load_error {
                 "!"
-            } else if r.failed == 0 {
+            } else if !r.failed_file {
                 "."
             } else {
                 "x"
@@ -710,7 +718,7 @@ pub fn render_json(files: &[PathBuf], res: &[FileResult], t: &Totals) -> String 
     out.push_str(&format!("\"numTotalTests\":{total},"));
     out.push_str(&format!("\"numPassedTests\":{},", t.passed));
     out.push_str(&format!("\"numFailedTests\":{},", t.failed));
-    out.push_str(&format!("\"success\":{},", t.failed == 0 && t.errors == 0));
+    out.push_str(&format!("\"success\":{},", t.failed_files == 0));
     out.push_str("\"testResults\":[");
     let items: Vec<String> = res
         .iter()
@@ -720,7 +728,7 @@ pub fn render_json(files: &[PathBuf], res: &[FileResult], t: &Totals) -> String 
                 esc(&history_key(&files[r.idx])),
                 if r.load_error {
                     "error"
-                } else if r.failed == 0 {
+                } else if !r.failed_file {
                     "passed"
                 } else {
                     "failed"
@@ -904,11 +912,8 @@ pub fn count_line(failed: usize, passed: usize, total: usize) -> String {
 /// `--bail` some files never run, and those must NOT be reported as passed; the total stays the
 /// discovered file count.
 pub fn footer(file_count: usize, res: &[FileResult], t: &Totals, wall_ms: f64) -> String {
-    let failed_files = res.iter().filter(|r| r.load_error || r.failed > 0).count();
-    let passed_files = res
-        .iter()
-        .filter(|r| !r.load_error && r.failed == 0)
-        .count();
+    let failed_files = res.iter().filter(|r| r.failed_file).count();
+    let passed_files = res.len() - failed_files;
     format!(
         "\n Test Files  {}\n      Tests  {}\n   Duration  {}",
         count_line(failed_files, passed_files, file_count),
@@ -953,10 +958,11 @@ pub fn summary(
     )
 }
 
-/// 0 when nothing failed, nothing failed to load and the run's other gates passed (`gates_ok`:
-/// the coverage gate, if any, and the `--outputFile` write); else 1.
+/// 0 when nothing failed (no failed test, no file that failed to load or reported a suite /
+/// file-level error) and the run's other gates passed (`gates_ok`: the coverage gate, if any, and
+/// the `--outputFile` write); else 1.
 pub fn exit_code(t: &Totals, gates_ok: bool) -> i32 {
-    if t.failed == 0 && t.errors == 0 && gates_ok {
+    if t.failed == 0 && t.errors == 0 && t.failed_files == 0 && gates_ok {
         0
     } else {
         1

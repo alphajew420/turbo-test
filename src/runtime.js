@@ -3069,22 +3069,35 @@ globalThis.beforeAll = (fn) => current.hooks.ba.push(fn);
 globalThis.afterAll = (fn) => current.hooks.aa.push(fn);
 
 // ---- runner ----
-async function runSuite(suite, ancestors, summary) {
-  // A throwing beforeAll/afterAll must NOT reject the whole run (vitest fails the suite's tests
-  // but settles the run). Record it as a failure and continue so the file still reports.
-  for (const h of suite.hooks.ba) {
-    try { await h(); } catch (e) { summary.failed++; summary.failures.push(`${suite.name || '<root>'} beforeAll: ${(e && e.message) || String(e)}`); }
+async function runSuite(suite, ancestors, summary, skipAll = false) {
+  // vitest (turbo-test#69): a describe with no task fails with "No test found in suite <name>";
+  // a throwing beforeAll fails the suite (a file-level failure, not a failed test) and skips its
+  // tests and nested suites, whose hooks do not run, while its afterAll hooks still run. A
+  // throwing afterAll fails the suite too. Neither rejects the run: the file still reports.
+  if (ancestors.length && !suite.tasks.length) {
+    summary.failures.push(`No test found in suite ${suite.name}`);
+    return;
+  }
+  let skip = skipAll;
+  if (!skipAll) {
+    for (const h of suite.hooks.ba) {
+      try { await h(); } catch (e) {
+        summary.failures.push(`${suite.name || '<root>'} beforeAll: ${(e && e.message) || String(e)}`);
+        skip = true;
+        break;
+      }
+    }
   }
   const chain = [...ancestors, suite];
   for (const t of suite.tasks) {
-    if (t.suite) { await runSuite(t, chain, summary); continue; }
+    if (t.suite) { await runSuite(t, chain, summary, skip); continue; }
     const label = chain.map((s) => s.name).filter(Boolean).concat(t.name).join(' > ');
     // -t/--testNamePattern: skip tests whose full name does not match the regex (vitest: unanchored,
     // case-sensitive, tested against `getTaskFullName` — the enclosing describe names and the
     // test's joined with a space, turbo-test#66).
     const fullName = chain.slice(1).map((s) => s.name).concat(t.name).join(' ');
     if (__tt.namePattern && !__tt.namePattern.test(fullName)) { summary.skipped++; continue; }
-    if (t.skip || t.notOnly) { summary.skipped++; summary.tests.push({ name: label, status: 'skipped', duration_ms: 0 }); continue; }
+    if (skip || t.skip || t.notOnly) { summary.skipped++; summary.tests.push({ name: label, status: 'skipped', duration_ms: 0 }); continue; }
     // retry: per-test `{ retry }` wins; else the global default (--retry → __TT_DEFAULT_RETRY).
     const retry = (t.retry != null && t.retry > 0)
       ? t.retry
@@ -3162,8 +3175,9 @@ async function runSuite(suite, ancestors, summary) {
       summary.tests.push({ name: label, status: 'failed', duration_ms: __dur, message: msg });
     }
   }
+  if (skipAll) return;
   for (const h of suite.hooks.aa) {
-    try { await h(); } catch (e) { summary.failed++; summary.failures.push(`${suite.name || '<root>'} afterAll: ${(e && e.message) || String(e)}`); }
+    try { await h(); } catch (e) { summary.failures.push(`${suite.name || '<root>'} afterAll: ${(e && e.message) || String(e)}`); }
   }
 }
 
