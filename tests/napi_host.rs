@@ -127,6 +127,25 @@ fn define_class_builds_an_object_wrap_class() {
     assert_all_pass(&p, 9);
 }
 
+/// Type tags (napi_type_tag_object / napi_check_object_type_tag: one tag per object, compared
+/// as two 64-bit words) and napi_add_finalizer (any number per object, run on collection, an
+/// optional weak result reference), as Node; an addon importing them no longer crashes the run.
+#[test]
+fn objects_carry_type_tags_and_finalizers() {
+    let p = project("napi-typetag");
+    compile_addon(&p, "typetag");
+    p.file("typetag.test.ts", spec("typetag.test.ts"));
+    // --expose-gc: the spec collects objects to run their finalizers
+    let r = turbo_test(
+        &p.dir,
+        &["--reporter", "json"],
+        &[("TURBO_V8_FLAGS", "--expose-gc")],
+    );
+    let j = json_report(&r);
+    assert_eq!(j["numFailedTests"], 0, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 7, "{}", r.all());
+}
+
 /// Objects still wrapped when the addon's env is torn down (the file's isolate is disposed) have
 /// their finalizers run then, newest first, as Node does at exit: references can still be
 /// deleted, JS cannot run (napi_pending_exception).

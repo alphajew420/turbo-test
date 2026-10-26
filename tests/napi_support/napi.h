@@ -108,6 +108,17 @@ extern napi_status napi_define_class(napi_env, const char *, size_t, napi_callba
 extern napi_status napi_define_properties(napi_env, napi_value, size_t,
                                           const napi_property_descriptor *);
 extern napi_status napi_get_new_target(napi_env, napi_callback_info, napi_value *);
+
+typedef struct {
+    uint64_t lower;
+    uint64_t upper;
+} napi_type_tag;
+
+extern napi_status napi_type_tag_object(napi_env, napi_value, const napi_type_tag *);
+extern napi_status napi_check_object_type_tag(napi_env, napi_value, const napi_type_tag *,
+                                              bool *);
+extern napi_status napi_add_finalizer(napi_env, napi_value, void *, napi_finalize, void *,
+                                      napi_ref *);
 extern napi_status napi_create_threadsafe_function(napi_env, napi_value, napi_value, napi_value,
                                                    size_t, size_t, void *, void *, void *,
                                                    void *, void **);

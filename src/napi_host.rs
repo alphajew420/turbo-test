@@ -92,22 +92,22 @@ pub struct Env {
     /// its record, so a function always dispatches into the env (addon) that created it.
     pub fns: Vec<*mut Callback>,
     pub refs: Vec<Option<Ref>>,
-    /// The live napi_wrap records of this env, by creation order.
-    pub wraps: std::collections::BTreeMap<u64, *mut Wrap>,
-    pub next_wrap: u64,
+    /// The live finalizer records of this env (napi_wrap, napi_add_finalizer), by creation order.
+    pub finalizers: std::collections::BTreeMap<u64, *mut Finalizer>,
+    pub next_finalizer: u64,
 }
 
 impl Drop for Env {
     /// Env teardown (the isolate is being disposed). As Node's napi_env__::DeleteMe, the
-    /// finalizers of the objects still wrapped run now, newest first. No JS can run any more:
-    /// there is no scope, so a call that could run JS is napi_pending_exception (`js_call`), and
-    /// only the scope-free calls (references, napi_delete_reference) are usable.
+    /// finalizers still pending (napi_wrap, napi_add_finalizer) run now, newest first. No JS can
+    /// run any more: there is no scope, so a call that could run JS is napi_pending_exception
+    /// (`js_call`), and only the scope-free calls (references, napi_delete_reference) are usable.
     fn drop(&mut self) {
         let env: napi_env = self;
         unsafe {
             (*env).scope = std::ptr::null_mut();
-            while let Some((_, wrap)) = (*env).wraps.pop_last() {
-                finalize_wrap(env, &Box::from_raw(wrap));
+            while let Some((_, fin)) = (*env).finalizers.pop_last() {
+                run_finalizer(env, &Box::from_raw(fin));
             }
         }
         for &f in &self.fns {
@@ -116,33 +116,35 @@ impl Drop for Env {
     }
 }
 
-/// A napi_ref: napi_create_reference holds its value strongly; the reference napi_wrap hands
-/// back is weak (as Node's, refcount 0), so it does not keep the wrapped object alive.
+/// A napi_ref: napi_create_reference holds its value strongly; the reference napi_wrap and
+/// napi_add_finalizer hand back is weak (as Node's, refcount 0), so it does not keep the object
+/// alive.
 pub enum Ref {
     Strong(v8::Global<v8::Value>),
     Weak(v8::Weak<v8::Value>),
 }
 
-/// One napi_wrap: the native pointer stored on a JS object (an External under the isolate's
-/// wrap private key points here) and its optional finalizer, which runs once, when the object is
-/// collected or at env teardown, unless napi_remove_wrap drops the wrap first.
-pub struct Wrap {
+/// A native pointer tied to a JS object's lifetime, with its optional finalizer, which runs
+/// once, when the object is collected or at env teardown. napi_wrap stores one on the object (an
+/// External under the isolate's wrap private key points here; napi_remove_wrap drops it without
+/// finalizing); napi_add_finalizer attaches any number to an object.
+pub struct Finalizer {
     env: napi_env,
     id: u64,
     native: *mut c_void,
     finalize: Option<napi_finalize>,
     hint: *mut c_void,
-    /// Weak handle on the wrapped object; its GC finalizer (`wrap_collected`) frees this record.
+    /// Weak handle on the object; its GC finalizer (`finalizer_collected`) frees this record.
     weak: Option<v8::Weak<v8::Object>>,
 }
 
-/// Run `wrap`'s finalizer (if any) in the env's current scope: addon code, so under the lock.
+/// Run `fin`'s finalizer (if any) in the env's current scope: addon code, so under the lock.
 /// The env's pending exception is set aside for it, and what the finalizer leaves pending is
 /// dropped (Node reports it as an uncaught exception; there is no JS caller to throw it to).
-unsafe fn finalize_wrap(env: napi_env, wrap: &Wrap) {
-    if let Some(cb) = wrap.finalize {
+unsafe fn run_finalizer(env: napi_env, fin: &Finalizer) {
+    if let Some(cb) = fin.finalize {
         let pending = (*env).last_exception.take();
-        let _ = call_addon(|| cb(env, wrap.native, wrap.hint));
+        let _ = call_addon(|| cb(env, fin.native, fin.hint));
         (*env).last_exception = pending;
     }
 }
@@ -1134,43 +1136,66 @@ pub unsafe extern "C" fn napi_wrap(
         if obj.has_private(s, key) == Some(true) || (!result.is_null() && finalize_cb.is_none()) {
             return Err(napi_invalid_arg);
         }
-        let e = &mut *env;
-        let id = e.next_wrap;
-        e.next_wrap += 1;
-        let wrap = Box::into_raw(Box::new(Wrap {
-            env,
-            id,
-            native: native_object,
-            finalize: finalize_cb,
-            hint: finalize_hint,
-            weak: None,
-        }));
-        let on_gc = Box::new(move |isolate: &mut v8::Isolate| wrap_collected(isolate, wrap));
-        (*wrap).weak = Some(v8::Weak::with_finalizer(s, obj, on_gc));
-        e.wraps.insert(id, wrap);
+        let wrap = track_finalizer(s, env, obj, native_object, finalize_cb, finalize_hint);
         obj.set_private(s, key, v8::External::new(s, wrap as *mut c_void).into());
         if !result.is_null() {
-            let weak = v8::Weak::new(s, v8::Local::<v8::Value>::from(obj));
-            *result = new_ref(e, Ref::Weak(weak));
+            *result = weak_ref(s, env, obj);
         }
         Ok(())
     })
 }
 
-/// GC finalizer of a wrapped object: the record leaves its env and its finalizer runs in a fresh
-/// handle scope of the env's context (V8 calls this after the collection, where napi calls are
-/// allowed).
-fn wrap_collected(isolate: &mut v8::Isolate, wrap: *mut Wrap) {
+/// A new finalizer record for `obj`, held by the env until the object is collected (or the env
+/// is torn down).
+unsafe fn track_finalizer(
+    s: &mut v8::PinScope<'static, 'static>,
+    env: napi_env,
+    obj: v8::Local<v8::Object>,
+    native: *mut c_void,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+) -> *mut Finalizer {
+    let e = &mut *env;
+    let id = e.next_finalizer;
+    e.next_finalizer += 1;
+    let fin = Box::into_raw(Box::new(Finalizer {
+        env,
+        id,
+        native,
+        finalize,
+        hint,
+        weak: None,
+    }));
+    let on_gc = Box::new(move |isolate: &mut v8::Isolate| finalizer_collected(isolate, fin));
+    (*fin).weak = Some(v8::Weak::with_finalizer(s, obj, on_gc));
+    e.finalizers.insert(id, fin);
+    fin
+}
+
+/// A new weak reference to `obj` (the optional result of napi_wrap / napi_add_finalizer).
+unsafe fn weak_ref(
+    s: &mut v8::PinScope<'static, 'static>,
+    env: napi_env,
+    obj: v8::Local<v8::Object>,
+) -> napi_ref {
+    let weak = v8::Weak::new(s, v8::Local::<v8::Value>::from(obj));
+    new_ref(&mut *env, Ref::Weak(weak))
+}
+
+/// GC finalizer of an object with a finalizer record: the record leaves its env and its
+/// finalizer runs in a fresh handle scope of the env's context (V8 calls this after the
+/// collection, where napi calls are allowed).
+fn finalizer_collected(isolate: &mut v8::Isolate, fin: *mut Finalizer) {
     unsafe {
-        let wrap = Box::from_raw(wrap);
-        let env = wrap.env;
-        (*env).wraps.remove(&wrap.id);
+        let fin = Box::from_raw(fin);
+        let env = fin.env;
+        (*env).finalizers.remove(&fin.id);
         v8::scope!(let hs, isolate);
         let context = v8::Local::new(hs, &(*env).context);
         let cs: &mut v8::PinScope = &mut v8::ContextScope::new(hs, context);
         let here = cs as *mut v8::PinScope as *mut c_void;
         let outer = std::mem::replace(&mut (*env).scope, here);
-        finalize_wrap(env, &wrap);
+        run_finalizer(env, &fin);
         (*env).scope = outer;
     }
 }
@@ -1192,13 +1217,13 @@ unsafe fn unwrap(
         let key = wrap_key(s);
         let held = obj.get_private(s, key).ok_or(napi_pending_exception)?;
         let ext: v8::Local<v8::External> = held.try_into().map_err(|_| napi_invalid_arg)?;
-        let wrap = ext.value() as *mut Wrap;
+        let wrap = ext.value() as *mut Finalizer;
         if !result.is_null() {
             *result = (*wrap).native;
         }
         if remove {
             obj.delete_private(s, key);
-            (*(*wrap).env).wraps.remove(&(*wrap).id);
+            (*(*wrap).env).finalizers.remove(&(*wrap).id);
             drop(Box::from_raw(wrap));
         }
         Ok(())
@@ -1221,6 +1246,111 @@ pub unsafe extern "C" fn napi_remove_wrap(
     result: *mut *mut c_void,
 ) -> napi_status {
     unwrap(env, js_object, result, true)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_add_finalizer(
+    env: napi_env,
+    js_object: napi_value,
+    finalize_data: *mut c_void,
+    finalize_cb: Option<napi_finalize>,
+    finalize_hint: *mut c_void,
+    result: *mut napi_ref,
+) -> napi_status {
+    // as Node: no NAPI_PREAMBLE (it runs no JS, also with an exception pending); the object and
+    // the finalizer are required, and the object must be one (napi_invalid_arg)
+    let Some(finalize_cb) = finalize_cb else {
+        return napi_invalid_arg;
+    };
+    let Ok(obj) = wrap_target(js_object) else {
+        return napi_invalid_arg;
+    };
+    let s = scope(env);
+    track_finalizer(s, env, obj, finalize_data, Some(finalize_cb), finalize_hint);
+    if !result.is_null() {
+        *result = weak_ref(s, env, obj);
+    }
+    napi_ok
+}
+
+// ---- type tags ------------------------------------------------------------------
+
+/// A 128-bit type tag (napi_type_tag).
+#[repr(C)]
+pub struct napi_type_tag {
+    pub lower: u64,
+    pub upper: u64,
+}
+
+/// The isolate-wide private key under which an object carries its type tag (Node's
+/// `napi_type_tag` private symbol: one tag per object, whatever its value).
+fn type_tag_key<'s>(s: &v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+    let name = v8::String::new(s, "turbo-test::napi_type_tag");
+    v8::Private::for_api(s, name)
+}
+
+/// The object a type-tag call targets, as Node's CHECK_TO_OBJECT: NULL is napi_invalid_arg,
+/// a primitive is converted with ToObject (null / undefined throw: napi_object_expected).
+unsafe fn tag_target(
+    s: &mut v8::PinScope<'static, 'static>,
+    v: napi_value,
+) -> Result<v8::Local<'static, v8::Object>, napi_status> {
+    if v.is_null() {
+        return Err(napi_invalid_arg);
+    }
+    to_object(s, v)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_type_tag_object(
+    env: napi_env,
+    object: napi_value,
+    type_tag: *const napi_type_tag,
+) -> napi_status {
+    js_call(env, |s| {
+        let obj = tag_target(s, object)?;
+        if type_tag.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        // as Node: the tag is a BigInt of the two words, under one private key: an object that
+        // already carries a tag is napi_invalid_arg
+        let key = type_tag_key(s);
+        if obj.has_private(s, key) != Some(false) {
+            return Err(napi_invalid_arg);
+        }
+        let tag = &*type_tag;
+        let value = v8::BigInt::new_from_words(s, false, &[tag.lower, tag.upper])
+            .ok_or(napi_generic_failure)?;
+        obj.set_private(s, key, value.into())
+            .filter(|&set| set)
+            .ok_or(napi_generic_failure)?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_check_object_type_tag(
+    env: napi_env,
+    object: napi_value,
+    type_tag: *const napi_type_tag,
+    result: *mut bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let obj = tag_target(s, object)?;
+        if type_tag.is_null() || result.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let key = type_tag_key(s);
+        let held = obj.get_private(s, key).ok_or(napi_generic_failure)?;
+        let tag = &*type_tag;
+        *result = v8::Local::<v8::BigInt>::try_from(held).is_ok_and(|held| {
+            // as Node: a non-negative BigInt of up to two words, missing high words being 0
+            let mut words = [0u64; 2];
+            let (negative, _) = held.to_words_array(&mut words);
+            !negative && words == [tag.lower, tag.upper]
+        });
+        Ok(())
+    })
 }
 
 // ---- new_instance: not supported; surface as a CATCHABLE JS throw ----------
@@ -1687,8 +1817,8 @@ pub fn load_addon(
             last_exception: None,
             fns: Vec::new(),
             refs: Vec::new(),
-            wraps: Default::default(),
-            next_wrap: 0,
+            finalizers: Default::default(),
+            next_finalizer: 0,
         }));
         // The isolate owns the env from here on (freed with it, like the functions using it).
         match scope_ref.get_slot_mut::<AddonEnvs>() {

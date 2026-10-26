@@ -31,8 +31,8 @@ fn env_for(scope: &mut v8::PinScope) -> Box<Env> {
         last_exception: None,
         fns: Vec::new(),
         refs: Vec::new(),
-        wraps: Default::default(),
-        next_wrap: 0,
+        finalizers: Default::default(),
+        next_finalizer: 0,
     })
 }
 
