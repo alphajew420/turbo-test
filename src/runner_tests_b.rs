@@ -134,6 +134,15 @@ fn collect_named_imports_stays_inside_the_import_statement() {
         collect_named_imports(r#"import { importer, reimport as r } from "/p";"#, "/p"),
         vec!["importer", "r"]
     );
+    // a re-export from the path is a statement of its own (with or without an import before it)
+    assert_eq!(
+        collect_named_imports(r#"export { a, b as c } from "/p";"#, "/p"),
+        vec!["a", "c"]
+    );
+    assert_eq!(
+        collect_named_imports("import { x } from \"/x\";\nexport { a } from \"/p\";", "/p"),
+        vec!["a"]
+    );
     // the statement's own clause is still read, also after a default binding
     assert_eq!(
         collect_named_imports(
