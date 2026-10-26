@@ -85,6 +85,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   file. An empty `describe` fails its file with `No test found in suite <name>` (it passed). A
   file that reports such an error with no failed test fails the run (FAIL line, dot `x`, the
   `Test Files` count, JSON `status` / `success`, exit code 1).
+- `process.stdout.write` / `process.stderr.write` write to stdout / stderr (turbo-test#70); they
+  dropped their text. Stdout text goes to stderr while a json/junit/tap report owns stdout, as
+  console output does, and `--silent` drops it; a trailing callback runs.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

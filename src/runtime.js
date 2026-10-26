@@ -50,9 +50,20 @@ globalThis.process = {
   off: () => globalThis.process,
   once: () => globalThis.process,
   emit: () => false,
-  stdout: { write: () => true, isTTY: false },
-  stderr: { write: () => true, isTTY: false },
+  stdout: { write: (...a) => __streamWrite(1, a), isTTY: false },
+  stderr: { write: (...a) => __streamWrite(2, a), isTTY: false },
 };
+// process.stdout/stderr.write (turbo-test#70): the text (a string, or bytes decoded as UTF-8) goes
+// to the process's stream as is (native `__ttWrite`); `--silent` drops it like console output. A
+// trailing callback runs once written, asynchronously, as Node's does. Always returns true.
+function __streamWrite(fd, args) {
+  const chunk = args[0];
+  const cb = typeof args[args.length - 1] === 'function' ? args[args.length - 1] : null;
+  const text = typeof chunk === 'string' ? chunk : (chunk instanceof Uint8Array ? new TextDecoder().decode(chunk) : String(chunk));
+  if (!globalThis.__TT_SILENT) globalThis.__ttWrite(fd, text);
+  if (cb) Promise.resolve().then(() => cb());
+  return true;
+}
 
 // ===========================================================================
 // Event loop + timers (M2). Native macro/micro/nextTick ordering.

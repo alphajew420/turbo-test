@@ -582,7 +582,6 @@ fn require_cache_deletion_loads_the_module_again() {
 }
 
 #[test]
-#[ignore = "turbo-test#70: fails until the fix"]
 fn process_stdout_and_stderr_write_reach_the_streams() {
     // turbo-test#70: process.stdout.write / process.stderr.write were no-ops. As in Node, the text
     // reaches stdout / stderr unprefixed; `write` returns true and calls a trailing callback.
@@ -603,12 +602,21 @@ fn process_stdout_and_stderr_write_reach_the_streams() {
     let r = turbo_test(&p.dir, &["w.test.js"], &[]);
     assert_passes(&r, 1);
     assert!(r.stdout.starts_with("OUT1\nOUT2\n"), "{}", r.all());
-    assert!(r.stderr.contains("ERR1\n") && !r.stdout.contains("ERR1"), "{}", r.all());
+    assert!(
+        r.stderr.contains("ERR1\n") && !r.stdout.contains("ERR1"),
+        "{}",
+        r.all()
+    );
     let r = turbo_test(&p.dir, &["--reporter", "json", "w.test.js"], &[]);
     assert_eq!(r.code, Some(0), "{}", r.all());
     assert!(r.stdout.starts_with('{'), "{}", r.all());
-    assert!(r.stderr.contains("OUT1\nOUT2\n") && r.stderr.contains("ERR1\n"), "{}", r.all());
+    // one stream now: the writes in order
+    assert!(r.stderr.starts_with("OUT1\nERR1\nOUT2\n"), "{}", r.all());
     let r = turbo_test(&p.dir, &["--silent", "w.test.js"], &[]);
     assert_passes(&r, 1);
-    assert!(!r.stdout.contains("OUT1") && !r.stderr.contains("ERR1"), "{}", r.all());
+    assert!(
+        !r.stdout.contains("OUT1") && !r.stderr.contains("ERR1"),
+        "{}",
+        r.all()
+    );
 }

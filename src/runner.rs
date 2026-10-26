@@ -5103,6 +5103,26 @@ fn native_log(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
     }
 }
 
+/// native `__ttWrite(fd, text)`: `process.stdout.write` / `process.stderr.write` (runtime.js) —
+/// the text as is, to stdout for fd 1 (stderr while [`CONSOLE_TO_STDERR`] is set, as console
+/// output) and to stderr otherwise (turbo-test#70).
+fn native_write(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    use std::io::Write;
+    let fd = args.get(0).int32_value(scope).unwrap_or(1);
+    let text = args.get(1).to_rust_string_lossy(scope);
+    if fd == 1 && !CONSOLE_TO_STDERR.load(Ordering::Relaxed) {
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(text.as_bytes());
+        let _ = out.flush();
+    } else {
+        let _ = std::io::stderr().lock().write_all(text.as_bytes());
+    }
+}
+
 /// Re-bind native callbacks into a fresh (snapshot-derived) context.
 /// os.tmpdir() as Node's: TMPDIR, else TMP, else TEMP, else /tmp, without a trailing slash.
 fn node_tmpdir(var: impl Fn(&str) -> Option<String>) -> String {
@@ -5118,6 +5138,7 @@ fn node_tmpdir(var: impl Fn(&str) -> Option<String>) -> String {
 
 fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "log", native_log);
+    bind_fn(scope, global, "__ttWrite", native_write);
     bind_fn(scope, global, "__nativeRequire", native_require);
     bind_fn(scope, global, "__ttRegisterMock", native_register_mock);
     bind_fn(scope, global, "__ttImportActual", native_import_actual);
