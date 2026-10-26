@@ -1,6 +1,7 @@
 //! Module-runner (esbuild project) semantics that follow vitest/Node: a module's own load error
 //! is the reported cause (entry import, `require()`, dynamic `import()`); `import.meta`
-//! (url/filename/dirname) and CSS-module class-name proxies.
+//! (url/filename/dirname) and CSS-module class-name proxies; a mock factory that throws fails the
+//! import of the mocked module with that error.
 #![cfg(unix)]
 
 mod common;
@@ -197,4 +198,103 @@ test('plain css is a side-effect import', () => {
     ] {
         assert_passes(&turbo_test(&p.dir, &["a.test.ts"], env), 2);
     }
+}
+
+/// vitest's wrapper for a factory error; the cause follows it.
+const MOCK_ERR: &str = "[vitest] There was an error when mocking a module.";
+
+#[test]
+fn module_runner_mock_factory_errors_fail_the_import() {
+    let p = esbuild_project("rc-factory-error");
+    p.file("m.js", "export const v = 'real';\n");
+    p.file("n.js", "export const n = 'real-n';\n");
+    p.file(
+        "hoisted.test.js",
+        "import { v } from './m.js';\n\
+         vi.mock('./m.js', () => { throw new Error('factory boom') });\n\
+         test('t', () => { expect(v).toBe('never'); });\n",
+    );
+    p.file(
+        "async.test.js",
+        "import { n } from './n.js';\n\
+         vi.mock('./n.js', async () => { throw new Error('async boom') });\n\
+         test('t', () => { expect(n).toBe('never'); });\n",
+    );
+    // jest semantics: the factory's own error propagates from the require
+    p.file(
+        "jest.test.js",
+        "import { v } from './m.js';\n\
+         jest.mock('./m.js', () => { throw new Error('jest boom') });\n\
+         test('t', () => { expect(v).toBe('never'); });\n",
+    );
+    p.file(
+        "domock.test.js",
+        r#"import { n } from './n.js';
+// the prepass runs factories outside the module scope (`local` is not defined there); the
+// module's own call, which sees it, is the one that counts
+const local = 'from-module-scope';
+vi.mock('./m.js', () => ({ v: local }));
+// a factory is only reached by importing its module: an unimported one never fails the file
+vi.mock('./unused.js', () => { throw new Error('never imported'); });
+test('module-scope factory', () => { expect(require('./m.js').v).toBe('from-module-scope'); });
+test('doMock factory error surfaces on the next import', () => {
+  expect(n).toBe('real-n');
+  vi.doMock('./n.js', () => { throw new Error('do boom'); });
+  expect(() => require('./n.js')).toThrow('Caused by: Error: do boom');
+  vi.doMock('./n.js', () => ({ n: 'fixed' }));
+  expect(require('./n.js').n).toBe('fixed');
+});
+"#,
+    );
+    for env in FRESH_AND_REUSE {
+        for (file, cause) in [
+            ("hoisted.test.js", "Error: factory boom"),
+            ("async.test.js", "Error: async boom"),
+        ] {
+            let r = turbo_test(&p.dir, &[file], env);
+            assert_eq!(r.code, Some(1), "{env:?}\n{}", r.all());
+            let line = load_error_line(&r, file);
+            assert!(
+                line.contains(MOCK_ERR) && line.ends_with(&format!(" Caused by: {cause})")),
+                "{env:?}\n{}",
+                r.all()
+            );
+        }
+        let r = turbo_test(&p.dir, &["jest.test.js"], env);
+        assert!(
+            load_error_line(&r, "jest.test.js").ends_with("(Error: jest boom)"),
+            "{env:?}\n{}",
+            r.all()
+        );
+        assert_passes(&turbo_test(&p.dir, &["domock.test.js"], env), 2);
+    }
+}
+
+#[test]
+fn esm_graph_mock_factory_error_fails_the_import() {
+    // No esbuild: the entry's factories are run natively before it links.
+    let p = Project::new("rc-factory-error-esm");
+    p.file("package.json", r#"{"name":"rc-factory-error-esm"}"#);
+    p.file("m.js", "export const v = 'real';\n");
+    p.file(
+        "a.test.js",
+        "import { v } from './m.js';\n\
+         vi.mock('./m.js', () => { throw new Error('factory boom') });\n\
+         test('t', () => { expect(v).toBe('never'); });\n",
+    );
+    p.file(
+        "dyn.test.js",
+        "vi.mock('./m.js', () => { throw new Error('dyn boom') });\n\
+         test('rejects', async () => {\n  \
+         await expect(import('./m.js')).rejects.toThrow('Caused by: Error: dyn boom');\n});\n",
+    );
+    let r = turbo_test(&p.dir, &["a.test.js"], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    let line = load_error_line(&r, "a.test.js");
+    assert!(
+        line.contains(MOCK_ERR) && line.ends_with(" Caused by: Error: factory boom)"),
+        "{}",
+        r.all()
+    );
+    assert_passes(&turbo_test(&p.dir, &["dyn.test.js"], &[]), 1);
 }

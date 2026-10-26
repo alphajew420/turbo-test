@@ -113,12 +113,12 @@ fn entry_mocks_register_without_an_esbuild_prepass() {
 import e, { n } from './e.mjs';
 import b from './b.cjs';
 import c from './c.cjs';
-import d from './d.cjs';
 vi.mock('./a.cjs', () => ({ v: 'a-mock' }));
 jest.mock('./b.cjs', () => ({ v: 'b-mock' }));
 // a factory's `default` key is the mock's default export
 vi.mock('./e.mjs', () => ({ default: 'e-mock', n: 1 }));
-// a throwing factory must not break the registration of the others
+// a throwing factory does not break the registration of the others (and, its module never
+// being imported, does not fail the file: vitest only calls a factory on import)
 vi.mock('./d.cjs', () => { throw new Error('factory boom'); });
 vi.mock('./not-there.cjs', () => ({ v: 1 }));
 test('mocks', () => {
@@ -129,7 +129,6 @@ test('mocks', () => {
   // no factory: an automock (the real implementation is not reachable)
   expect(vi.isMockFunction(c.fn)).toBe(true);
   expect(c.fn()).toBe(undefined);
-  expect(typeof d).toBe('object');
 });
 // factory-less form last: nothing may follow it (see the extract_mocks note)
 vi.mock('./c.cjs');

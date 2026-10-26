@@ -231,12 +231,32 @@ function __installVirtualDate() {
 function __restoreDate() { __installVirtualDate(); }
 __installVirtualDate();
 
-// await any async mock-factory results before the native loader drains them; drop rejected
+// A vi.mock/doMock factory that threw (or rejected): the module is registered as this stand-in,
+// and importing it throws the factory's error (vitest wraps it, with the cause; jest rethrows it
+// as is) instead of silently falling back to the real module. The native loader asks
+// __ttMockFactoryError(exports) on each import of a mocked path; any other access to the
+// stand-in throws the same error.
+const __ttMockErrors = new WeakMap();
+function __ttFactoryErrorMock(e, vitest) {
+  const err = vitest
+    ? new Error('[vitest] There was an error when mocking a module. If you are using "vi.mock" factory, '
+      + 'make sure there are no top level variables inside, since this call is hoisted to top of the file. '
+      + 'Read more: https://vitest.dev/api/vi.html#vi-mock Caused by: ' + String(e), { cause: e })
+    : e;
+  const stand = new Proxy({}, { get: (t, k) => { if (typeof k === 'symbol' || k === 'then') return undefined; throw err; } });
+  __ttMockErrors.set(stand, err);
+  return stand;
+}
+globalThis.__ttFactoryErrorMock = __ttFactoryErrorMock;
+globalThis.__ttMockFactoryError = (m) => __ttMockErrors.get(m);
+
+// await any async mock-factory results before the native loader drains them; a rejected factory
+// registers the error stand-in
 globalThis.__resolvePendingMocks = async () => {
   const list = globalThis.__pendingMocks || [];
   for (const m of list) {
     if (m.exports && typeof m.exports.then === 'function') {
-      try { m.exports = await m.exports; } catch (e) { m.exports = undefined; }
+      try { m.exports = await m.exports; } catch (e) { m.exports = __ttFactoryErrorMock(e, m.vitest !== false); }
     }
   }
 };
@@ -2177,6 +2197,50 @@ function __automock(mod, depth) {
   return mod;
 }
 const __spies = [];
+// Record (specifier, evaluated-exports) into a queue the native loader drains after the
+// module runs, registering the mock keyed by the resolved absolute path. The factory runs
+// here, in the calling module's scope (so closures over setup-file vars work). `vitest` is
+// false for jest.mock/doMock (jest semantics where they differ).
+const __ttMockErrorSpecs = new Set();
+function __ttMock(spec, factory, vitest) {
+  let exports;
+  // vitest passes `importOriginal` (a fn returning the real module, as a Promise) as the
+  // factory's first arg — `vi.mock('x', async (importOriginal) => ({...await importOriginal(), y}))`.
+  const importOriginal = () => Promise.resolve(globalThis.__ttImportActual(globalThis.__ttDir, String(spec)));
+  if (factory === undefined) {
+    // AUTOMOCK: no factory -> auto-generate a mock from the real module (functions -> vi.fn()).
+    // A real module that fails to load is left unmocked: importing it reports its own error.
+    try { exports = __automock(globalThis.__ttImportActual(globalThis.__ttDir, String(spec))); }
+    catch (e) { return; }
+  } else {
+    try { exports = typeof factory === 'function' ? factory(importOriginal) : factory; }
+    catch (e) {
+      // The entry's mock prepass (__ttMockPrepass) runs factories outside the module's scope; a
+      // throw there is not registered — the module's own vi.mock call re-runs it in scope.
+      if (globalThis.__ttMockPrepass) return;
+      exports = __ttFactoryErrorMock(e, vitest);
+    }
+  }
+  // Sync factory: register IMMEDIATELY in the calling module's dir (vi.mock is hoisted above
+  // the module's consumer requires, so the mock is in place before they load — and the factory
+  // ran in THIS module's scope, so it shares the test's bindings). Async (Promise) factory:
+  // queue for __resolvePendingMocks (run_entry_mocks prepass / drain).
+  if (exports && typeof exports.then === 'function') {
+    (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest });
+    return;
+  }
+  if (globalThis.__ttRegisterMock && globalThis.__ttDir) {
+    // An error stand-in replaces (never merges into) a module already registered under this
+    // isolate; a later working factory for the same spec replaces the stand-in the same way.
+    const key = globalThis.__ttDir + '\0' + String(spec);
+    if (__ttMockErrors.has(exports) || __ttMockErrorSpecs.has(key)) {
+      globalThis.vi.unmock(spec);
+      if (__ttMockErrors.has(exports)) __ttMockErrorSpecs.add(key); else __ttMockErrorSpecs.delete(key);
+    }
+    try { globalThis.__ttRegisterMock(globalThis.__ttDir, String(spec), exports); return; } catch (e) {}
+  }
+  (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest });
+}
 globalThis.vi = {
   fn: (impl) => { const s = makeSpy(impl); __spies.push(s); return s; },
   spyOn: (obj, key) => {
@@ -2196,33 +2260,7 @@ globalThis.vi = {
   // Record (specifier, evaluated-exports) into a queue the native loader drains after the
   // module runs, registering the mock keyed by the resolved absolute path. The factory runs
   // here, in the calling module's scope (so closures over setup-file vars work).
-  mock: (spec, factory) => {
-    let exports;
-    // vitest passes `importOriginal` (a fn returning the real module, as a Promise) as the
-    // factory's first arg — `vi.mock('x', async (importOriginal) => ({...await importOriginal(), y}))`.
-    const importOriginal = () => Promise.resolve(globalThis.__ttImportActual(globalThis.__ttDir, String(spec)));
-    try {
-      if (factory === undefined) {
-        // AUTOMOCK: no factory -> auto-generate a mock from the real module (functions -> vi.fn()).
-        exports = __automock(globalThis.__ttImportActual(globalThis.__ttDir, String(spec)));
-      } else {
-        exports = typeof factory === 'function' ? factory(importOriginal) : factory;
-      }
-    }
-    catch (e) { return; }
-    // Sync factory: register IMMEDIATELY in the calling module's dir (vi.mock is hoisted above
-    // the module's consumer requires, so the mock is in place before they load — and the factory
-    // ran in THIS module's scope, so it shares the test's bindings). Async (Promise) factory:
-    // queue for __resolvePendingMocks (run_entry_mocks prepass / drain).
-    if (exports && typeof exports.then === 'function') {
-      (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports });
-      return;
-    }
-    if (globalThis.__ttRegisterMock && globalThis.__ttDir) {
-      try { globalThis.__ttRegisterMock(globalThis.__ttDir, String(spec), exports); return; } catch (e) {}
-    }
-    (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports });
-  },
+  mock: (spec, factory) => __ttMock(spec, factory, true),
   unmock: (spec) => {
     if (globalThis.__pendingMocks) globalThis.__pendingMocks = globalThis.__pendingMocks.filter((m) => m.spec !== String(spec));
     const dir = globalThis.__ttDir || globalThis.__cwd;
@@ -2392,9 +2430,9 @@ globalThis.babelHelpers.decorateMetadata = function (metadataKey, metadataValue)
 globalThis.jest = {
   fn: (impl) => globalThis.vi.fn(impl),
   spyOn: (obj, key) => globalThis.vi.spyOn(obj, key),
-  mock: (spec, factory) => globalThis.vi.mock(spec, factory),
+  mock: (spec, factory) => __ttMock(spec, factory, false),
   unmock: (spec) => globalThis.vi.unmock(spec),
-  doMock: (spec, factory) => globalThis.vi.doMock(spec, factory),
+  doMock: (spec, factory) => __ttMock(spec, factory, false),
   dontMock: (spec) => globalThis.vi.unmock(spec),
   mocked: (item) => globalThis.vi.mocked(item),
   clearAllMocks: () => globalThis.vi.clearAllMocks(),

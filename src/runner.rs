@@ -1501,6 +1501,7 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
         // empty mock (so the real module wins and named imports never rebind to the spies). The
         // flag makes load_cjs leave the queue alone until the outer drain runs here.
         let prev_resolving = RESOLVING_MOCKS.with(|f| f.replace(true));
+        set_mock_prepass(scope, true);
         if let Some(raw) = esbuild_transform_cjs(&p, false) {
             let wrapped = format!(
                 "(function (exports, module, require, __filename, __dirname) {{\n{raw}\n}})"
@@ -1541,12 +1542,14 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
                 }
             }
         }
+        set_mock_prepass(scope, false);
         resolve_pending_mocks(scope);
         drain_pending_mocks(scope, entry.parent().unwrap_or(Path::new(".")), false);
         RESOLVING_MOCKS.with(|f| f.set(prev_resolving));
         return;
     }
     let bundled = esbuild_bundle(&p, &[]).unwrap_or_else(|| p.clone());
+    set_mock_prepass(scope, true);
     if let Some(module) = load_graph(scope, &bundled) {
         let tc = std::pin::pin!(v8::TryCatch::new(scope));
         let tc = &mut tc.init();
@@ -1555,8 +1558,22 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
             tc.perform_microtask_checkpoint();
         }
     }
+    set_mock_prepass(scope, false);
     resolve_pending_mocks(scope);
     drain_pending_mocks(scope, entry.parent().unwrap_or(Path::new(".")), false);
+}
+
+/// Mark the entry's mock prepass for runtime.js. The prepass runs the factories outside the
+/// module's scope (no imports or module-level bindings), so a factory that throws THERE is not a
+/// factory error: it is not registered, and the module's own `vi.mock` call (which re-runs the
+/// factory in scope) decides. Registering it would break the module's "needed" requires that load
+/// the mocked module before that call (e.g. for a later `vi.mocked(x)`).
+fn set_mock_prepass(scope: &mut v8::PinScope, on: bool) {
+    let global = scope.get_current_context().global(scope);
+    if let Some(k) = v8::String::new(scope, "__ttMockPrepass") {
+        let v = v8::Boolean::new(scope, on);
+        global.set(scope, k.into(), v.into());
+    }
 }
 
 /// Set up the DOM environment in the current context: bind the all-Rust DOM (rtdom) natively so
@@ -2813,9 +2830,54 @@ fn register_mock<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, factory_src: 
         let script = v8::Script::compile(scope, code, None)?;
         let f = v8::Local::<v8::Function>::try_from(script.run(scope)?).ok()?;
         let undef = v8::undefined(scope).into();
-        f.call(scope, undef, &[])?
+        // A factory that throws registers runtime.js's error stand-in (importing the module then
+        // fails with the vitest-wrapped error) instead of leaving the real module in place.
+        let thrown = {
+            let tc = std::pin::pin!(v8::TryCatch::new(scope));
+            let tc = &mut tc.init();
+            match f.call(tc, undef, &[]) {
+                Some(v) => Ok(v8::Global::new(tc, v)),
+                None => {
+                    let e = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
+                    Err(v8::Global::new(tc, e))
+                }
+            }
+        };
+        match thrown {
+            Ok(v) => v8::Local::new(scope, &v),
+            Err(e) => {
+                let e = v8::Local::new(scope, &e);
+                let global = scope.get_current_context().global(scope);
+                let k = v8::String::new(scope, "__ttFactoryErrorMock")?;
+                let mk = v8::Local::<v8::Function>::try_from(global.get(scope, k.into())?).ok()?;
+                let vitest = v8::Boolean::new(scope, true).into();
+                mk.call(scope, undef, &[e, vitest])?
+            }
+        }
     };
     register_mock_value(scope, abs, exports_val)
+}
+
+/// When `abs` is mocked by a factory that threw, the error importing it must throw (runtime.js
+/// registered its error stand-in for it; `__ttMockFactoryError` maps that back to the error).
+fn mock_factory_error<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    abs: &Path,
+) -> Option<v8::Local<'s, v8::Value>> {
+    let g = REGISTRY.with(|r| {
+        let reg = r.borrow();
+        reg.mocks
+            .contains_key(abs)
+            .then(|| reg.cjs_exports.get(abs).cloned())
+            .flatten()
+    })?;
+    let exports = v8::Local::new(scope, &g);
+    let global = scope.get_current_context().global(scope);
+    let k = v8::String::new(scope, "__ttMockFactoryError")?;
+    let f = v8::Local::<v8::Function>::try_from(global.get(scope, k.into())?).ok()?;
+    let undef = v8::undefined(scope).into();
+    let err = f.call(scope, undef, &[exports])?;
+    (!err.is_undefined()).then_some(err)
 }
 
 /// Drain globalThis.__pendingMocks (filled by runtime vi.mock during a module's execution),
@@ -2891,7 +2953,7 @@ fn drain_pending_mocks(scope: &mut v8::PinScope, base_dir: &Path, skip_relative:
             continue;
         }
         if exports.is_undefined() {
-            continue; // failed/async-rejected factory — fall back to the real module
+            continue; // a factory that returned nothing (a throwing one left its error stand-in)
         }
         if let Some(abs) = resolve_spec(&spec, base_dir) {
             register_mock_value(scope, &abs, exports);
@@ -3573,6 +3635,11 @@ fn native_require(
         rv.set(module.get_module_namespace());
         return;
     }
+    // a mock factory that threw: the import fails with its error (vitest)
+    if let Some(e) = mock_factory_error(scope, &abs) {
+        scope.throw_exception(e);
+        return;
+    }
     if let Some(g) = REGISTRY.with(|r| r.borrow().cjs_exports.get(&abs).cloned()) {
         let local = v8::Local::new(scope, &g);
         rv.set(local);
@@ -3889,6 +3956,11 @@ fn resolve_callback<'s>(
         })
     };
     let abs = lookup?;
+    // a mock factory that threw: linking the importer fails with its error (vitest)
+    if let Some(e) = mock_factory_error(scope, &abs) {
+        scope.throw_exception(e);
+        return None;
+    }
     // Already loaded?
     if let Some(g) = REGISTRY.with(|r| {
         let reg = r.borrow();
@@ -3996,6 +4068,11 @@ fn dynamic_import_callback<'s>(
                 load_cjs(scope, &abs, true)?;
             } else {
                 load_dep(scope, &abs)?;
+            }
+            // a mock factory that threw: the import rejects with its error (vitest)
+            if let Some(e) = mock_factory_error(scope, &abs) {
+                scope.throw_exception(e);
+                return None;
             }
         }
         let module = REGISTRY.with(|r| {
