@@ -286,8 +286,9 @@ fn coverage_accumulate_ignores_malformed_and_out_of_scope_scripts() {
 
 #[test]
 fn run_test_file_reports_a_missing_entry() {
-    let e = run_test_file(Path::new("/definitely/not/here.test.js")).unwrap_err();
-    assert!(e.contains("No such file"), "{e}");
+    let missing = Path::new("/definitely/not/here.test.js");
+    let e = run_test_file(missing).unwrap_err();
+    assert_eq!(e, std::fs::canonicalize(missing).unwrap_err().to_string());
 }
 
 #[test]
