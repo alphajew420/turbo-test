@@ -75,6 +75,11 @@ fn test_file_names() {
         "d.test.mts",
         "e.test.cts",
         "x.y.test.ts",
+        // turbo-test#57: vitest's default include, `*.{test,spec}.?(c|m)[jt]s?(x)`
+        "f.test.mjs",
+        "g.test.cjs",
+        "h.spec.mtsx",
+        "i.test.cjsx",
     ] {
         assert!(is_test_file(n), "{n}");
     }
@@ -87,19 +92,26 @@ fn test_file_names() {
         "noext",
         "a_test.ts",
         ".test.ts",
+        "a.test.jsxx",
+        "a.test.xjs",
     ] {
         assert_eq!(is_test_file(n), n == ".test.ts", "{n}");
     }
 }
 
 #[test]
-fn walk_skips_hidden_and_skip_dirs() {
+fn walk_skips_only_node_modules_and_git() {
+    // turbo-test#57: vitest's default exclude is `**/node_modules/**` and `**/.git/**`; hidden
+    // entries and build output directories are discovered (vitest 4.1.12)
     let t = Tmp::new("walk");
     t.file("a.test.ts", T);
     t.file("src/deep/b.spec.js", T);
     t.file("src/helper.ts", "");
     t.file(".hidden/c.test.ts", T);
     t.file("src/.d.test.ts", T);
+    for d in ["dist", "build", "coverage", ".next", ".turbo", "target"] {
+        t.file(&format!("{d}/e.test.ts"), T);
+    }
     for d in SKIP_DIR {
         t.file(&format!("{d}/e.test.ts"), T);
         t.file(&format!("src/{d}/f.test.ts"), T);
@@ -107,19 +119,29 @@ fn walk_skips_hidden_and_skip_dirs() {
     // a directory whose name looks like a test file is descended, not collected
     t.file("g.test.ts/inner.test.ts", T);
     let mut out = Vec::new();
-    walk(&t.0, &mut out);
+    walk(&t.0, &mut out, &is_test_file);
     out.sort();
-    assert_eq!(
-        out,
-        vec![
-            t.0.join("a.test.ts"),
-            t.0.join("g.test.ts/inner.test.ts"),
-            t.0.join("src/deep/b.spec.js")
-        ]
-    );
+    let want: Vec<PathBuf> = [
+        ".hidden/c.test.ts",
+        ".next/e.test.ts",
+        ".turbo/e.test.ts",
+        "a.test.ts",
+        "build/e.test.ts",
+        "coverage/e.test.ts",
+        "dist/e.test.ts",
+        "g.test.ts/inner.test.ts",
+        "src/.d.test.ts",
+        "src/deep/b.spec.js",
+        "target/e.test.ts",
+    ]
+    .iter()
+    .map(|f| t.0.join(f))
+    .collect();
+    assert_eq!(out, want);
+    assert_eq!(SKIP_DIR, ["node_modules", ".git"]);
     // unreadable dir → nothing, no panic
     let mut none = Vec::new();
-    walk(&t.0.join("missing"), &mut none);
+    walk(&t.0.join("missing"), &mut none, &is_test_file);
     assert!(none.is_empty());
 }
 
@@ -131,7 +153,7 @@ fn walk_ignores_symlinks_and_specials() {
     std::os::unix::fs::symlink(&real, t.0.join("link.test.ts")).unwrap();
     std::os::unix::fs::symlink(t.0.join("real"), t.0.join("linkdir")).unwrap();
     let mut out = Vec::new();
-    walk(&t.0, &mut out);
+    walk(&t.0, &mut out, &is_test_file);
     assert_eq!(out, vec![real]);
 }
 
@@ -160,6 +182,23 @@ fn discover_honours_test_include_exclude() {
     assert_eq!(
         discover(&t.0, None),
         vec![t.0.join("lib/c.spec.ts"), t.0.join("src/a.test.ts")]
+    );
+}
+
+/// turbo-test#57: a config include is matched against every file, not only default test names.
+#[test]
+fn discover_matches_a_config_include_against_every_file() {
+    let t = Tmp::new("disc-any");
+    t.file(
+        "vitest.config.ts",
+        "export default { test: { include: ['checks/**/*.mjs'] } }",
+    );
+    t.file("checks/one.mjs", T);
+    t.file("checks/deep/two.mjs", T);
+    t.file("checks/three.test.ts", T);
+    assert_eq!(
+        discover(&t.0, None),
+        vec![t.0.join("checks/deep/two.mjs"), t.0.join("checks/one.mjs")]
     );
 }
 

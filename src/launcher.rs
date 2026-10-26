@@ -24,9 +24,9 @@ use std::process::Command;
 
 use crate::coverage::glob_matches;
 
-/// Directories never descended into during default discovery (mirrors cli.js `SKIP_DIR`).
-const SKIP_DIR: [&str; 8] =
-    ["node_modules", ".git", "dist", "build", "coverage", ".next", ".turbo", "target"];
+/// Directories discovery never descends into: vitest's default exclude (`**/node_modules/**`,
+/// `**/.git/**`).
+const SKIP_DIR: [&str; 2] = ["node_modules", ".git"];
 
 /// The config files vitest 4 resolves, in its order (`configFiles` in vitest's constants:
 /// `vitest.config` then `vite.config`, each with `.ts .mts .cts .js .mjs .cjs`). Every config
@@ -73,11 +73,13 @@ pub(crate) const VALUE_FLAGS: [&str; 21] = [
     "--coverage-exclude",
 ];
 
-/// `name` is a vitest-style test file: `*.{test,spec}.{ts,tsx,js,jsx,mts,cts}` (cli.js TEST_RE).
+/// `name` is a test file by vitest's default include: `*.{test,spec}.?(c|m)[jt]s?(x)`.
 fn is_test_file(name: &str) -> bool {
     // strip the final extension, require it to be one of the known ones, then require the
     // remaining stem to end with `.test` or `.spec`.
-    let exts = ["ts", "tsx", "js", "jsx", "mts", "cts"];
+    let exts = [
+        "js", "ts", "jsx", "tsx", "cjs", "cts", "mjs", "mts", "cjsx", "ctsx", "mjsx", "mtsx",
+    ];
     let Some((stem, ext)) = name.rsplit_once('.') else { return false };
     if !exts.contains(&ext) {
         return false;
@@ -85,25 +87,22 @@ fn is_test_file(name: &str) -> bool {
     stem.ends_with(".test") || stem.ends_with(".spec")
 }
 
-/// Recursive default discovery walk (cli.js `walk`): collect test files, skipping hidden entries
-/// and the SKIP_DIR set.
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Recursive discovery walk: collect the files whose name `keep` accepts, outside the SKIP_DIR
+/// directories (symbolic links are not followed).
+fn walk(dir: &Path, out: &mut Vec<PathBuf>, keep: &dyn Fn(&str) -> bool) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.') {
-            continue;
-        }
         let full = entry.path();
         match entry.file_type() {
             Ok(ft) if ft.is_dir() => {
                 if !SKIP_DIR.contains(&name.as_ref()) {
-                    walk(&full, out);
+                    walk(&full, out, keep);
                 }
             }
             Ok(ft) if ft.is_file() => {
-                if is_test_file(&name) {
+                if keep(&name) {
                     out.push(full);
                 }
             }
@@ -994,11 +993,14 @@ fn top_level_comma(s: &str) -> Option<usize> {
 /// with `test.include` is found. Mirrors cli.js `discover`.
 fn discover(cwd: &Path, forced_config: Option<&Path>) -> Vec<PathBuf> {
     let mut all = Vec::new();
-    walk(cwd, &mut all);
     let Some(pats) = vitest_patterns(cwd, forced_config) else {
+        // vitest's default include
+        walk(cwd, &mut all, &is_test_file);
         all.sort();
         return all;
     };
+    // a config include is matched against every file
+    walk(cwd, &mut all, &|_| true);
     let rel = |f: &Path| -> String {
         // project-root-relative POSIX path (vitest matches globs against this).
         let r = f.strip_prefix(&pats.root).unwrap_or(f);
