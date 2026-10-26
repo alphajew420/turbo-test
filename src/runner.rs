@@ -5471,18 +5471,29 @@ pub struct TestReport {
     /// Per-test list (full `describe > it` name, status, duration ms) — drives the
     /// per-testcase reporters (junit/tap/verbose). Empty only if the file failed to load.
     pub tests: Vec<TestCase>,
+    /// One state per `describe` block: "pass" | "fail" | "skip" | "todo".
+    pub suites: Vec<String>,
     /// Per-file environment setup time (isolate+context-from-snapshot+natives), µs.
     pub setup_us: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TestCase {
+    /// The `describe > test` label (junit/tap/verbose).
     pub name: String,
-    /// "passed" | "failed" | "skipped".
+    /// The test's own title and its enclosing `describe` names (vitest's `title` /
+    /// `ancestorTitles`).
+    pub title: String,
+    pub ancestors: Vec<String>,
+    /// "passed" | "failed" | "skipped" | "todo".
     pub status: String,
     pub duration_ms: f64,
+    /// Real start time (epoch ms) of a test that ran; 0 otherwise.
+    pub start_ms: f64,
     /// Failure message (empty unless status == "failed").
     pub message: String,
+    /// The failure's error `stack` (else its `message`), as vitest's JSON `failureMessages`.
+    pub failure_messages: Vec<String>,
 }
 
 impl TestReport {
@@ -6289,48 +6300,44 @@ fn drive_tests_bounded(
     let passed = get_num(scope, "passed");
     let failed = get_num(scope, "failed");
 
-    let mut failures = Vec::new();
-    let fkey = v8::String::new(scope, "failures").unwrap();
-    if let Some(arr) = summary
-        .get(scope, fkey.into())
-        .and_then(|v| v8::Local::<v8::Array>::try_from(v).ok())
-    {
-        for i in 0..arr.length() {
-            if let Some(v) = arr.get_index(scope, i) {
-                failures.push(v.to_rust_string_lossy(scope));
-            }
-        }
-    }
-    // Per-test list (name/status/duration_ms/message) for the per-testcase reporters.
+    let failures = string_array(scope, summary, "failures");
+    // One state per describe block ('pass' / 'fail' / 'skip' / 'todo').
+    let suites = string_array(scope, summary, "suites");
+    // Per-test records (runtime.js `__testRecord`) for the per-testcase reporters.
     let mut tests = Vec::new();
     let tkey = v8::String::new(scope, "tests").unwrap();
     if let Some(arr) = summary
         .get(scope, tkey.into())
         .and_then(|v| v8::Local::<v8::Array>::try_from(v).ok())
     {
-        let get_str = |scope: &mut v8::PinScope, o: v8::Local<v8::Object>, key: &str| -> String {
-            let k = v8::String::new(scope, key).unwrap();
-            o.get(scope, k.into())
-                .filter(|v| !v.is_undefined() && !v.is_null())
-                .map(|v| v.to_rust_string_lossy(scope))
-                .unwrap_or_default()
-        };
-        let get_f64 = |scope: &mut v8::PinScope, o: v8::Local<v8::Object>, key: &str| -> f64 {
-            let k = v8::String::new(scope, key).unwrap();
-            o.get(scope, k.into())
-                .and_then(|v| v.number_value(scope))
-                .unwrap_or(0.0)
-        };
         for i in 0..arr.length() {
             if let Some(o) = arr
                 .get_index(scope, i)
                 .and_then(|v| v8::Local::<v8::Object>::try_from(v).ok())
             {
+                let text = |scope: &mut v8::PinScope, key: &str| -> String {
+                    let k = v8::String::new(scope, key).unwrap();
+                    o.get(scope, k.into())
+                        .filter(|v| !v.is_undefined() && !v.is_null())
+                        .map(|v| v.to_rust_string_lossy(scope))
+                        .unwrap_or_default()
+                };
+                let num = |scope: &mut v8::PinScope, key: &str| -> f64 {
+                    let k = v8::String::new(scope, key).unwrap();
+                    o.get(scope, k.into())
+                        .filter(|v| !v.is_undefined())
+                        .and_then(|v| v.number_value(scope))
+                        .unwrap_or(0.0)
+                };
                 tests.push(TestCase {
-                    name: get_str(scope, o, "name"),
-                    status: get_str(scope, o, "status"),
-                    duration_ms: get_f64(scope, o, "duration_ms"),
-                    message: get_str(scope, o, "message"),
+                    name: text(scope, "name"),
+                    title: text(scope, "title"),
+                    ancestors: string_array(scope, o, "ancestors"),
+                    status: text(scope, "status"),
+                    duration_ms: num(scope, "duration_ms"),
+                    start_ms: num(scope, "start_ms"),
+                    message: text(scope, "message"),
+                    failure_messages: string_array(scope, o, "failure_messages"),
                 });
             }
         }
@@ -6340,8 +6347,28 @@ fn drive_tests_bounded(
         failed,
         failures,
         tests,
+        suites,
         setup_us: 0.0,
     })
+}
+
+/// The array `obj[key]` as strings (empty when it is not an array).
+fn string_array<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    obj: v8::Local<'s, v8::Object>,
+    key: &str,
+) -> Vec<String> {
+    let k = v8::String::new(scope, key).unwrap();
+    let Some(arr) = obj
+        .get(scope, k.into())
+        .and_then(|v| v8::Local::<v8::Array>::try_from(v).ok())
+    else {
+        return Vec::new();
+    };
+    (0..arr.length())
+        .filter_map(|i| arr.get_index(scope, i))
+        .map(|v| v.to_rust_string_lossy(scope))
+        .collect()
 }
 
 /// Call a no-arg global JS function and coerce its result to bool.

@@ -38,7 +38,7 @@ test('-c/--config + --root: forced config drives discovery (its include only)', 
   const { code, out } = run(['--reporter', 'json', '--root', SUBDIR, '-c', SUBCFG]);
   const j = parseJson(out);
   assert.equal(code, 0, out);
-  assert.equal(j.numTotalTestSuites, 1, 'only the *.feature.spec.ts file should be discovered');
+  assert.equal(j.testResults.length, 1, 'only the *.feature.spec.ts file should be discovered');
   assert.equal(j.numPassedTests, 1);
   assert.equal(j.numFailedTests, 0);
   assert.ok(!/ignored\.test\.ts/.test(out), 'ignored.test.ts must NOT be discovered under this config');
@@ -51,7 +51,7 @@ test('--dir is accepted as an alias for the discovery root', () => {
 
 test('--config=<path> inline form is accepted', () => {
   const j = parseJson(run(['--reporter', 'json', '--root', SUBDIR, `--config=${SUBCFG}`]).out);
-  assert.equal(j.numTotalTestSuites, 1);
+  assert.equal(j.testResults.length, 1);
 });
 
 // ---- --environment + pragma -----------------------------------------------

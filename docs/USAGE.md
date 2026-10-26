@@ -41,8 +41,9 @@ importing vitest:
    no-ops.
 3. **The DOM env** — `test.environment: jsdom | happy-dom` both map onto turbo-dom; `node` skips the
    DOM. A per-file `// @vitest-environment <env>` docblock overrides it.
-4. **Output** — `--reporter json` emits a vitest-ish summary (`numTotalTests`, `numPassedTests`,
-   per-file `testResults`); `junit`/`tap`/`verbose`/`dot`/`default` also supported.
+4. **Output** — `--reporter json` emits vitest's JSON report (suite / test counts, per-file
+   `testResults` with per-test `assertionResults`); `junit`/`tap`/`verbose`/`dot`/`default` also
+   supported.
 
 ## What's compatible (vitest surface)
 

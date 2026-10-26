@@ -15,7 +15,7 @@ fn counts(r: &common::Run) -> (u64, u64, Vec<String>) {
         .as_array()
         .unwrap()
         .iter()
-        .map(|t| t["status"].as_str().unwrap().to_string())
+        .map(common::file_status)
         .collect();
     (
         j["numPassedTests"].as_u64().unwrap(),

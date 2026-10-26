@@ -79,10 +79,14 @@ test('it.fails passes only when the test body throws', () => {
 
 test('describe.skipIf / runIf / concurrent / todo', () => {
   const j = parseJson(run(['--reporter', 'json', file('describe-variants.test.ts')]).out);
-  // only the 3 included blocks run (2 skipped blocks contribute nothing); todo registers nothing
-  assert.equal(j.numTotalTests, 3, 'skipped describe blocks register no tests');
+  // only the 3 included blocks run; the 2 skipped blocks' tests are reported skipped and the todo
+  // block is a pending suite (vitest 4.1.12's numbers for this file)
+  assert.equal(j.numTotalTests, 5);
   assert.equal(j.numPassedTests, 3);
+  assert.equal(j.numPendingTests, 2);
   assert.equal(j.numFailedTests, 0);
+  assert.equal(j.numTotalTestSuites, 7);
+  assert.equal(j.numPendingTestSuites, 1);
 });
 
 test('it.extend provides test-context fixtures', () => {

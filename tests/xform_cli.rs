@@ -21,7 +21,7 @@ fn statuses(r: &Run) -> Vec<(String, String)> {
                 .next()
                 .unwrap()
                 .to_string();
-            (name, t["status"].as_str().unwrap().to_string())
+            (name, common::file_status(t))
         })
         .collect();
     v.sort();

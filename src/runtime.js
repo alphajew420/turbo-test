@@ -3003,13 +3003,13 @@ function describe(name, a, b) {
 }
 // A skipped/todo suite registers no tests, but it IS a collected task for vitest's "No test suite
 // found in file" check (see __tt.run) — count it so such a file is not reported as empty.
-describe.skip = (name, _fn) => { __tt.skippedSuites++; };
+// describe.skip / describe.todo collect their block (vitest runs the callback at collection) in
+// `skip` / `todo` mode: its tests are reported skipped / todo and nothing in it runs (#63).
+describe.skip = (name, a, b) => { describe(name, a, b).mode = 'skip'; };
 describe.only = (name, a, b) => { __tt.hasOnly = true; describe(name, a, b).only = true; };
-describe.todo = (name) => { __tt.skippedSuites++; /* todo: collected as nothing to run */ };
-// describe.skipIf/runIf: when the condition skips the block, register NO tests (the whole suite
-// is absent) — mirrors it.skipIf/runIf semantics applied at the suite level.
-describe.skipIf = (cond) => (name, a, b) => { if (cond) { __tt.skippedSuites++; return; } describe(name, a, b); };
-describe.runIf = (cond) => (name, a, b) => { if (!cond) { __tt.skippedSuites++; return; } describe(name, a, b); };
+describe.todo = (name, a, b) => { describe(name, a, b).mode = 'todo'; };
+describe.skipIf = (cond) => (cond ? describe.skip : describe);
+describe.runIf = (cond) => (cond ? describe : describe.skip);
 describe.concurrent = describe; // accepted; a file's tests still run sequentially
 describe.each = (cases, ...targs) => __each(describe, cases, targs);
 describe.for = (cases, ...targs) => __for(describe, cases, targs, true);
@@ -3032,7 +3032,7 @@ function it(name, a, b) {
   current.tasks.push({ name, fn, skip: false, only: false, retry: o.retry || 0, timeout: o.timeout });
 }
 it.skip = (name, a, b) => current.tasks.push({ name, fn: __normTest(a, b).fn, skip: true });
-it.todo = (name) => current.tasks.push({ name, fn: () => {}, skip: true });
+it.todo = (name) => current.tasks.push({ name, fn: () => {}, skip: true, todo: true });
 it.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn, skip: false, only: true, retry: o.retry || 0, timeout: o.timeout }); };
 it.concurrent = it; // accepted; this runner executes a file's tests sequentially
 it.each = (cases, ...targs) => __each(it, cases, targs);
@@ -3080,35 +3080,82 @@ globalThis.beforeAll = (fn) => current.hooks.ba.push(fn);
 globalThis.afterAll = (fn) => current.hooks.aa.push(fn);
 
 // ---- runner ----
-async function runSuite(suite, ancestors, summary, skipAll = false) {
+// One per-test record for the reporters (`summary.tests`): the `describe > test` label, the
+// title and its enclosing describe names (vitest's `title` / `ancestorTitles`), the status
+// (`passed` / `failed` / `skipped` / `todo`), and for a test that ran its real start time and
+// duration (ms) and its failure messages (each error's `stack`, else its `message`, as vitest's
+// JSON reporter) (#63).
+function __testRecord(t, chain, status, extra) {
+  return {
+    name: chain.map((s) => s.name).filter(Boolean).concat(t.name).join(' > '),
+    title: t.name,
+    ancestors: chain.slice(1).map((s) => s.name),
+    status,
+    duration_ms: 0,
+    ...extra,
+  };
+}
+
+// Whether a test of `suite` (or of a nested suite) will run: not skip / todo / filtered by -t /
+// left out by `.only`. vitest marks a suite none of whose tasks run `skip`: its hooks do not run.
+function __runnable(suite, chain) {
+  if (suite.mode) return false;
+  const inner = [...chain, suite];
+  return suite.tasks.some((t) => (t.suite
+    ? __runnable(t, inner)
+    : !t.skip && !t.todo && !t.notOnly && !(__tt.namePattern && !__tt.namePattern.test(inner.slice(1).map((s) => s.name).concat(t.name).join(' ')))));
+}
+
+// Returns whether the suite failed (a failed test, or a hook / empty-suite error, in it or a
+// nested suite). `mode` is the enclosing mode: '' (run), 'skip', 'todo' or 'hook' (an enclosing
+// beforeAll failed).
+async function runSuite(suite, ancestors, summary, mode = '') {
   // vitest (turbo-test#69): a describe with no task fails with "No test found in suite <name>";
   // a throwing beforeAll fails the suite (a file-level failure, not a failed test) and skips its
   // tests and nested suites, whose hooks do not run, while its afterAll hooks still run. A
   // throwing afterAll fails the suite too. Neither rejects the run: the file still reports.
-  if (ancestors.length && !suite.tasks.length) {
+  // A describe.skip / describe.todo block (or one inside it) runs nothing (#63).
+  const skipAll = mode || suite.mode || '';
+  const record = (state) => { if (ancestors.length) summary.suites.push(skipAll === 'todo' ? 'todo' : state); };
+  if (ancestors.length && !skipAll && !suite.tasks.length) {
     summary.failures.push(`No test found in suite ${suite.name}`);
-    return;
+    record('fail');
+    return true;
   }
-  let skip = skipAll;
-  if (!skipAll) {
+  let failed = false;
+  // nothing in it runs: no hooks either
+  const idle = !skipAll && !__runnable(suite, ancestors);
+  let hookFailed = mode === 'hook';
+  if (!skipAll && !idle) {
     for (const h of suite.hooks.ba) {
       try { await h(); } catch (e) {
         summary.failures.push(`${suite.name || '<root>'} beforeAll: ${(e && e.message) || String(e)}`);
-        skip = true;
+        hookFailed = true;
+        failed = true;
         break;
       }
     }
   }
   const chain = [...ancestors, suite];
   for (const t of suite.tasks) {
-    if (t.suite) { await runSuite(t, chain, summary, skip); continue; }
+    if (t.suite) { failed = (await runSuite(t, chain, summary, hookFailed ? 'hook' : skipAll)) || failed; continue; }
     const label = chain.map((s) => s.name).filter(Boolean).concat(t.name).join(' > ');
     // -t/--testNamePattern: skip tests whose full name does not match the regex (vitest: unanchored,
     // case-sensitive, tested against `getTaskFullName` — the enclosing describe names and the
     // test's joined with a space, turbo-test#66).
     const fullName = chain.slice(1).map((s) => s.name).concat(t.name).join(' ');
-    if (__tt.namePattern && !__tt.namePattern.test(fullName)) { summary.skipped++; continue; }
-    if (skip || t.skip || t.notOnly) { summary.skipped++; summary.tests.push({ name: label, status: 'skipped', duration_ms: 0 }); continue; }
+    // A test that does not run is reported `skipped` (`todo` for it.todo / inside describe.todo),
+    // as vitest's JSON reporter does — -t-filtered ones included (#63).
+    // Precedence as vitest's `interpretTaskModes` + runner: a failed beforeAll skips everything;
+    // a describe.todo block makes its tests todo and a describe.skip block skips them (an
+    // it.todo stays todo); otherwise -t, then the test's own todo / skip / `.only`.
+    const filtered = !skipAll && __tt.namePattern && !__tt.namePattern.test(fullName);
+    const todo = !hookFailed && (skipAll === 'todo' || (!filtered && !!t.todo));
+    if (todo || hookFailed || skipAll || filtered || t.skip || t.notOnly) {
+      summary.skipped++;
+      summary.tests.push(__testRecord(t, chain, todo ? 'todo' : 'skipped'));
+      continue;
+    }
     // retry: per-test `{ retry }` wins; else the global default (--retry → __TT_DEFAULT_RETRY).
     const retry = (t.retry != null && t.retry > 0)
       ? t.retry
@@ -3118,9 +3165,10 @@ async function runSuite(suite, ancestors, summary, skipAll = false) {
     const timeoutMs = (typeof t.timeout === 'number' && t.timeout > 0) ? t.timeout : __defaultTimeout();
     let lastErr;
     let ok = false;
-    // Real wall time for the per-test duration reported by junit/tap/verbose. NOT performance.now()
-    // — that's stubbed to a constant 0 in this runtime (see the perf stub near top of file).
-    const __t0 = Date.now();
+    // Real wall time for the per-test start / duration the reporters show. NOT performance.now()
+    // (stubbed to a constant 0 in this runtime, see the perf stub near top of file) nor Date.now()
+    // (fake timers / vi.setSystemTime replace it).
+    const __t0 = __loop.realNow();
     for (let a = 0; a < attempts && !ok; a++) {
       // Reset per-test snapshot + assertion-count state (snapshot counter is keyed by test name,
       // so distinct multi-snapshot tests don't collide; assertion enforcement resets each attempt).
@@ -3167,9 +3215,11 @@ async function runSuite(suite, ancestors, summary, skipAll = false) {
         try { await h(); } catch (e) {}
       }
     }
-    const __dur = Date.now() - __t0;
-    if (ok) { summary.passed++; summary.tests.push({ name: label, status: 'passed', duration_ms: __dur }); }
+    const __dur = __loop.realNow() - __t0;
+    const timing = { duration_ms: __dur, start_ms: __t0 };
+    if (ok) { summary.passed++; summary.tests.push(__testRecord(t, chain, 'passed', timing)); }
     else {
+      failed = true;
       summary.failed++;
       let msg = lastErr ? (lastErr.message || String(lastErr)) : String(lastErr);
       if (lastErr && lastErr.errors && lastErr.errors.length) {
@@ -3183,13 +3233,20 @@ async function runSuite(suite, ancestors, summary, skipAll = false) {
         if (e0 && e0.stack) msg += '\n          @ ' + String(e0.stack).split('\n').slice(0, 5).join('\n          @ ');
       }
       summary.failures.push(`${label}: ${msg}`);
-      summary.tests.push({ name: label, status: 'failed', duration_ms: __dur, message: msg });
+      const failure = (lastErr && (lastErr.stack || lastErr.message)) || String(lastErr);
+      summary.tests.push(__testRecord(t, chain, 'failed', { ...timing, message: msg, failure_messages: [String(failure)] }));
     }
   }
-  if (skipAll) return;
-  for (const h of suite.hooks.aa) {
-    try { await h(); } catch (e) { summary.failures.push(`${suite.name || '<root>'} afterAll: ${(e && e.message) || String(e)}`); }
+  if (!skipAll && !idle) {
+    for (const h of suite.hooks.aa) {
+      try { await h(); } catch (e) {
+        summary.failures.push(`${suite.name || '<root>'} afterAll: ${(e && e.message) || String(e)}`);
+        failed = true;
+      }
+    }
   }
+  record(failed ? 'fail' : skipAll || idle ? 'skip' : 'pass');
+  return failed;
 }
 
 // `.only` (vitest `interpretTaskModes`): with a `.only` in the file, a task runs when it or an
@@ -3211,7 +3268,6 @@ function __interpretOnly(suite, parentIsOnly) {
 globalThis.__tt = {
   hasOnly: false,
   // Skipped/todo describe blocks seen in this file (they register nothing in `root`).
-  skippedSuites: 0,
   // Compiled lazily from globalThis.__TT_NAME_PATTERN (set by the host from -t/--testNamePattern).
   get namePattern() {
     if (this._np !== undefined) return this._np;
@@ -3220,12 +3276,14 @@ globalThis.__tt = {
     return this._np;
   },
   async run() {
-    const summary = { passed: 0, failed: 0, skipped: 0, failures: [], tests: [] };
+    // `suites`: one state per describe block ('pass' / 'fail' / 'skip' / 'todo'), for the JSON
+    // reporter's suite counts.
+    const summary = { passed: 0, failed: 0, skipped: 0, failures: [], tests: [], suites: [] };
     // vitest (runner `runFiles`): a file that collected NO task at all — no test or suite, skipped
     // and todo ones included — fails with "No test suite found in file <path>" unless
     // passWithNoTests. Reported as the file's only failure entry with no failed test; the CLI
     // turns that into a file-level error (cli.rs `file_result`).
-    if (!root.tasks.length && !this.skippedSuites && !globalThis.__TT_PASS_WITH_NO_TESTS) {
+    if (!root.tasks.length && !globalThis.__TT_PASS_WITH_NO_TESTS) {
       summary.failures.push(`No test suite found in file ${globalThis.__ttFile}`);
       return summary;
     }
@@ -3281,7 +3339,6 @@ globalThis.__ttResetForNextFile = () => {
   // setup) is the lesser evil and handled elsewhere.
   current = root;
   globalThis.__tt.hasOnly = false;
-  globalThis.__tt.skippedSuites = 0;
   // mock-prepass scratch (turbo-test specific) — must be empty before the next file hoists.
   globalThis.__pendingMocks = [];
   __ttPrepassMocks.clear();

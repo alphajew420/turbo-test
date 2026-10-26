@@ -88,6 +88,16 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - `process.stdout.write` / `process.stderr.write` write to stdout / stderr (turbo-test#70); they
   dropped their text. Stdout text goes to stderr while a json/junit/tap report owns stdout, as
   console output does, and `--silent` drops it; a trailing callback runs.
+- `--reporter json` writes vitest 4.1.12's JSON report (turbo-test#63 item 1): per-test
+  `assertionResults` (`ancestorTitles`, `fullName`, `status`, `title`, `duration`,
+  `failureMessages`, `meta`, `tags`), the suite / pending / todo counts (the files and their
+  `describe` blocks are the suites), the `snapshot` summary, `startTime`, and per file
+  `startTime` / `endTime` / `message`, in vitest's key order. A file that fails to load is
+  `failed` with its error's `message` (it was `error`); the per-file `numPassingTests` /
+  `numFailingTests` (not vitest keys) are gone. Tests that do not run are reported as vitest
+  reports them, in every per-test reporter: `-t`-filtered tests and the tests of a
+  `describe.skip` block (whose callback is now collected, as in vitest) are skipped, `it.todo` /
+  `describe.todo` ones are todo, and a `describe` none of whose tests runs runs no hooks.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

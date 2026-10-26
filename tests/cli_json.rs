@@ -116,7 +116,6 @@ const VITEST: [&str; 2] = [
 ];
 
 #[test]
-#[ignore = "turbo-test#63: fails until the fix"]
 fn json_report_matches_vitest() {
     // turbo-test#63 item 1: the JSON report had per-file counts only (no `assertionResults`, no
     // suite / pending / todo counts, no snapshot / startTime, `numPassingTests` per file and an

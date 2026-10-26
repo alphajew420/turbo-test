@@ -452,7 +452,7 @@ fn a_directory_argument_runs_the_test_files_under_it() {
                 // the JSON report names files by absolute path, as vitest's
                 let name = t["name"].as_str().unwrap();
                 let rel = name.strip_prefix(&root).unwrap_or(name);
-                (rel.to_string(), t["status"].as_str().unwrap().to_string())
+                (rel.to_string(), common::file_status(t))
             })
             .collect();
         files.sort();

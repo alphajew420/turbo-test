@@ -22,11 +22,25 @@ fn report(passed: u32, failed: u32) -> TestReport {
 }
 
 fn case(name: &str, status: &str, ms: f64, message: &str) -> TestCase {
+    let mut parts: Vec<String> = name.split(" > ").map(str::to_string).collect();
+    let title = parts.pop().unwrap();
     TestCase {
         name: name.to_string(),
+        title,
+        ancestors: parts,
         status: status.to_string(),
         duration_ms: ms,
+        start_ms: if status == "passed" || status == "failed" {
+            1000.0
+        } else {
+            0.0
+        },
         message: message.to_string(),
+        failure_messages: if message.is_empty() {
+            vec![]
+        } else {
+            vec![format!("Error: {message}\n    at x")]
+        },
     }
 }
 
@@ -502,7 +516,7 @@ fn json_names_and_history_keys_are_absolute() {
     ];
     let res = vec![file_result(0, &files[0], Ok(report(1, 0)), 42.0)];
     let v: serde_json::Value =
-        serde_json::from_str(&render_json(&files, &res, &tally(&res))).unwrap();
+        serde_json::from_str(&render_json(&files, &res, 0.0, false)).unwrap();
     assert_eq!(v["testResults"][0]["name"], abs.as_str());
     let h = update_history(HashMap::new(), &files, &res);
     assert_eq!(h.keys().collect::<Vec<_>>(), vec![&abs]);
@@ -582,6 +596,7 @@ fn clone_outcome(r: &FileOutcome) -> FileOutcome {
             failed: rep.failed,
             failures: rep.failures.clone(),
             tests: rep.tests.clone(),
+            suites: rep.suites.clone(),
             setup_us: rep.setup_us,
         }),
         Err(e) => Err(e.clone()),
@@ -990,31 +1005,65 @@ fn xml_escaping() {
 
 #[test]
 fn json_reporter() {
-    let (files, res) = sample();
-    let t = tally(&res);
-    let j = render_json(&files, &res, &t);
-    let v: serde_json::Value = serde_json::from_str(&j).unwrap();
-    assert_eq!(v["numTotalTestSuites"], 3);
-    assert_eq!(v["numTotalTests"], 5);
-    assert_eq!(v["numPassedTests"], 3);
-    assert_eq!(v["numFailedTests"], 2);
-    assert_eq!(v["success"], false);
-    let r = v["testResults"].as_array().unwrap();
-    assert_eq!(r[0]["status"], "failed");
-    assert_eq!(r[0]["numPassingTests"], 2);
-    assert_eq!(r[0]["numFailingTests"], 2);
-    assert_eq!(r[1]["status"], "passed");
-    assert_eq!(r[1]["name"], "/p/b\\\"q.test.ts");
-    assert_eq!(r[2]["status"], "error");
-    // success needs no failures AND no load errors
-    let ok = &res[1..2];
-    let v: serde_json::Value = serde_json::from_str(&render_json(&files, ok, &tally(ok))).unwrap();
-    assert_eq!(v["success"], true);
-    let err = &res[2..];
+    let (files, mut res) = sample();
+    res[0].suites = vec!["fail".into(), "todo".into(), "skip".into(), "pass".into()];
+    let j = render_json(&files, &res, 500.5, true);
+    // vitest 4.1.12's shape and key order: files + describes are the suites (a failed file, a
+    // failed and a todo describe), skipped / todo tests have no duration, a load error's message
+    // drops turbo-test's prefix and the error name, start / end span the tests that ran.
+    let snap = "{\"added\":0,\"failure\":false,\"filesAdded\":0,\"filesRemoved\":0,\"filesRemovedList\":[],\"filesUnmatched\":0,\"filesUpdated\":0,\"matched\":0,\"total\":0,\"unchecked\":0,\"uncheckedKeysByFile\":[],\"unmatched\":0,\"updated\":0,\"didUpdate\":true}";
+    let a = [
+        "{\"ancestorTitles\":[\"suite\"],\"fullName\":\"suite adds\",\"status\":\"passed\",\"title\":\"adds\",\"duration\":1.4,\"failureMessages\":[],\"meta\":{},\"tags\":[]}",
+        "{\"ancestorTitles\":[\"suite\"],\"fullName\":\"suite skipped one\",\"status\":\"skipped\",\"title\":\"skipped one\",\"failureMessages\":[],\"meta\":{},\"tags\":[]}",
+        "{\"ancestorTitles\":[\"suite\"],\"fullName\":\"suite breaks <&>\",\"status\":\"failed\",\"title\":\"breaks <&>\",\"duration\":12.6,\"failureMessages\":[\"Error: expected \\\"1\\\"\\nto be '2'\\n    at x\"],\"meta\":{},\"tags\":[]}",
+        "{\"ancestorTitles\":[],\"fullName\":\"todo\",\"status\":\"todo\",\"title\":\"todo\",\"failureMessages\":[],\"meta\":{},\"tags\":[]}",
+        "{\"ancestorTitles\":[],\"fullName\":\"silent fail\",\"status\":\"failed\",\"title\":\"silent fail\",\"duration\":0,\"failureMessages\":[],\"meta\":{},\"tags\":[]}",
+    ]
+    .join(",");
+    let b = "{\"ancestorTitles\":[],\"fullName\":\"ok\",\"status\":\"passed\",\"title\":\"ok\",\"duration\":2,\"failureMessages\":[],\"meta\":{},\"tags\":[]}";
+    assert_eq!(
+        j,
+        format!(
+            "{{\"numTotalTestSuites\":7,\"numPassedTestSuites\":3,\"numFailedTestSuites\":3,\"numPendingTestSuites\":1,\"numTotalTests\":6,\"numPassedTests\":2,\"numFailedTests\":2,\"numPendingTests\":1,\"numTodoTests\":1,\"snapshot\":{snap},\"startTime\":500.5,\"success\":false,\"testResults\":[\
+             {{\"assertionResults\":[{a}],\"startTime\":1000,\"endTime\":1012.6,\"status\":\"failed\",\"message\":\"\",\"name\":\"/p/a.test.ts\"}},\
+             {{\"assertionResults\":[{b}],\"startTime\":1000,\"endTime\":1002,\"status\":\"passed\",\"message\":\"\",\"name\":\"/p/b\\\\\\\"q.test.ts\"}},\
+             {{\"assertionResults\":[],\"startTime\":500.5,\"endTime\":500.5,\"status\":\"failed\",\"message\":\"top <boom> & \\\"q\\\"\",\"name\":\"/p/c&<x>.test.ts\"}}]}}"
+        )
+    );
+    // success: some file ran, no failed suite, no failed test
     let v: serde_json::Value =
-        serde_json::from_str(&render_json(&files, err, &tally(err))).unwrap();
+        serde_json::from_str(&render_json(&files, &res[1..2], 0.0, false)).unwrap();
+    assert_eq!(v["success"], true);
+    assert_eq!(v["snapshot"]["didUpdate"], false);
+    let v: serde_json::Value = serde_json::from_str(&render_json(&[], &[], 0.0, false)).unwrap();
     assert_eq!(v["success"], false);
-    assert_eq!(render_json(&[], &[], &Totals::default()), "{\"numTotalTestSuites\":0,\"numTotalTests\":0,\"numPassedTests\":0,\"numFailedTests\":0,\"success\":true,\"testResults\":[]}");
+    assert_eq!(v["numTotalTestSuites"], 0);
+}
+
+#[test]
+fn json_file_messages_and_numbers() {
+    // the load-error message vitest shows is the error's own message
+    for (err, want) in [
+        ("module errored: Error: top", "top"),
+        (
+            "evaluate threw: TypeError: x is not a function",
+            "x is not a function",
+        ),
+        ("instantiate: SyntaxError: bad", "bad"),
+        ("graph load failed", "graph load failed"),
+        (
+            "No test suite found in file /p/a.test.ts",
+            "No test suite found in file /p/a.test.ts",
+        ),
+        ("module errored: Boom: kept", "Boom: kept"),
+        ("module errored: Weird Error: kept", "Weird Error: kept"),
+    ] {
+        assert_eq!(file_message(err), want, "{err}");
+    }
+    assert_eq!(js_num(3.0), "3");
+    assert_eq!(js_num(-0.0), "0");
+    assert_eq!(js_num(0.25), "0.25");
+    assert_eq!(js_num(1e21), "1000000000000000000000");
 }
 
 #[test]
@@ -1073,19 +1122,19 @@ fn artifact_dispatch() {
     let (files, res) = sample();
     let t = tally(&res);
     assert_eq!(
-        render_artifact(Reporter::Json, &files, &res, &t),
-        Some(render_json(&files, &res, &t))
+        render_artifact(Reporter::Json, &files, &res, &t, 7.0, true),
+        Some(render_json(&files, &res, 7.0, true))
     );
     assert_eq!(
-        render_artifact(Reporter::Junit, &files, &res, &t),
+        render_artifact(Reporter::Junit, &files, &res, &t, 0.0, false),
         Some(render_junit(&files, &res, &t))
     );
     assert_eq!(
-        render_artifact(Reporter::Tap, &files, &res, &t),
+        render_artifact(Reporter::Tap, &files, &res, &t, 0.0, false),
         Some(render_tap(&files, &res))
     );
     for r in [Reporter::Default, Reporter::Dot, Reporter::Verbose] {
-        assert_eq!(render_artifact(r, &files, &res, &t), None);
+        assert_eq!(render_artifact(r, &files, &res, &t, 0.0, false), None);
     }
 }
 
@@ -1234,7 +1283,8 @@ fn a_suite_error_without_a_failed_test_fails_the_file() {
         "\n Test Files  1 failed | 0 passed (1)\n      Tests  1 passed (1)\n   Duration  1ms"
     );
     assert_eq!(exit_code(&t, true), 1);
-    let j: serde_json::Value = serde_json::from_str(&render_json(&[file], &res, &t)).unwrap();
+    let j: serde_json::Value =
+        serde_json::from_str(&render_json(&[file], &res, 0.0, false)).unwrap();
     assert_eq!(j["success"], false);
     assert_eq!(j["testResults"][0]["status"], "failed");
 }
