@@ -102,3 +102,119 @@ fn snapshot_files_are_vitests() {
         r.all()
     );
 }
+
+/// The JSON report's `snapshot` summary (vitest's key order) with the project path as `<dir>`.
+fn snapshot_summary(p: &Project, r: &common::Run) -> String {
+    let j: Value = serde_json::from_str(r.stdout.trim())
+        .unwrap_or_else(|e| panic!("not a JSON report ({e}):\n{}", r.all()));
+    j["snapshot"]
+        .to_string()
+        .replace(&p.dir.display().to_string(), "<dir>")
+}
+
+#[test]
+#[ignore = "turbo-test#73: fails until the fix"]
+fn snapshot_modes_obsolete_snapshots_and_file_snapshots_follow_vitest() {
+    // turbo-test#73: no `toMatchFileSnapshot`, no CI mode, obsolete snapshots neither reported nor
+    // removed by -u, and the JSON `snapshot` summary all zeros. Expected = vitest 4.1.12 on the
+    // same steps (its summaries, and the files it leaves).
+    let p = Project::new("rc-snapshot-modes");
+    p.file("package.json", r#"{ "type": "module" }"#);
+    p.file(
+        "a.test.js",
+        "import { test, expect } from 'vitest'\n\
+         test('keep', () => { expect(1).toMatchSnapshot() })\n\
+         test('file', async () => {\n\
+           await expect('raw text\\nline2').toMatchFileSnapshot('./out/raw.txt')\n\
+           await expect({ a: 1 }).toMatchFileSnapshot('./out/obj.txt')\n\
+         })\n",
+    );
+    let snap = p.path("__snapshots__/a.test.js.snap");
+    let read = |rel: &str| std::fs::read_to_string(p.path(rel)).unwrap();
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let r = turbo_test(&p.dir, &[&["--reporter", "json"][..], args].concat(), env);
+        (r.code, snapshot_summary(&p, &r), r)
+    };
+    let summary = |added: u32,
+                   f_added: u32,
+                   f_removed: u32,
+                   f_unmatched: u32,
+                   f_updated: u32,
+                   matched: u32,
+                   unchecked: u32,
+                   keys: &str,
+                   unmatched: u32,
+                   updated: u32,
+                   did_update: bool| {
+        format!(
+            "{{\"added\":{added},\"failure\":false,\"filesAdded\":{f_added},\"filesRemoved\":{f_removed},\"filesRemovedList\":[],\"filesUnmatched\":{f_unmatched},\"filesUpdated\":{f_updated},\"matched\":{matched},\"total\":{},\"unchecked\":{unchecked},\"uncheckedKeysByFile\":[{keys}],\"unmatched\":{unmatched},\"updated\":{updated},\"didUpdate\":{did_update}}}",
+            added + matched + unmatched + updated
+        )
+    };
+    let gone = r#"{"filePath":"<dir>/a.test.js","keys":["gone 1"]}"#;
+    // new: everything written
+    let (code, s, r) = run(&[], &[]);
+    assert_eq!(code, Some(0), "{}", r.all());
+    assert_eq!(s, summary(3, 1, 0, 0, 0, 0, 0, "", 0, 0, false));
+    assert_eq!(
+        read("__snapshots__/a.test.js.snap"),
+        "// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html\n\nexports[`keep 1`] = `1`;\n"
+    );
+    assert_eq!(read("out/raw.txt"), "raw text\nline2");
+    assert_eq!(read("out/obj.txt"), "{\n  \"a\": 1,\n}");
+    // again: all matched
+    assert_eq!(
+        run(&[], &[]).1,
+        summary(0, 0, 0, 0, 0, 3, 0, "", 0, 0, false)
+    );
+    // an obsolete snapshot is reported, and removed by -u
+    std::fs::write(
+        &snap,
+        read("__snapshots__/a.test.js.snap") + "\nexports[`gone 1`] = `5`;\n",
+    )
+    .unwrap();
+    assert_eq!(
+        run(&[], &[]).1,
+        summary(0, 0, 0, 0, 0, 3, 1, gone, 0, 0, false)
+    );
+    assert!(read("__snapshots__/a.test.js.snap").contains("gone 1"));
+    assert_eq!(
+        run(&["-u"], &[]).1,
+        summary(0, 0, 0, 0, 0, 3, 1, gone, 0, 0, true)
+    );
+    assert!(!read("__snapshots__/a.test.js.snap").contains("gone 1"));
+    // a changed file snapshot fails, -u rewrites it
+    std::fs::write(p.path("out/raw.txt"), "changed\n").unwrap();
+    let (code, s, r) = run(&[], &[]);
+    assert_eq!(code, Some(1), "{}", r.all());
+    assert_eq!(s, summary(0, 0, 0, 1, 0, 1, 0, "", 1, 0, false));
+    assert!(
+        r.stdout.contains("Snapshot `file 1` mismatched"),
+        "{}",
+        r.all()
+    );
+    assert_eq!(
+        run(&["-u"], &[]).1,
+        summary(0, 0, 0, 0, 1, 2, 0, "", 0, 1, true)
+    );
+    assert_eq!(read("out/raw.txt"), "raw text\nline2");
+    // on CI a missing snapshot fails and nothing is written
+    std::fs::remove_dir_all(p.path("__snapshots__")).unwrap();
+    std::fs::remove_dir_all(p.path("out")).unwrap();
+    let (code, s, r) = run(&[], &[("CI", "true")]);
+    assert_eq!(code, Some(1), "{}", r.all());
+    assert_eq!(s, summary(0, 0, 0, 1, 0, 0, 0, "", 2, 0, false));
+    assert!(!snap.exists() && !p.path("out").exists());
+    // a file that no longer has snapshots: reported, and its snapshot file removed by -u
+    run(&[], &[]);
+    p.file(
+        "a.test.js",
+        "import { test } from 'vitest'; test('x', () => {})\n",
+    );
+    let keep = r#"{"filePath":"<dir>/a.test.js","keys":["keep 1"]}"#;
+    assert_eq!(
+        run(&["-u"], &[]).1,
+        summary(0, 0, 1, 0, 0, 0, 0, keep, 0, 0, true)
+    );
+    assert!(!snap.exists());
+}
