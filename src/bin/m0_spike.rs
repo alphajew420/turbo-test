@@ -294,7 +294,11 @@ fn main() {
         bench_shared(&fw, 20);
 
         let rebuild = median((0..REPEATS).map(|_| bench_rebuild(&fw, ITERS)).collect());
-        let reuse = median((0..REPEATS).map(|_| bench_reuse_reset(&blob, ITERS)).collect());
+        let reuse = median(
+            (0..REPEATS)
+                .map(|_| bench_reuse_reset(&blob, ITERS))
+                .collect(),
+        );
         let snapshot = median((0..REPEATS).map(|_| bench_snapshot(&blob, ITERS)).collect());
         let shared = median((0..REPEATS).map(|_| bench_shared(&fw, ITERS)).collect());
 
@@ -340,7 +344,9 @@ fn main() {
     println!("\n--- isolation question ---");
     println!("  reuse+reset (leaky) saves only the ~context-creation delta vs snapshot,");
     println!("  which is sub-ms — negligible next to the {vitest_turbodom_env_ms:.0}ms+ env cost we remove.");
-    println!("  => Keep FULL per-file isolation (fresh context). No need to trade compat for speed.");
+    println!(
+        "  => Keep FULL per-file isolation (fresh context). No need to trade compat for speed."
+    );
 
     // PASS criterion, re-baselined against the real competitor (spec §8: >=5x vs Vitest).
     let (code, verdict) = gate_verdict(vitest_turbodom_env_ms / snap_ms);
@@ -357,7 +363,10 @@ fn gate_verdict(speedup: f64) -> (i32, &'static str) {
              stock-vitest env path, with full isolation. Premise validated. Proceed to M1.",
         )
     } else {
-        (1, "\n==> M0 FAIL — snapshot not >5x vs stock vitest env. Reconsider.")
+        (
+            1,
+            "\n==> M0 FAIL — snapshot not >5x vs stock vitest env. Reconsider.",
+        )
     }
 }
 

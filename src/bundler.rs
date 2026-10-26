@@ -62,7 +62,9 @@ fn asset_stub(path: &Path) -> Option<&'static str> {
 fn make_resolver() -> oxc_resolver::Resolver {
     let strs = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     oxc_resolver::Resolver::new(oxc_resolver::ResolveOptions {
-        extensions: strs(&[".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".json", ".node"]),
+        extensions: strs(&[
+            ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".json", ".node",
+        ]),
         main_fields: strs(&["module", "browser", "main"]),
         condition_names: strs(&["import", "module", "browser", "default", "require"]),
         ..Default::default()
@@ -188,25 +190,37 @@ fn bundle_capped(entry: &Path, max_modules: usize) -> Option<String> {
         let module_text = match module {
             Module::Stub(stub) => stub.to_string(),
             Module::Js { js, edges } => {
-            // relative spec → bundled module (require_<id>()); everything else external.
-            let resolve = |spec: &str| -> SourceRef {
-                if let Some(abs) = edges.get(spec) {
-                    if let Some(&tid) = id_of.get(abs) {
-                        return SourceRef::BundledCjs { id: format!("m{tid}") };
+                // relative spec → bundled module (require_<id>()); everything else external.
+                let resolve = |spec: &str| -> SourceRef {
+                    if let Some(abs) = edges.get(spec) {
+                        if let Some(&tid) = id_of.get(abs) {
+                            return SourceRef::BundledCjs {
+                                id: format!("m{tid}"),
+                            };
+                        }
                     }
+                    SourceRef::External
+                };
+                let ctx = LowerCtx {
+                    exports_obj: "__tt_exports".to_string(),
+                    resolve: Some(&resolve),
+                };
+                let parts = esm_cjs::transform_to_parts(js, &ctx)?;
+                if parts.has_module_syntax {
+                    esm_cjs::assemble_module(
+                        &parts.requires,
+                        &parts.re_exports,
+                        &parts.exports,
+                        &parts.body_code,
+                    )
+                } else {
+                    parts.body_code
                 }
-                SourceRef::External
-            };
-            let ctx = LowerCtx { exports_obj: "__tt_exports".to_string(), resolve: Some(&resolve) };
-            let parts = esm_cjs::transform_to_parts(js, &ctx)?;
-            if parts.has_module_syntax {
-                esm_cjs::assemble_module(&parts.requires, &parts.re_exports, &parts.exports, &parts.body_code)
-            } else {
-                parts.body_code
-            }
             }
         };
-        out.push_str(&format!("var require_m{idx} = __commonJS((exports, module) => {{\n{module_text}\n}});\n"));
+        out.push_str(&format!(
+            "var require_m{idx} = __commonJS((exports, module) => {{\n{module_text}\n}});\n"
+        ));
     }
     // the entry is the first module walked, so its id is always 0.
     out.push_str("module.exports = require_m0();\n");

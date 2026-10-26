@@ -10,7 +10,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Kind {
     Esm,
@@ -91,14 +90,19 @@ fn live_cjs_exports<T>(items: Vec<(PathBuf, T)>) -> Vec<(PathBuf, T, v8::Global<
     REGISTRY.with(|r| {
         let reg = r.borrow();
         let live = |(p, t): (PathBuf, T)| Some((reg.cjs_exports.get(&p)?.clone(), p, t));
-        items.into_iter().filter_map(live).map(|(g, p, t)| (p, t, g)).collect()
+        items
+            .into_iter()
+            .filter_map(live)
+            .map(|(g, p, t)| (p, t, g))
+            .collect()
     })
 }
 
 /// Shallow-clone each setup-mock's current exports into SETUP_MOCK_SNAPSHOT (called once, after
 /// the first file's setup runs).
 fn snapshot_setup_mocks(scope: &mut v8::PinScope) {
-    let paths: Vec<(PathBuf, ())> = SETUP_MOCKS.with(|s| s.borrow().iter().map(|p| (p.clone(), ())).collect());
+    let paths: Vec<(PathBuf, ())> =
+        SETUP_MOCKS.with(|s| s.borrow().iter().map(|p| (p.clone(), ())).collect());
     let global = scope.get_current_context().global(scope);
     for (p, (), g) in live_cjs_exports(paths) {
         let obj = v8::Local::new(scope, &g);
@@ -123,8 +127,12 @@ fn snapshot_setup_mocks(scope: &mut v8::PinScope) {
 /// Restore each setup-mock's exports from its snapshot (called before every file after the
 /// first), copying the saved props back onto the live (identity-preserved) exports object.
 fn restore_setup_mocks(scope: &mut v8::PinScope) {
-    let snaps: Vec<(PathBuf, v8::Global<v8::Value>)> =
-        SETUP_MOCK_SNAPSHOT.with(|s| s.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+    let snaps: Vec<(PathBuf, v8::Global<v8::Value>)> = SETUP_MOCK_SNAPSHOT.with(|s| {
+        s.borrow()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    });
     let global = scope.get_current_context().global(scope);
     for (_, cg, lg) in live_cjs_exports(snaps) {
         let live = v8::Local::new(scope, &lg);
@@ -208,16 +216,24 @@ fn reset_app_registry() {
         // modules a TEST file mocked (not setup mocks), so the next file re-resolves the real
         // module (or applies its own mock). The entry test files are each loaded once (unique
         // path) so they never collide; their describe/it re-run because each is a fresh entry.
-        let test_mocked: Vec<PathBuf> =
-            reg.mocks.keys().filter(|p| !setup_mocks.contains(*p)).cloned().collect();
+        let test_mocked: Vec<PathBuf> = reg
+            .mocks
+            .keys()
+            .filter(|p| !setup_mocks.contains(*p))
+            .cloned()
+            .collect();
         let evict = |p: &PathBuf| test_mocked.contains(p);
         reg.cjs_exports.retain(|p, _| !evict(p));
         reg.cjs_synth_by_path.retain(|p, _| !evict(p));
         reg.cjs_export_names.retain(|p, _| !evict(p));
         reg.real_exports.retain(|p, _| !evict(p));
         reg.esm_by_path.retain(|p, _| !evict(p));
-        let live: std::collections::HashSet<PathBuf> =
-            reg.cjs_exports.keys().chain(reg.esm_by_path.keys()).cloned().collect();
+        let live: std::collections::HashSet<PathBuf> = reg
+            .cjs_exports
+            .keys()
+            .chain(reg.esm_by_path.keys())
+            .cloned()
+            .collect();
         reg.path_by_hash.retain(|_, p| live.contains(p));
         // keep setup mocks in the mock registry; drop test-file mocks
         reg.mocks.retain(|p, _| setup_mocks.contains(p));
@@ -255,7 +271,10 @@ fn parse_alias_list(raw: &str) -> oxc_resolver::Alias {
             if k.is_empty() || v.is_empty() {
                 return None;
             }
-            Some((k.to_string(), vec![oxc_resolver::AliasValue::Path(v.to_string())]))
+            Some((
+                k.to_string(),
+                vec![oxc_resolver::AliasValue::Path(v.to_string())],
+            ))
         })
         .collect()
 }
@@ -289,12 +308,20 @@ fn base_resolve_options(tsconfig: Option<PathBuf>, esm: bool) -> oxc_resolver::R
     // win we must OMIT `import`/`module`/`browser`, not merely reorder. `node`/`default` still
     // cover packages without a `require` condition.
     let (conditions, mains): (&[&str], &[&str]) = if CJS_FIRST_RESOLUTION.with(|c| c.get()) {
-        (&["require", "node", "default"], &["main", "module", "browser"])
+        (
+            &["require", "node", "default"],
+            &["main", "module", "browser"],
+        )
     } else {
-        (&["import", "module", "browser", "default", "require"], &["module", "browser", "main"])
+        (
+            &["import", "module", "browser", "default", "require"],
+            &["module", "browser", "main"],
+        )
     };
     oxc_resolver::ResolveOptions {
-        extensions: strs(&[".ts", ".tsx", ".mjs", ".js", ".jsx", ".cjs", ".json", ".node"]),
+        extensions: strs(&[
+            ".ts", ".tsx", ".mjs", ".js", ".jsx", ".cjs", ".json", ".node",
+        ]),
         condition_names: strs(conditions),
         main_fields: strs(mains),
         // vitest/vite `resolve.alias` + `test.alias` (launcher → TURBO_ALIAS). oxc matches an alias
@@ -340,7 +367,12 @@ fn nearest_tsconfig_uncached(dir: &Path) -> Option<PathBuf> {
         if tc.is_file() {
             return Some(tc);
         }
-        if cur.join("package.json").is_file() && cur.file_name().map(|n| n == "node_modules").unwrap_or(false) {
+        if cur.join("package.json").is_file()
+            && cur
+                .file_name()
+                .map(|n| n == "node_modules")
+                .unwrap_or(false)
+        {
             break;
         }
         d = cur.parent();
@@ -394,12 +426,19 @@ fn resolver_for(from_dir: &Path, esm: bool) -> std::rc::Rc<oxc_resolver::Resolve
         static RESOLVERS: RefCell<ResolverCache> = RefCell::new(HashMap::new());
     }
     // CJS-first mode is part of the key so a flip rebuilds the resolver (it changes conditions).
-    let key = (nearest_tsconfig(from_dir), esm, CJS_FIRST_RESOLUTION.with(|c| c.get()));
+    let key = (
+        nearest_tsconfig(from_dir),
+        esm,
+        CJS_FIRST_RESOLUTION.with(|c| c.get()),
+    );
     RESOLVERS.with(|m| {
         if let Some(r) = m.borrow().get(&key) {
             return r.clone();
         }
-        let r = std::rc::Rc::new(oxc_resolver::Resolver::new(base_resolve_options(key.0.clone(), esm)));
+        let r = std::rc::Rc::new(oxc_resolver::Resolver::new(base_resolve_options(
+            key.0.clone(),
+            esm,
+        )));
         m.borrow_mut().insert(key, r.clone());
         r
     })
@@ -436,17 +475,29 @@ fn cjs_first_project_uncached(entry: &Path) -> bool {
                 return false; // vitest project → ESM-first
             }
         }
-        let jest_cfg = ["jest.config.js", "jest.config.cjs", "jest.config.mjs", "jest.config.ts", "jest.config.json"]
-            .iter()
-            .map(|n| d.join(n))
-            .find(|p| p.is_file());
+        let jest_cfg = [
+            "jest.config.js",
+            "jest.config.cjs",
+            "jest.config.mjs",
+            "jest.config.ts",
+            "jest.config.json",
+        ]
+        .iter()
+        .map(|n| d.join(n))
+        .find(|p| p.is_file());
         let pkg_jest = std::fs::read_to_string(d.join("package.json"))
             .ok()
             .and_then(|s| package_json_jest_block(&s));
-        if let Some(text) = jest_cfg.and_then(|p| std::fs::read_to_string(p).ok()).or(pkg_jest) {
+        if let Some(text) = jest_cfg
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .or(pkg_jest)
+        {
             // node test env (jest's default) unless it explicitly asks for a DOM env.
             let env = config_string_value(&text, "testEnvironment");
-            return !matches!(env.as_deref(), Some("jsdom") | Some("happy-dom") | Some("jest-environment-jsdom"));
+            return !matches!(
+                env.as_deref(),
+                Some("jsdom") | Some("happy-dom") | Some("jest-environment-jsdom")
+            );
         }
         dir = d.parent();
     }
@@ -676,9 +727,30 @@ fn is_asset(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
         Some(
-            "css" | "scss" | "sass" | "less" | "styl" | "svg" | "png" | "jpg" | "jpeg" | "gif"
-                | "webp" | "avif" | "ico" | "woff" | "woff2" | "ttf" | "eot" | "otf" | "mp4"
-                | "webm" | "wav" | "mp3" | "txt" | "md"
+            "css"
+                | "scss"
+                | "sass"
+                | "less"
+                | "styl"
+                | "svg"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "webp"
+                | "avif"
+                | "ico"
+                | "woff"
+                | "woff2"
+                | "ttf"
+                | "eot"
+                | "otf"
+                | "mp4"
+                | "webm"
+                | "wav"
+                | "mp3"
+                | "txt"
+                | "md"
         )
     )
 }
@@ -689,14 +761,38 @@ fn script_origin<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     name: v8::Local<'s, v8::String>,
 ) -> v8::ScriptOrigin<'s> {
-    v8::ScriptOrigin::new(scope, name.into(), 0, 0, false, 123, None, false, false, false, None)
+    v8::ScriptOrigin::new(
+        scope,
+        name.into(),
+        0,
+        0,
+        false,
+        123,
+        None,
+        false,
+        false,
+        false,
+        None,
+    )
 }
 
 fn module_origin<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     name: v8::Local<'s, v8::String>,
 ) -> v8::ScriptOrigin<'s> {
-    v8::ScriptOrigin::new(scope, name.into(), 0, 0, false, 123, None, false, false, true, None)
+    v8::ScriptOrigin::new(
+        scope,
+        name.into(),
+        0,
+        0,
+        false,
+        123,
+        None,
+        false,
+        false,
+        true,
+        None,
+    )
 }
 
 /// CJS modules get `__dirname`/`__filename` as wrapper-function params (see `load_cjs_inner`); a
@@ -806,7 +902,10 @@ fn write_atomic(path: &Path, content: &str) {
 
 /// Cache hit-rate over this process (warm-run KPI, spec §8 >90%).
 pub fn transform_cache_stats() -> (u64, u64) {
-    (CACHE_HITS.load(Ordering::Relaxed), CACHE_MISSES.load(Ordering::Relaxed))
+    (
+        CACHE_HITS.load(Ordering::Relaxed),
+        CACHE_MISSES.load(Ordering::Relaxed),
+    )
 }
 
 const TRANSFORM_VERSION: &str = "oxc-0.134-v1";
@@ -837,7 +936,10 @@ fn cache_key(abs: &Path, src: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     src.hash(&mut h);
-    abs.extension().and_then(|e| e.to_str()).unwrap_or("").hash(&mut h);
+    abs.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .hash(&mut h);
     TRANSFORM_VERSION.hash(&mut h);
     h.finish()
 }
@@ -904,7 +1006,11 @@ fn esbuild_bundle(file: &Path, externals: &[String]) -> Option<PathBuf> {
 
 /// last path segment of a specifier (the module "basename"), e.g. "../../x/analytics" -> "analytics".
 fn spec_basename(spec: &str) -> String {
-    spec.trim_end_matches('/').rsplit('/').next().unwrap_or(spec).to_string()
+    spec.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(spec)
+        .to_string()
 }
 
 /// Bundle with externalized mock specifiers, rewriting each externalized import to the single
@@ -949,7 +1055,11 @@ fn esbuild_bundle_full(
     // Record the source dir so resolve_callback can resolve this bundle's externalized bare
     // imports (the cache file has no node_modules of its own).
     if let Some(src_dir) = file.parent() {
-        REGISTRY.with(|r| r.borrow_mut().bundle_src_dir.insert(out.clone(), src_dir.to_path_buf()));
+        REGISTRY.with(|r| {
+            r.borrow_mut()
+                .bundle_src_dir
+                .insert(out.clone(), src_dir.to_path_buf())
+        });
     }
     if out.exists() {
         CACHE_HITS.fetch_add(1, Ordering::Relaxed);
@@ -1076,7 +1186,6 @@ fn publish_bundle(tmp: &Path, out: &Path) -> bool {
     true
 }
 
-
 /// Parse a per-file `// @vitest-environment <env>` pragma (vitest honors a docblock comment at
 /// the top of a test file). Returns the lowercased environment name if present. We scan the
 /// whole file (cheap) rather than only the leading docblock — a stray mention is unlikely and
@@ -1089,14 +1198,22 @@ fn file_env_pragma(s: &str) -> Option<String> {
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
-    if name.is_empty() { None } else { Some(name.to_ascii_lowercase()) }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_ascii_lowercase())
+    }
 }
 
 /// Resolve the effective environment for a file: a per-file `@vitest-environment` pragma wins,
 /// then the run-level `TURBO_ENV` (set by cli.js from `--environment` / config `test.environment`),
 /// else `None` (auto — fall back to the content heuristic). Recognized: node | jsdom | happy-dom.
 fn forced_env(s: &str) -> Option<String> {
-    file_env_pragma(s).or_else(|| std::env::var("TURBO_ENV").ok().map(|v| v.to_ascii_lowercase()))
+    file_env_pragma(s).or_else(|| {
+        std::env::var("TURBO_ENV")
+            .ok()
+            .map(|v| v.to_ascii_lowercase())
+    })
 }
 
 /// Whether a file needs a DOM environment (so we don't impose one on pure-logic tests,
@@ -1113,7 +1230,10 @@ fn needs_dom(file: &Path) -> bool {
         Some("jsdom") | Some("happy-dom") | Some("happydom") => return true,
         _ => {}
     }
-    if matches!(file.extension().and_then(|e| e.to_str()), Some("tsx" | "jsx")) {
+    if matches!(
+        file.extension().and_then(|e| e.to_str()),
+        Some("tsx" | "jsx")
+    ) {
         return true;
     }
     s.contains("@testing-library")
@@ -1245,7 +1365,9 @@ fn vitest_setup_files_uncached(entry: &Path) -> Vec<PathBuf> {
                             let inner = &tail[lb + 1..lb + rb];
                             let mut out = Vec::new();
                             for part in inner.split(',') {
-                                let q = part.trim().trim_matches(|c| c == '\'' || c == '"' || c == '`');
+                                let q = part
+                                    .trim()
+                                    .trim_matches(|c| c == '\'' || c == '"' || c == '`');
                                 if q.is_empty() {
                                     continue;
                                 }
@@ -1277,8 +1399,11 @@ fn vitest_setup_files_uncached(entry: &Path) -> Vec<PathBuf> {
 /// (so the caller keeps walking up); Some(possibly-empty) once a jest config is found.
 fn jest_setup_files(dir: &Path) -> Option<Vec<PathBuf>> {
     let names = [
-        "jest.config.js", "jest.config.cjs", "jest.config.mjs",
-        "jest.config.ts", "jest.config.json",
+        "jest.config.js",
+        "jest.config.cjs",
+        "jest.config.mjs",
+        "jest.config.ts",
+        "jest.config.json",
     ];
     let mut text: Option<String> = None;
     for n in &names {
@@ -1305,7 +1430,9 @@ fn jest_setup_files(dir: &Path) -> Option<Vec<PathBuf>> {
             if let Some(lb) = tail.find('[') {
                 if let Some(rb) = tail[lb..].find(']') {
                     for part in tail[lb + 1..lb + rb].split(',') {
-                        let q = part.trim().trim_matches(|c| c == '\'' || c == '"' || c == '`');
+                        let q = part
+                            .trim()
+                            .trim_matches(|c| c == '\'' || c == '"' || c == '`');
                         if q.is_empty() {
                             continue;
                         }
@@ -1359,7 +1486,9 @@ fn normalize_path(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in p.components() {
         match comp {
-            std::path::Component::ParentDir => { out.pop(); }
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
             std::path::Component::CurDir => {}
             other => out.push(other.as_os_str()),
         }
@@ -1631,7 +1760,10 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
                 let tc = std::pin::pin!(v8::TryCatch::new(scope));
                 let tc = &mut tc.init();
                 if let Some(script) = v8::Script::compile(tc, code, None) {
-                    if let Some(wf) = script.run(tc).and_then(|v| v8::Local::<v8::Function>::try_from(v).ok()) {
+                    if let Some(wf) = script
+                        .run(tc)
+                        .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+                    {
                         let exports_obj = v8::Object::new(tc);
                         let module_obj = v8::Object::new(tc);
                         if let Some(ek) = v8::String::new(tc, "exports") {
@@ -1645,17 +1777,36 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
                         }
                         // fresh vi.hoisted cache for this file; the prepass fills it (the entry
                         // reuses it by index so `const x = vi.hoisted(...)` is one shared object).
-                        if let Some(code) = v8::String::new(tc, "globalThis.__hoistedCache = []; globalThis.__hoistedIdx = 0;") {
-                            if let Some(s) = v8::Script::compile(tc, code, None) { s.run(tc); }
+                        if let Some(code) = v8::String::new(
+                            tc,
+                            "globalThis.__hoistedCache = []; globalThis.__hoistedIdx = 0;",
+                        ) {
+                            if let Some(s) = v8::Script::compile(tc, code, None) {
+                                s.run(tc);
+                            }
                         }
                         if let Some(req) = v8::String::new(tc, "__mkRequire")
                             .and_then(|k| g.get(tc, k.into()))
                             .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
                         {
                             let undef = v8::undefined(tc).into();
-                            if let Some(require) = req.call(tc, undef, &[dir_str.into(), v8::Boolean::new(tc, true).into()]) {
+                            if let Some(require) = req.call(
+                                tc,
+                                undef,
+                                &[dir_str.into(), v8::Boolean::new(tc, true).into()],
+                            ) {
                                 let fname = v8::String::new(tc, &entry.to_string_lossy()).unwrap();
-                                wf.call(tc, undef, &[exports_obj.into(), module_obj.into(), require, fname.into(), dir_str.into()]);
+                                wf.call(
+                                    tc,
+                                    undef,
+                                    &[
+                                        exports_obj.into(),
+                                        module_obj.into(),
+                                        require,
+                                        fname.into(),
+                                        dir_str.into(),
+                                    ],
+                                );
                                 tc.perform_microtask_checkpoint();
                             }
                         }
@@ -1836,7 +1987,12 @@ process.stdout.write(out.outputText);
 "#;
     let out = std::process::Command::new("node")
         .current_dir(root)
-        .args(["-e", SCRIPT, &ts_dir.to_string_lossy(), &file.to_string_lossy()])
+        .args([
+            "-e",
+            SCRIPT,
+            &ts_dir.to_string_lossy(),
+            &file.to_string_lossy(),
+        ])
         .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
@@ -1884,14 +2040,20 @@ fn decorator_metadata_enabled(file: &Path) -> bool {
     thread_local! {
         static CACHE: RefCell<HashMap<PathBuf, bool>> = RefCell::new(HashMap::new());
     }
-    let Some(tc) = nearest_tsconfig(file.parent().unwrap_or(Path::new("."))) else { return false };
+    let Some(tc) = nearest_tsconfig(file.parent().unwrap_or(Path::new("."))) else {
+        return false;
+    };
     if let Some(v) = CACHE.with(|c| c.borrow().get(&tc).copied()) {
         return v;
     }
     // Strip `//` line comments before scanning so a commented mention doesn't false-positive.
     let on = std::fs::read_to_string(&tc)
         .map(|s| {
-            let stripped: String = s.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+            let stripped: String = s
+                .lines()
+                .map(|l| l.split("//").next().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n");
             let norm = stripped.replace(char::is_whitespace, "");
             norm.contains("\"emitDecoratorMetadata\":true")
         })
@@ -1909,7 +2071,11 @@ fn file_has_decorator(src: &str) -> bool {
     src.lines().any(|l| {
         let t = l.trim_start();
         let mut ch = t.chars();
-        ch.next() == Some('@') && ch.next().map(|c| c.is_ascii_alphabetic() || c == '_' || c == '$').unwrap_or(false)
+        ch.next() == Some('@')
+            && ch
+                .next()
+                .map(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+                .unwrap_or(false)
     })
 }
 
@@ -1924,13 +2090,16 @@ fn native_transform_cjs(file: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(file).ok()?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
-    file.extension().and_then(|e| e.to_str()).unwrap_or("").hash(&mut h);
+    file.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .hash(&mut h);
     "native-cjs-v4".hash(&mut h); // v4: await_do_mocks_on_import
-    // Legacy-decorator lowering happens inside esm_cjs::emit when the project enables
-    // experimentalDecorators/emitDecoratorMetadata AND this file uses a decorator. Without it the
-    // native emitter leaves `@Decorator` syntax intact (→ "Unexpected token 'export'") or lowers
-    // it with 2022-standard semantics (→ "Cannot access 'X' before initialization" TDZ). Key the
-    // cache on this decision so a config/file change can't serve stale (mis-lowered) output.
+                                  // Legacy-decorator lowering happens inside esm_cjs::emit when the project enables
+                                  // experimentalDecorators/emitDecoratorMetadata AND this file uses a decorator. Without it the
+                                  // native emitter leaves `@Decorator` syntax intact (→ "Unexpected token 'export'") or lowers
+                                  // it with 2022-standard semantics (→ "Cannot access 'X' before initialization" TDZ). Key the
+                                  // cache on this decision so a config/file change can't serve stale (mis-lowered) output.
     let legacy_decorators = decorator_metadata_enabled(file) && file_has_decorator(&raw);
     legacy_decorators.hash(&mut h);
     // coverage output carries an inline source map → key it separately so the no-map and with-map
@@ -1964,7 +2133,10 @@ fn native_dep_cjs(file: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(file).ok()?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
-    file.extension().and_then(|e| e.to_str()).unwrap_or("").hash(&mut h);
+    file.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .hash(&mut h);
     "native-dep-v3-bundle".hash(&mut h);
     let cache = cache_dir().join(format!("ntvdep-{:016x}.cjs", h.finish()));
     if let Ok(c) = std::fs::read_to_string(&cache) {
@@ -1989,7 +2161,10 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
     let raw = std::fs::read_to_string(file).ok()?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
-    file.extension().and_then(|e| e.to_str()).unwrap_or("").hash(&mut h);
+    file.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .hash(&mut h);
     // v2: `import.meta` is filled in (fill_import_meta) instead of esbuild's empty object;
     // v3: import() waits for a pending async vi.doMock (await_do_mocks_on_import)
     "mr-cjs-v3".hash(&mut h);
@@ -2048,7 +2223,9 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
             tsconfig = Some(dir.join("tsconfig.json"));
             break;
         }
-        if dir == root { break; }
+        if dir == root {
+            break;
+        }
         d = dir.parent();
     }
     let mut cmd = std::process::Command::new(&esbuild);
@@ -2146,7 +2323,10 @@ fn hoist_mock_setup(code: &str) -> String {
     // end of the last top-level `.mock(` statement (balance parens from the call to its close + ;)
     // (`code` contains ".mock(" and that needle has no newline, so some line always matches; the
     // 0 default would hit the `<= req_end` early return below anyway.)
-    let last_mock = lines.iter().rposition(|l| l.contains(".mock(")).unwrap_or(0);
+    let last_mock = lines
+        .iter()
+        .rposition(|l| l.contains(".mock("))
+        .unwrap_or(0);
     if last_mock <= req_end {
         return code.to_string();
     }
@@ -2156,7 +2336,10 @@ fn hoist_mock_setup(code: &str) -> String {
     'outer: for (i, l) in lines.iter().enumerate().skip(last_mock) {
         for ch in l.chars() {
             match ch {
-                '(' => { depth += 1; started = true; }
+                '(' => {
+                    depth += 1;
+                    started = true;
+                }
                 ')' => depth -= 1,
                 _ => {}
             }
@@ -2187,13 +2370,18 @@ fn hoist_mock_setup(code: &str) -> String {
             while k < tail.len() {
                 for ch in tail[k].chars() {
                     match ch {
-                        '(' => { depth += 1; started = true; }
+                        '(' => {
+                            depth += 1;
+                            started = true;
+                        }
                         ')' => depth -= 1,
                         _ => {}
                     }
                 }
                 k += 1;
-                if started && depth <= 0 { break; }
+                if started && depth <= 0 {
+                    break;
+                }
             }
             mock_stmts.extend_from_slice(&tail[start..k]);
         } else {
@@ -2207,13 +2395,20 @@ fn hoist_mock_setup(code: &str) -> String {
     // what makes `vi.mock` placed below the tests still intercept). We test references against the
     // setup region with test-callback bodies stripped, plus the factory bodies explicitly.
     let setup_text_full = setup.join("\n");
-    let setup_text = format!("{}\n{}", strip_test_blocks(&setup_text_full), mock_stmts.join("\n"));
+    let setup_text = format!(
+        "{}\n{}",
+        strip_test_blocks(&setup_text_full),
+        mock_stmts.join("\n")
+    );
     let mut needed = Vec::new();
     let mut consumers = Vec::new();
     for &l in &lines[req_start..=req_end] {
         // var import_NAME = ...
         let name = l.strip_prefix("var ").unwrap_or(l);
-        let name: String = name.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+        let name: String = name
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
         if !name.is_empty() && contains_word(&setup_text, &name) {
             needed.push(l);
         } else {
@@ -2343,15 +2538,28 @@ fn shared_mock_lets(src: &str) -> Vec<String> {
     if mocks.is_empty() {
         return Vec::new();
     }
-    let factories: String = mocks.iter().map(|(_, f)| f.as_str()).collect::<Vec<_>>().join("\n");
+    let factories: String = mocks
+        .iter()
+        .map(|(_, f)| f.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut out = Vec::new();
     for line in src.lines() {
         let t = line.trim_start();
-        let (kw, is_const) = if let Some(r) = t.strip_prefix("let ") { (Some(r), false) }
-            else if let Some(r) = t.strip_prefix("var ") { (Some(r), false) }
-            else if let Some(r) = t.strip_prefix("const ") { (Some(r), true) } else { (None, false) };
+        let (kw, is_const) = if let Some(r) = t.strip_prefix("let ") {
+            (Some(r), false)
+        } else if let Some(r) = t.strip_prefix("var ") {
+            (Some(r), false)
+        } else if let Some(r) = t.strip_prefix("const ") {
+            (Some(r), true)
+        } else {
+            (None, false)
+        };
         if let Some(rest) = kw {
-            let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
             if name.is_empty() || out.contains(&name) {
                 continue;
             }
@@ -2366,7 +2574,9 @@ fn shared_mock_lets(src: &str) -> Vec<String> {
                 // array accumulator only (`= []`), tolerating a TS type annotation whose `=>`
                 // would fool a naive split. len>=12: only long unique names; short ones (or mock
                 // fns used in shorthand/strings) risk corrupting other code.
-                let is_array = rest.contains("= []") || rest.contains("= [\n") || rest.trim_end().ends_with("= [");
+                let is_array = rest.contains("= []")
+                    || rest.contains("= [\n")
+                    || rest.trim_end().ends_with("= [");
                 name.len() >= 12 && is_array && contains_word(&factories, &name)
             } else {
                 // let/var: share when the factory REFERENCES the binding (reads or writes) and
@@ -2446,7 +2656,8 @@ fn assigns_word(text: &str, word: &str) -> bool {
             j += 1;
         }
         // `=` that is not part of ==, =>, etc.; and the char before `=` isn't !,<,>
-        if j < b.len() && b[j] == b'=' && b.get(j + 1) != Some(&b'=') && b.get(j + 1) != Some(&b'>') {
+        if j < b.len() && b[j] == b'=' && b.get(j + 1) != Some(&b'=') && b.get(j + 1) != Some(&b'>')
+        {
             return true;
         }
     }
@@ -2463,7 +2674,19 @@ fn assigns_word(text: &str, word: &str) -> bool {
 fn strip_test_blocks(text: &str) -> String {
     let b = text.as_bytes();
     let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
-    let kws = ["beforeEach", "beforeAll", "afterEach", "afterAll", "describe", "test", "it", "fit", "xit", "fdescribe", "xdescribe"];
+    let kws = [
+        "beforeEach",
+        "beforeAll",
+        "afterEach",
+        "afterAll",
+        "describe",
+        "test",
+        "it",
+        "fit",
+        "xit",
+        "fdescribe",
+        "xdescribe",
+    ];
     let mut out = String::with_capacity(text.len());
     let mut i = 0usize;
     while i < b.len() {
@@ -2491,8 +2714,14 @@ fn strip_test_blocks(text: &str) -> String {
             let mut found_paren = false;
             while j < b.len() {
                 let c = b[j];
-                if c == b'(' { found_paren = true; break; }
-                if c.is_ascii_whitespace() || c == b'.' || c == b')' || ident(c) { j += 1; continue; }
+                if c == b'(' {
+                    found_paren = true;
+                    break;
+                }
+                if c.is_ascii_whitespace() || c == b'.' || c == b')' || ident(c) {
+                    j += 1;
+                    continue;
+                }
                 break; // something else → not a call we recognize
             }
             if found_paren {
@@ -2502,13 +2731,38 @@ fn strip_test_blocks(text: &str) -> String {
                 while k < b.len() {
                     match b[k] {
                         b'(' => depth += 1,
-                        b')' => { depth -= 1; if depth == 0 { k += 1; break; } }
-                        b'\'' | b'"' | b'`' => {
-                            let q = b[k]; k += 1;
-                            while k < b.len() { if b[k] == b'\\' { k += 2; continue; } else if b[k] == q { break; } k += 1; }
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                k += 1;
+                                break;
+                            }
                         }
-                        b'/' if k + 1 < b.len() && b[k + 1] == b'/' => { while k < b.len() && b[k] != b'\n' { k += 1; } }
-                        b'/' if k + 1 < b.len() && b[k + 1] == b'*' => { k += 2; while k + 1 < b.len() && !(b[k] == b'*' && b[k + 1] == b'/') { k += 1; } k += 1; }
+                        b'\'' | b'"' | b'`' => {
+                            let q = b[k];
+                            k += 1;
+                            while k < b.len() {
+                                if b[k] == b'\\' {
+                                    k += 2;
+                                    continue;
+                                } else if b[k] == q {
+                                    break;
+                                }
+                                k += 1;
+                            }
+                        }
+                        b'/' if k + 1 < b.len() && b[k + 1] == b'/' => {
+                            while k < b.len() && b[k] != b'\n' {
+                                k += 1;
+                            }
+                        }
+                        b'/' if k + 1 < b.len() && b[k + 1] == b'*' => {
+                            k += 2;
+                            while k + 1 < b.len() && !(b[k] == b'*' && b[k + 1] == b'/') {
+                                k += 1;
+                            }
+                            k += 1;
+                        }
                         _ => {}
                     }
                     k += 1;
@@ -2685,7 +2939,9 @@ fn mr_enabled() -> bool {
 // both suites (ui full −7.4%, payroll full −13.9%, identical pass/fail). Escape hatch TURBO_NO_E12
 // mirrors TURBO_NO_CODE_CACHE. (E6 transform-existence memo = neutral, E11 drain-loop hoist =
 // slightly slower — both measured no-help at the validated jobs=8 protocol and not shipped.)
-fn e12_enabled() -> bool { std::env::var("TURBO_NO_E12").is_err() }
+fn e12_enabled() -> bool {
+    std::env::var("TURBO_NO_E12").is_err()
+}
 
 /// Bundle a node_modules entry to CJS (one esbuild call per package entry), with react family
 /// externalized so it's shared. Returns the bundled code. Cached by entry+mtime.
@@ -2693,10 +2949,16 @@ fn esbuild_bundle_dep_cjs(abs: &Path) -> Option<String> {
     let root = project_root(abs)?;
     let esbuild = root.join("node_modules/.bin/esbuild");
     use std::hash::{Hash, Hasher};
-    let mtime = std::fs::metadata(abs).ok().and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis()).unwrap_or(0);
+    let mtime = std::fs::metadata(abs)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    abs.hash(&mut h); mtime.hash(&mut h); "mr-dep-v1".hash(&mut h);
+    abs.hash(&mut h);
+    mtime.hash(&mut h);
+    "mr-dep-v1".hash(&mut h);
     let cache = cache_dir().join(format!("mrdep-{:016x}.cjs", h.finish()));
     if let Ok(c) = std::fs::read_to_string(&cache) {
         CACHE_HITS.fetch_add(1, Ordering::Relaxed);
@@ -2705,10 +2967,19 @@ fn esbuild_bundle_dep_cjs(abs: &Path) -> Option<String> {
     CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
     let mut cmd = std::process::Command::new(&esbuild);
     cmd.current_dir(&root).arg(abs).args([
-        "--bundle", "--format=cjs", "--platform=browser", "--jsx=automatic",
-        "--loader:.css=empty", "--loader:.scss=empty", "--loader:.svg=text",
-        "--loader:.png=dataurl", "--loader:.jpg=dataurl", "--loader:.gif=dataurl", "--loader:.webp=dataurl",
-        "--log-level=silent", "--define:process.env.NODE_ENV=globalThis.process.env.NODE_ENV",
+        "--bundle",
+        "--format=cjs",
+        "--platform=browser",
+        "--jsx=automatic",
+        "--loader:.css=empty",
+        "--loader:.scss=empty",
+        "--loader:.svg=text",
+        "--loader:.png=dataurl",
+        "--loader:.jpg=dataurl",
+        "--loader:.gif=dataurl",
+        "--loader:.webp=dataurl",
+        "--log-level=silent",
+        "--define:process.env.NODE_ENV=globalThis.process.env.NODE_ENV",
         "--supported:dynamic-import=false",
         // Externalize EVERY bare import (generic — no hardcoded library names): each package
         // bundles only its own (relative) files and require()s its dependencies. So every
@@ -2784,7 +3055,9 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
             // emitDecoratorMetadata so this branch never fires for them.
             let needs_meta = !abs.components().any(|c| c.as_os_str() == "node_modules")
                 && decorator_metadata_enabled(abs)
-                && std::fs::read_to_string(abs).map(|s| file_has_decorator(&s)).unwrap_or(false);
+                && std::fs::read_to_string(abs)
+                    .map(|s| file_has_decorator(&s))
+                    .unwrap_or(false);
             if needs_meta && !crate::coverage::enabled() {
                 if let Some(code) = esbuild_transform_cjs(abs, true) {
                     return Some(code);
@@ -2970,7 +3243,11 @@ fn collect_named_imports(text: &str, abs: &str) -> Vec<String> {
                 if let Some(open) = head.get(..close).unwrap_or("").rfind('{') {
                     for part in head.get(open + 1..close).unwrap_or("").split(',') {
                         let name = part.split_whitespace().last().unwrap_or("").trim();
-                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$') {
+                        if !name.is_empty()
+                            && name
+                                .chars()
+                                .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+                        {
                             out.push(name.to_string());
                         }
                     }
@@ -3016,7 +3293,9 @@ fn register_mock_value<'s>(
         if let Some(existing_g) = REGISTRY.with(|r| r.borrow().cjs_exports.get(abs).cloned()) {
             let existing = v8::Local::new(scope, &existing_g);
             if existing.is_object() && exports_val.is_object() {
-                if let (Some(dst), Some(src)) = (existing.to_object(scope), exports_val.to_object(scope)) {
+                if let (Some(dst), Some(src)) =
+                    (existing.to_object(scope), exports_val.to_object(scope))
+                {
                     for n in &names {
                         if let Some(k) = v8::String::new(scope, n) {
                             if let Some(val) = src.get(scope, k.into()) {
@@ -3024,7 +3303,11 @@ fn register_mock_value<'s>(
                             }
                         }
                     }
-                    REGISTRY.with(|r| r.borrow_mut().mocks.insert(abs.to_path_buf(), String::new()));
+                    REGISTRY.with(|r| {
+                        r.borrow_mut()
+                            .mocks
+                            .insert(abs.to_path_buf(), String::new())
+                    });
                     invalidate_importers(abs);
                     return Some(());
                 }
@@ -3049,7 +3332,8 @@ fn register_mock_value<'s>(
         let mut reg = r.borrow_mut();
         reg.cjs_exports.insert(abs.to_path_buf(), exports_global);
         reg.cjs_export_names.insert(abs.to_path_buf(), names);
-        reg.cjs_synth_by_path.insert(abs.to_path_buf(), synth_global);
+        reg.cjs_synth_by_path
+            .insert(abs.to_path_buf(), synth_global);
         reg.path_by_hash.insert(hash, abs.to_path_buf());
         reg.mocks.insert(abs.to_path_buf(), String::new());
     });
@@ -3062,7 +3346,11 @@ fn register_mock_value<'s>(
 /// Register a synthetic module for `abs` by running a generated, self-contained factory source
 /// (`() => (...)`): the asset / JSON stubs load_dep serves. (Test-file mock factories are run by
 /// the runtime's vi.mock, which handles factory errors and async factories.)
-fn register_mock<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, factory_src: &str) -> Option<()> {
+fn register_mock<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    abs: &Path,
+    factory_src: &str,
+) -> Option<()> {
     let code = v8::String::new(scope, &format!("({factory_src})"))?;
     let script = v8::Script::compile(scope, code, None)?;
     let f = v8::Local::<v8::Function>::try_from(script.run(scope)?).ok()?;
@@ -3152,15 +3440,22 @@ fn drain_pending_mocks(scope: &mut v8::PinScope, base_dir: &Path, skip_relative:
     // `vi.mocked(<named import>)` is undefined / points at the real export bug).
     let mut retained: Vec<v8::Local<v8::Value>> = Vec::new();
     for i in 0..arr.length() {
-        let item = arr.get_index(scope, i).and_then(|v| v8::Local::<v8::Object>::try_from(v).ok());
+        let item = arr
+            .get_index(scope, i)
+            .and_then(|v| v8::Local::<v8::Object>::try_from(v).ok());
         let Some(item) = item else {
             continue;
         };
-        let Some(spec) = item.get(scope, spec_key.into()).map(|v| v.to_rust_string_lossy(scope)) else {
+        let Some(spec) = item
+            .get(scope, spec_key.into())
+            .map(|v| v.to_rust_string_lossy(scope))
+        else {
             continue;
         };
         let _ = skip_relative;
-        let exports = item.get(scope, exp_key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+        let exports = item
+            .get(scope, exp_key.into())
+            .unwrap_or_else(|| v8::undefined(scope).into());
         if exports.is_promise() || is_thenable(scope, exports) {
             retained.push(item.into()); // unresolved factory — defer to the outer drain
             continue;
@@ -3183,9 +3478,12 @@ fn drain_pending_mocks(scope: &mut v8::PinScope, base_dir: &Path, skip_relative:
 /// True if `val` is a non-promise object exposing a callable `then` (a thenable). Promises are
 /// detected separately via `is_promise()`; both kinds must be deferred, not registered as mocks.
 fn is_thenable(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> bool {
-    let Ok(obj) = v8::Local::<v8::Object>::try_from(val) else { return false };
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(val) else {
+        return false;
+    };
     let then = v8::String::new(scope, "then");
-    then.and_then(|k| obj.get(scope, k.into())).is_some_and(|v| v.is_function())
+    then.and_then(|k| obj.get(scope, k.into()))
+        .is_some_and(|v| v.is_function())
 }
 
 // ---- CommonJS -------------------------------------------------------------
@@ -3232,7 +3530,10 @@ fn compile_cjs_cached<'s>(
         if !bytes.is_empty() {
             let cached = v8::CachedData::new(&bytes);
             let mut source = sc::Source::new_with_cached_data(code, None, cached);
-            let (consume, reason) = (sc::CompileOptions::ConsumeCodeCache, sc::NoCacheReason::NoReason);
+            let (consume, reason) = (
+                sc::CompileOptions::ConsumeCodeCache,
+                sc::NoCacheReason::NoReason,
+            );
             let compiled = sc::compile(scope, &mut source, consume, reason);
             // `bytes` stays alive through this block (Source borrowed it for the compile).
             if let Some(s) = compiled {
@@ -3242,7 +3543,10 @@ fn compile_cjs_cached<'s>(
     }
     // Miss/reject: compile fresh and persist the bytecode for next time.
     let mut source = sc::Source::new(code, None);
-    let (options, reason) = (sc::CompileOptions::NoCompileOptions, sc::NoCacheReason::NoReason);
+    let (options, reason) = (
+        sc::CompileOptions::NoCompileOptions,
+        sc::NoCacheReason::NoReason,
+    );
     let script = sc::compile(scope, &mut source, options, reason)?;
     if let Some(cc) = script.get_unbound_script(scope).create_code_cache() {
         write_atomic_bytes(&path, &cc);
@@ -3254,7 +3558,12 @@ fn load_cjs<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks: bool)
     load_cjs_inner(scope, abs, drain_mocks, false)
 }
 
-fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks: bool, prefer_metadata: bool) -> Option<()> {
+fn load_cjs_inner<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    abs: &Path,
+    drain_mocks: bool,
+    prefer_metadata: bool,
+) -> Option<()> {
     if REGISTRY.with(|r| r.borrow().cjs_synth_by_path.contains_key(abs)) {
         return Some(());
     }
@@ -3296,8 +3605,10 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
                 // uses when native is disabled), so a file that only the native path mangled now
                 // loads; a genuinely-broken source still fails (esbuild can't compile it either).
                 let native_err = tc.exception().map(|e| v8::Global::new(tc, e));
-                let native_exc =
-                    tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_default();
+                let native_exc = tc
+                    .exception()
+                    .map(|e| e.to_rust_string_lossy(tc))
+                    .unwrap_or_default();
                 let fb = esbuild_cjs_fallback(abs, prefer_metadata).and_then(|src| {
                     let wrapped_fb = format!("(function (exports, module, require, __filename, __dirname) {{\n{src}\n}})");
                     if wrapped_fb == wrapped {
@@ -3337,7 +3648,11 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
     let filename = v8::String::new(scope, &abs.to_string_lossy())?;
     // pass this module's path as the require importer, so native_require can record the import
     // edge (imported <- importer) for mock-graph invalidation under isolate-reuse.
-    let require = mk.call(scope, undef, &[dir_str.into(), esm_flag.into(), filename.into()])?;
+    let require = mk.call(
+        scope,
+        undef,
+        &[dir_str.into(), esm_flag.into(), filename.into()],
+    )?;
     // expose this module's dir so runtime vi.mock() (hoisted above the requires) can resolve a
     // relative spec + register immediately, before the module's consumer requires run.
     let prev_dir = v8::String::new(scope, "__ttDir").and_then(|k| {
@@ -3347,7 +3662,11 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
     });
     // mark in-progress (with its module object) so a circular require() returns live exports
     let module_global = v8::Global::new(scope, module_obj);
-    REGISTRY.with(|r| r.borrow_mut().loading.insert(abs.to_path_buf(), module_global));
+    REGISTRY.with(|r| {
+        r.borrow_mut()
+            .loading
+            .insert(abs.to_path_buf(), module_global)
+    });
     REQUIRE_STACK.with(|st| st.borrow_mut().push(abs.to_path_buf()));
     // (body result, the body's exception: re-thrown below unless the decorator retry runs)
     let (call_res, body_exc) = {
@@ -3356,11 +3675,23 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
         let r = wrapper.call(
             tc,
             undef,
-            &[exports_obj.into(), module_obj.into(), require, filename.into(), dir_str.into()],
+            &[
+                exports_obj.into(),
+                module_obj.into(),
+                require,
+                filename.into(),
+                dir_str.into(),
+            ],
         );
         if r.is_none() && tc.has_caught() && std::env::var("TURBO_CJS_DEBUG").is_ok() {
-            let stk = tc.stack_trace().map(|s| s.to_rust_string_lossy(tc)).unwrap_or_default();
-            let exc = tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_default();
+            let stk = tc
+                .stack_trace()
+                .map(|s| s.to_rust_string_lossy(tc))
+                .unwrap_or_default();
+            let exc = tc
+                .exception()
+                .map(|e| e.to_rust_string_lossy(tc))
+                .unwrap_or_default();
             let top = stk.lines().take(4).collect::<Vec<_>>().join(" | ");
             eprintln!("  cjs body threw: {} :: {exc} :: {top}", abs.display());
         }
@@ -3386,7 +3717,9 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
         if !prefer_metadata
             && !abs.components().any(|c| c.as_os_str() == "node_modules")
             && decorator_metadata_enabled(abs)
-            && std::fs::read_to_string(abs).map(|s| file_has_decorator(&s)).unwrap_or(false)
+            && std::fs::read_to_string(abs)
+                .map(|s| file_has_decorator(&s))
+                .unwrap_or(false)
         {
             return load_cjs_inner(scope, abs, drain_mocks, true);
         }
@@ -3430,10 +3763,12 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
     let synth_global = v8::Global::new(scope, synth);
     REGISTRY.with(|r| {
         let mut reg = r.borrow_mut();
-        reg.real_exports.insert(abs.to_path_buf(), exports_global.clone());
+        reg.real_exports
+            .insert(abs.to_path_buf(), exports_global.clone());
         reg.cjs_exports.insert(abs.to_path_buf(), exports_global);
         reg.cjs_export_names.insert(abs.to_path_buf(), names);
-        reg.cjs_synth_by_path.insert(abs.to_path_buf(), synth_global);
+        reg.cjs_synth_by_path
+            .insert(abs.to_path_buf(), synth_global);
         reg.path_by_hash.insert(hash, abs.to_path_buf());
     });
     Some(())
@@ -3459,7 +3794,10 @@ fn object_keys(
         return vec![];
     };
     (0..arr.length())
-        .filter_map(|i| arr.get_index(scope, i).map(|v| v.to_rust_string_lossy(scope)))
+        .filter_map(|i| {
+            arr.get_index(scope, i)
+                .map(|v| v.to_rust_string_lossy(scope))
+        })
         .collect()
 }
 
@@ -3475,7 +3813,12 @@ fn make_synthetic<'s>(
         }
     }
     let mod_name = v8::String::new(scope, "<synthetic>")?;
-    Some(v8::Module::create_synthetic_module(scope, mod_name, &export_names, synth_eval))
+    Some(v8::Module::create_synthetic_module(
+        scope,
+        mod_name,
+        &export_names,
+        synth_eval,
+    ))
 }
 
 fn synth_eval<'s>(
@@ -3639,7 +3982,11 @@ fn ensure_lazy_stub<'s>(
     let script = v8::Script::compile(scope, code, None)?;
     let val = script.run(scope)?;
     let g = v8::Global::new(scope, val);
-    REGISTRY.with(|r| r.borrow_mut().lazy_stub_ns.insert(cache_key.to_string(), g.clone()));
+    REGISTRY.with(|r| {
+        r.borrow_mut()
+            .lazy_stub_ns
+            .insert(cache_key.to_string(), g.clone())
+    });
     Some(v8::Local::new(scope, &g))
 }
 
@@ -3688,7 +4035,11 @@ fn native_require(
     // importer module kind (ESM vs CJS) selects the export conditions for resolution
     let esm = {
         let a = args.get(2);
-        if a.is_undefined() { true } else { a.boolean_value(scope) }
+        if a.is_undefined() {
+            true
+        } else {
+            a.boolean_value(scope)
+        }
     };
     // node builtins (fs/path/module/...) -> shimmed module objects
     if is_node_builtin(&spec) {
@@ -3740,7 +4091,11 @@ fn native_require(
         if !importer.is_undefined() {
             let imp = PathBuf::from(importer.to_rust_string_lossy(scope));
             REGISTRY.with(|r| {
-                r.borrow_mut().import_edges.entry(abs.clone()).or_default().insert(imp);
+                r.borrow_mut()
+                    .import_edges
+                    .entry(abs.clone())
+                    .or_default()
+                    .insert(imp);
             });
         }
     }
@@ -3777,7 +4132,9 @@ fn native_require(
                     // an arch mismatch) — stub it so an optional require() (chokidar's fsevents)
                     // doesn't take the file down.
                     if stub_failed_deps() && register_node_stub(scope, &abs).is_some() {
-                        if let Some(g) = REGISTRY.with(|r| r.borrow().cjs_exports.get(&abs).cloned()) {
+                        if let Some(g) =
+                            REGISTRY.with(|r| r.borrow().cjs_exports.get(&abs).cloned())
+                        {
                             rv.set(v8::Local::new(scope, &g));
                         }
                         return;
@@ -3817,7 +4174,8 @@ fn native_require(
         if !loaded {
             // A node_modules dep that can't load in the shimmed env -> stub it (don't crash the
             // importer). App modules still hard-fail (a real bug there must surface).
-            if abs.to_string_lossy().contains("/node_modules/") && stub_failed_deps()
+            if abs.to_string_lossy().contains("/node_modules/")
+                && stub_failed_deps()
                 && register_node_stub(scope, &abs).is_some()
             {
                 // fall through to return the stub
@@ -3838,7 +4196,8 @@ fn native_require(
         // require() of ESM (Node 22+ behavior): load + instantiate + evaluate, return the
         // module namespace as the require() result. Handles CJS->ESM requires (e.g. tslib).
         let Some(module) = load_graph(scope, &abs) else {
-            if abs.to_string_lossy().contains("/node_modules/") && stub_failed_deps()
+            if abs.to_string_lossy().contains("/node_modules/")
+                && stub_failed_deps()
                 && register_node_stub(scope, &abs).is_some()
             {
                 if let Some(g) = REGISTRY.with(|r| r.borrow().cjs_exports.get(&abs).cloned()) {
@@ -3935,7 +4294,9 @@ fn native_import_actual(
         }
         return;
     }
-    let Some(abs) = resolve_spec(&spec, Path::new(&dir)) else { return };
+    let Some(abs) = resolve_spec(&spec, Path::new(&dir)) else {
+        return;
+    };
     // importActual/importOriginal returns the REAL module, NOT a registered mock (else a factory
     // doing `mockImplementation(actual.fn)` points the spy at itself → infinite recursion).
     // Prefer the genuine exports cached when the real module was loaded (no re-run → no dual
@@ -3958,15 +4319,28 @@ fn native_import_actual(
         }
     });
     let _ = load_cjs(scope, &abs, true);
-    let real = REGISTRY.with(|r| r.borrow().real_exports.get(&abs).cloned()
-        .or_else(|| r.borrow().cjs_exports.get(&abs).cloned()));
+    let real = REGISTRY.with(|r| {
+        r.borrow()
+            .real_exports
+            .get(&abs)
+            .cloned()
+            .or_else(|| r.borrow().cjs_exports.get(&abs).cloned())
+    });
     if let Some((m, e, s, n)) = saved {
         REGISTRY.with(|r| {
             let mut reg = r.borrow_mut();
-            if let Some(m) = m { reg.mocks.insert(abs.clone(), m); }
-            if let Some(e) = e { reg.cjs_exports.insert(abs.clone(), e); }
-            if let Some(s) = s { reg.cjs_synth_by_path.insert(abs.clone(), s); }
-            if let Some(n) = n { reg.cjs_export_names.insert(abs.clone(), n); }
+            if let Some(m) = m {
+                reg.mocks.insert(abs.clone(), m);
+            }
+            if let Some(e) = e {
+                reg.cjs_exports.insert(abs.clone(), e);
+            }
+            if let Some(s) = s {
+                reg.cjs_synth_by_path.insert(abs.clone(), s);
+            }
+            if let Some(n) = n {
+                reg.cjs_export_names.insert(abs.clone(), n);
+            }
         });
     }
     if let Some(g) = real {
@@ -4197,7 +4571,8 @@ fn load_graph<'s>(
         .or_else(|| abs.parent().map(|p| p.to_path_buf()))
         .unwrap();
     for i in 0..requests.length() {
-        let req = v8::Local::<v8::ModuleRequest>::try_from(requests.get(scope, i).unwrap()).unwrap();
+        let req =
+            v8::Local::<v8::ModuleRequest>::try_from(requests.get(scope, i).unwrap()).unwrap();
         let spec = req.get_specifier().to_rust_string_lossy(scope);
         if is_test_api_module(&spec) {
             ensure_vitest_builtin(scope)?;
@@ -4240,8 +4615,19 @@ fn ensure_vitest_builtin<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<()> {
     let global = scope.get_current_context().global(scope);
     let obj = v8::Object::new(scope);
     for n in [
-        "describe", "it", "test", "expect", "expectTypeOf", "assertType", "vi", "jest",
-        "beforeEach", "afterEach", "beforeAll", "afterAll", "assert",
+        "describe",
+        "it",
+        "test",
+        "expect",
+        "expectTypeOf",
+        "assertType",
+        "vi",
+        "jest",
+        "beforeEach",
+        "afterEach",
+        "beforeAll",
+        "afterAll",
+        "assert",
     ] {
         let k = v8::String::new(scope, n)?;
         if let Some(v) = global.get(scope, k.into()) {
@@ -4878,7 +5264,11 @@ fn fs_read_file_sync(
 }
 
 /// native fs.writeFileSync(path, data)
-fn fs_write_file_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn fs_write_file_sync(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
     let p = args.get(0).to_rust_string_lossy(scope);
     let data = args.get(1).to_rust_string_lossy(scope);
     if let Some(parent) = Path::new(&p).parent() {
@@ -4965,7 +5355,11 @@ fn fs_symlink_sync(
 }
 
 /// native fs.mkdirSync(path, opts) — always recursive (safe)
-fn fs_mkdir_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn fs_mkdir_sync(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
     let p = args.get(0).to_rust_string_lossy(scope);
     let _ = std::fs::create_dir_all(&p);
 }
@@ -4982,7 +5376,11 @@ fn fs_rm_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
 }
 
 /// native fs.readdirSync(path) -> string[] of entry names
-fn fs_readdir_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn fs_readdir_sync(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
     let p = args.get(0).to_rust_string_lossy(scope);
     let arr = v8::Array::new(scope, 0);
     if let Ok(entries) = std::fs::read_dir(&p) {
@@ -5079,14 +5477,20 @@ impl TestReport {
 /// files are skipped (test files get hoist-reordered so their maps are unreliable, and they don't
 /// belong in a coverage report anyway).
 fn coverage_accumulate(json: &str) {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return };
-    let Some(scripts) =
-        v.get("result").and_then(|r| r.get("result")).and_then(|x| x.as_array())
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return;
+    };
+    let Some(scripts) = v
+        .get("result")
+        .and_then(|r| r.get("result"))
+        .and_then(|x| x.as_array())
     else {
         return;
     };
     for s in scripts {
-        let Some(url) = s.get("url").and_then(|u| u.as_str()) else { continue };
+        let Some(url) = s.get("url").and_then(|u| u.as_str()) else {
+            continue;
+        };
         if url.is_empty() {
             continue;
         }
@@ -5120,7 +5524,11 @@ fn coverage_accumulate(json: &str) {
         let mut funcs: Vec<(String, usize, i64)> = Vec::new();
         if let Some(fns) = s.get("functions").and_then(|f| f.as_array()) {
             for f in fns {
-                let name = f.get("functionName").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let name = f
+                    .get("functionName")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let rs = f.get("ranges").and_then(|r| r.as_array());
                 if let Some(rs) = rs {
                     for (i, r) in rs.iter().enumerate() {
@@ -5160,12 +5568,19 @@ fn caught_message(
     if !tc.has_caught() {
         return None;
     }
-    Some(tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_else(|| fallback.to_string()))
+    Some(
+        tc.exception()
+            .map(|e| e.to_rust_string_lossy(tc))
+            .unwrap_or_else(|| fallback.to_string()),
+    )
 }
 
 /// Load-error text for an entry module whose `instantiate_module` did not succeed.
 fn instantiate_error(caught: Option<String>) -> String {
-    format!("instantiate: {}", caught.unwrap_or_else(|| "instantiate failed".to_string()))
+    format!(
+        "instantiate: {}",
+        caught.unwrap_or_else(|| "instantiate failed".to_string())
+    )
 }
 
 /// Load-error text (if any) for an entry module after `evaluate` + a microtask checkpoint:
@@ -5243,7 +5658,8 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     // dangling external would fail the whole file — safer to leave them bundled.
     let setup_files = vitest_setup_files(&entry_abs);
     let mut externals: Vec<String> = Vec::new();
-    let mut mock_targets: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+    let mut mock_targets: std::collections::HashMap<String, PathBuf> =
+        std::collections::HashMap::new();
     for sf in &setup_files {
         let sf_dir = sf.parent().unwrap_or(Path::new("."));
         let sf_src = std::fs::read_to_string(sf).unwrap_or_default();
@@ -5307,7 +5723,8 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     let load_target = if mr_enabled() {
         entry_abs.clone()
     } else {
-        esbuild_bundle_full(&entry_abs, &externals, &mock_targets, None).unwrap_or_else(|| entry_abs.clone())
+        esbuild_bundle_full(&entry_abs, &externals, &mock_targets, None)
+            .unwrap_or_else(|| entry_abs.clone())
     };
 
     // Make mock synthetics lenient: collect the names the bundle imports from each mock so
@@ -5317,7 +5734,13 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
             for abs in mock_targets.values() {
                 let names = collect_named_imports(&btext, &abs.to_string_lossy());
                 if !names.is_empty() {
-                    REGISTRY.with(|r| r.borrow_mut().extra_exports.entry(abs.clone()).or_default().extend(names));
+                    REGISTRY.with(|r| {
+                        r.borrow_mut()
+                            .extra_exports
+                            .entry(abs.clone())
+                            .or_default()
+                            .extend(names)
+                    });
                 }
             }
         }
@@ -5330,7 +5753,13 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     // fresh path (one isolate per file) — that's where the inspector collector is wired, and it
     // keeps the byte-offset → source mapping unambiguous.
     if !FORCE_FRESH.with(|f| f.get()) && reuse_decision(&entry_abs) && !crate::coverage::enabled() {
-        return run_test_file_reused(&entry_abs, &setup_files, &externals, &mock_targets, &load_target);
+        return run_test_file_reused(
+            &entry_abs,
+            &setup_files,
+            &externals,
+            &mock_targets,
+            &load_target,
+        );
     }
 
     // All Global handles live in the thread-local REGISTRY; they MUST be dropped while
@@ -5366,7 +5795,8 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
             let mut root = entry_abs.parent();
             let mut found: Option<&Path> = None;
             while let Some(d) = root {
-                if d.join("package.json").is_file() && !d.to_string_lossy().contains("node_modules") {
+                if d.join("package.json").is_file() && !d.to_string_lossy().contains("node_modules")
+                {
                     found = Some(d);
                     break;
                 }
@@ -5425,7 +5855,10 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
                     let tc = std::pin::pin!(v8::TryCatch::new(scope));
                     let tc = &mut tc.init();
                     if load_cjs(tc, &entry_abs, false).is_none() {
-                        Some(caught_message(tc, "entry load failed").unwrap_or_else(|| "entry load failed".into()))
+                        Some(
+                            caught_message(tc, "entry load failed")
+                                .unwrap_or_else(|| "entry load failed".into()),
+                        )
                     } else {
                         tc.perform_microtask_checkpoint();
                         None
@@ -5440,7 +5873,9 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
                 if let Some(d) = entry_abs.parent() {
                     let js = format!("globalThis.__ttDir = {:?};", d.to_string_lossy());
                     if let Some(code) = v8::String::new(scope, &js) {
-                        if let Some(s) = v8::Script::compile(scope, code, None) { s.run(scope); }
+                        if let Some(s) = v8::Script::compile(scope, code, None) {
+                            s.run(scope);
+                        }
                     }
                 }
                 break 'work drive_tests(scope, global, &entry_abs);
@@ -5559,7 +5994,8 @@ fn run_test_file_reused(
             let mut root = entry_abs.parent();
             let mut found: Option<&Path> = None;
             while let Some(d) = root {
-                if d.join("package.json").is_file() && !d.to_string_lossy().contains("node_modules") {
+                if d.join("package.json").is_file() && !d.to_string_lossy().contains("node_modules")
+                {
                     found = Some(d);
                     break;
                 }
@@ -5620,7 +6056,10 @@ fn run_test_file_reused(
                     let tc = std::pin::pin!(v8::TryCatch::new(scope));
                     let tc = &mut tc.init();
                     if load_cjs(tc, entry_abs, false).is_none() {
-                        Some(caught_message(tc, "entry load failed").unwrap_or_else(|| "entry load failed".into()))
+                        Some(
+                            caught_message(tc, "entry load failed")
+                                .unwrap_or_else(|| "entry load failed".into()),
+                        )
                     } else {
                         tc.perform_microtask_checkpoint();
                         None
@@ -5759,10 +6198,8 @@ fn drive_tests_bounded(
         }
     }
     let tt_key = v8::String::new(scope, "__tt").unwrap();
-    let tt = v8::Local::<v8::Object>::try_from(
-        global.get(scope, tt_key.into()).ok_or("no __tt")?,
-    )
-    .map_err(|_| "__tt not object")?;
+    let tt = v8::Local::<v8::Object>::try_from(global.get(scope, tt_key.into()).ok_or("no __tt")?)
+        .map_err(|_| "__tt not object")?;
     let run_key = v8::String::new(scope, "run").unwrap();
     let run = v8::Local::<v8::Function>::try_from(tt.get(scope, run_key.into()).ok_or("no run")?)
         .map_err(|_| "run not fn")?;
@@ -5809,7 +6246,10 @@ fn drive_tests_bounded(
     }
     if promise.state() != v8::PromiseState::Fulfilled {
         let reason = if promise.state() == v8::PromiseState::Rejected {
-            format!("rejected: {}", promise.result(scope).to_rust_string_lossy(scope))
+            format!(
+                "rejected: {}",
+                promise.result(scope).to_rust_string_lossy(scope)
+            )
         } else {
             "still pending".to_string()
         };
@@ -5856,7 +6296,9 @@ fn drive_tests_bounded(
         };
         let get_f64 = |scope: &mut v8::PinScope, o: v8::Local<v8::Object>, key: &str| -> f64 {
             let k = v8::String::new(scope, key).unwrap();
-            o.get(scope, k.into()).and_then(|v| v.number_value(scope)).unwrap_or(0.0)
+            o.get(scope, k.into())
+                .and_then(|v| v.number_value(scope))
+                .unwrap_or(0.0)
         };
         for i in 0..arr.length() {
             if let Some(o) = arr
@@ -5872,7 +6314,13 @@ fn drive_tests_bounded(
             }
         }
     }
-    Ok(TestReport { passed, failed, failures, tests, setup_us: 0.0 })
+    Ok(TestReport {
+        passed,
+        failed,
+        failures,
+        tests,
+        setup_us: 0.0,
+    })
 }
 
 /// Call a no-arg global JS function and coerce its result to bool.
@@ -5978,18 +6426,30 @@ mod env_pragma_tests {
 
     #[test]
     fn parses_node_pragma() {
-        assert_eq!(file_env_pragma("// @vitest-environment node\nimport x;").as_deref(), Some("node"));
+        assert_eq!(
+            file_env_pragma("// @vitest-environment node\nimport x;").as_deref(),
+            Some("node")
+        );
     }
 
     #[test]
     fn parses_colon_and_jsdom() {
-        assert_eq!(file_env_pragma("/* @vitest-environment: jsdom */").as_deref(), Some("jsdom"));
-        assert_eq!(file_env_pragma("// @vitest-environment   happy-dom").as_deref(), Some("happy-dom"));
+        assert_eq!(
+            file_env_pragma("/* @vitest-environment: jsdom */").as_deref(),
+            Some("jsdom")
+        );
+        assert_eq!(
+            file_env_pragma("// @vitest-environment   happy-dom").as_deref(),
+            Some("happy-dom")
+        );
     }
 
     #[test]
     fn case_insensitive_value() {
-        assert_eq!(file_env_pragma("// @vitest-environment Node").as_deref(), Some("node"));
+        assert_eq!(
+            file_env_pragma("// @vitest-environment Node").as_deref(),
+            Some("node")
+        );
     }
 
     #[test]

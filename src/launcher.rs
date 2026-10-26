@@ -186,7 +186,10 @@ fn find_config(start_dir: &Path, forced: Option<&Path>) -> Option<Config> {
             let p = dir.join(n);
             if p.is_file() {
                 if let Ok(text) = std::fs::read_to_string(&p) {
-                    return Some(Config { dir: dir.clone(), text });
+                    return Some(Config {
+                        dir: dir.clone(),
+                        text,
+                    });
                 }
                 return None;
             }
@@ -273,7 +276,11 @@ fn vitest_coverage(start_dir: &Path, forced: Option<&Path>) -> Option<CoverageCf
     // slice from the `coverage:` key so include/exclude/thresholds resolve to the coverage block,
     // not the test-level ones (test.* precedes coverage.* in the config object).
     let Some(ci) = find_coverage_block(text) else {
-        return Some(CoverageCfg { include: vec![], exclude: vec![], thresholds: None });
+        return Some(CoverageCfg {
+            include: vec![],
+            exclude: vec![],
+            thresholds: None,
+        });
     };
     let slice = &text[ci..];
     let include = scan_string_array(slice, "include").unwrap_or_default();
@@ -287,8 +294,16 @@ fn vitest_coverage(start_dir: &Path, forced: Option<&Path>) -> Option<CoverageCf
             parts.push(format!("{k}={v}"));
         }
     }
-    let thresholds = if parts.is_empty() { None } else { Some(parts.join(",")) };
-    Some(CoverageCfg { include, exclude, thresholds })
+    let thresholds = if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(","))
+    };
+    Some(CoverageCfg {
+        include,
+        exclude,
+        thresholds,
+    })
 }
 
 /// Byte offset of the `coverage` key whose value is an object (`coverage\s*:\s*\{`).
@@ -339,11 +354,10 @@ fn scan_number(text: &str, key: &str) -> Option<String> {
     while let Some(rel) = text[from..].find(key) {
         let at = from + rel;
         // guard: preceding char must not be '.', '_', alphanumeric (i.e. not part of a longer word)
-        let ok_prev = at == 0
-            || {
-                let p = b[at - 1];
-                p != b'.' && p != b'_' && !p.is_ascii_alphanumeric()
-            };
+        let ok_prev = at == 0 || {
+            let p = b[at - 1];
+            p != b'.' && p != b'_' && !p.is_ascii_alphanumeric()
+        };
         let after = at + key.len();
         if ok_prev {
             let i = skip_ws(b, after);
@@ -610,7 +624,17 @@ fn strip_comments(s: &str) -> String {
 
 /// Keywords after which a `/` opens a regex literal, not division (`return /re/`, `typeof x || /re/`).
 const REGEX_KEYWORDS: [&str; 12] = [
-    "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "do", "else", "yield",
+    "return",
+    "typeof",
+    "instanceof",
+    "in",
+    "of",
+    "new",
+    "delete",
+    "void",
+    "do",
+    "else",
+    "yield",
     "await",
 ];
 
@@ -630,8 +654,26 @@ fn keyword_before_slash(cur: &str, cur_member: bool, last: &str, last_member: bo
 fn is_regex_context(prev: char) -> bool {
     matches!(
         prev,
-        '\0' | '(' | '{' | '[' | ',' | ';' | ':' | '=' | '!' | '&' | '|' | '?' | '+' | '-' | '*'
-            | '/' | '%' | '^' | '<' | '>' | '~'
+        '\0' | '('
+            | '{'
+            | '['
+            | ','
+            | ';'
+            | ':'
+            | '='
+            | '!'
+            | '&'
+            | '|'
+            | '?'
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '^'
+            | '<'
+            | '>'
+            | '~'
     )
 }
 
@@ -744,7 +786,9 @@ fn parse_alias_inner(inner: &str, dir: &Path) -> Vec<(String, String)> {
     }
     // Object form: `key: value` entries.
     for entry in split_top_level(inner) {
-        let Some(colon) = top_level_colon(&entry) else { continue };
+        let Some(colon) = top_level_colon(&entry) else {
+            continue;
+        };
         let key_raw = entry[..colon].trim();
         let val = &entry[colon + 1..];
         // key is either quoted or a bare identifier; a `[computed]` or regex key is skipped.
@@ -788,7 +832,10 @@ fn alias_target(dir: &Path, val: &str) -> Option<String> {
     let first = parts.next()?;
     // Test markers against CODE (strings blanked) so a literal merely CONTAINING `__dirname` etc.
     // isn't mistaken for a path expression.
-    let mut base = if PATH_MARKERS.iter().any(|m| blank_quoted(&first).contains(m)) {
+    let mut base = if PATH_MARKERS
+        .iter()
+        .any(|m| blank_quoted(&first).contains(m))
+    {
         let quoted = extract_quoted(&first);
         // a bare config-dir base (`__dirname + '/z'`) is the dir itself: joining no segments
         let bare_dir = matches!(first.as_str(), "__dirname" | "import.meta.dirname");
@@ -1056,7 +1103,11 @@ fn discover(cwd: &Path, forced_config: Option<&Path>) -> Vec<PathBuf> {
 /// (caller then runs everything). Mirrors cli.js `gitChanged`.
 fn git_changed(since: &str, cwd: &Path) -> Option<HashSet<PathBuf>> {
     let run = |args: &[&str]| -> Option<Vec<String>> {
-        let out = Command::new("git").args(args).current_dir(cwd).output().ok()?;
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .ok()?;
         if !out.status.success() {
             return None;
         }
@@ -1071,7 +1122,11 @@ fn git_changed(since: &str, cwd: &Path) -> Option<HashSet<PathBuf>> {
     let root_lines = run(&["rev-parse", "--show-toplevel"])?;
     let repo_root = PathBuf::from(root_lines.first()?);
     let mut set = HashSet::new();
-    let diff_ref: Vec<&str> = if !since.is_empty() && since != "true" { vec![since] } else { vec![] };
+    let diff_ref: Vec<&str> = if !since.is_empty() && since != "true" {
+        vec![since]
+    } else {
+        vec![]
+    };
     let mut cmds: Vec<Vec<&str>> = vec![
         {
             let mut v = vec!["diff", "--name-only"];
@@ -1115,13 +1170,19 @@ fn flag_takes_value(a: &str) -> bool {
 /// Whether the forwarded-flag list already carries `needle` (bare or `needle=…` inline form) — so
 /// a user-passed coverage flag wins over the config-injected default.
 fn has_flag(forward: &[String], needle: &str) -> bool {
-    forward.iter().any(|f| f == needle || f.starts_with(&format!("{needle}=")))
+    forward
+        .iter()
+        .any(|f| f == needle || f.starts_with(&format!("{needle}=")))
 }
 
 /// `p` made absolute against `cwd` (the process cwd) — what `std::path::absolute(p)` yields when
 /// `cwd` is the current directory, falling back to `p` itself when that fails (an empty path).
 fn absolute_in(cwd: &Path, p: &Path) -> PathBuf {
-    let joined = if p.as_os_str().is_empty() || p.is_absolute() { p.to_path_buf() } else { cwd.join(p) };
+    let joined = if p.as_os_str().is_empty() || p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    };
     std::path::absolute(&joined).unwrap_or_else(|_| p.to_path_buf())
 }
 
@@ -1161,7 +1222,11 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
     let mut messages: Vec<String> = Vec::new();
     // Accept-and-strip a leading vitest subcommand (`run`/`watch`/`dev`) — turbo-test is always a
     // single run; letting it reach the runner would look like a phantom test-file path.
-    if raw.first().map(|s| matches!(s.as_str(), "run" | "watch" | "dev")).unwrap_or(false) {
+    if raw
+        .first()
+        .map(|s| matches!(s.as_str(), "run" | "watch" | "dev"))
+        .unwrap_or(false)
+    {
         raw.remove(0);
     }
 
@@ -1180,16 +1245,15 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
     while i < raw.len() {
         let a = raw[i].clone();
         // `--key=value` inline form for launcher value-flags.
-        let (key, inline_val): (&str, Option<String>) =
-            if a.starts_with("--") {
-                if let Some(eq) = a.find('=') {
-                    (&a[..eq], Some(a[eq + 1..].to_string()))
-                } else {
-                    (a.as_str(), None)
-                }
+        let (key, inline_val): (&str, Option<String>) = if a.starts_with("--") {
+            if let Some(eq) = a.find('=') {
+                (&a[..eq], Some(a[eq + 1..].to_string()))
             } else {
                 (a.as_str(), None)
-            };
+            }
+        } else {
+            (a.as_str(), None)
+        };
         // take the value for a launcher value-flag: inline `=v`, else the next non-flag token.
         let mut take_val = || -> Option<String> {
             if let Some(v) = inline_val.clone() {
@@ -1258,9 +1322,20 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
             }
             // Boolean / no-effect vitest flags — dropped (NO value consumed, so a following test
             // file isn't eaten).
-            "--run" | "--watch" | "-w" | "--no-watch" | "--logHeapUsage" | "--hideSkippedTests"
-            | "--disableConsoleIntercept" | "--dom" | "--segfaultRetry" | "--printConsoleTrace"
-            | "--color" | "--no-color" | "--inspect" | "--inspect-brk" => {
+            "--run"
+            | "--watch"
+            | "-w"
+            | "--no-watch"
+            | "--logHeapUsage"
+            | "--hideSkippedTests"
+            | "--disableConsoleIntercept"
+            | "--dom"
+            | "--segfaultRetry"
+            | "--printConsoleTrace"
+            | "--color"
+            | "--no-color"
+            | "--inspect"
+            | "--inspect-brk" => {
                 i += 1;
                 continue;
             }
@@ -1271,7 +1346,10 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         // the flag and, when the next token is its value (a non-flag), that too — otherwise the
         // orphaned value token would be mistaken for a test-file path and hard-fail the run. Covers
         // both the `=`-inline and space forms.
-        if key.starts_with("--sequence") || key.starts_with("--browser") || key.starts_with("--inspect") {
+        if key.starts_with("--sequence")
+            || key.starts_with("--browser")
+            || key.starts_with("--inspect")
+        {
             let _ = take_val();
             i += 1;
             continue;
@@ -1309,7 +1387,10 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         Some(r) => absolute_in(proc_cwd, Path::new(r)),
         None => proc_cwd.to_path_buf(),
     };
-    let forced = opts.config.as_ref().map(|f| absolute_in(proc_cwd, Path::new(f)));
+    let forced = opts
+        .config
+        .as_ref()
+        .map(|f| absolute_in(proc_cwd, Path::new(f)));
 
     // `--passWithNoTests` also covers a test file that collects no test at all (vitest: no
     // "No test suite found in file" error) → the runtime reads it per file.
@@ -1326,9 +1407,10 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
 
     // `--environment` → TURBO_ENV (falls back to config `test.environment`). A per-file pragma
     // overrides this at runtime (runner.rs).
-    let environment = opts.environment.clone().or_else(|| {
-        find_config(&cwd, forced.as_deref()).and_then(|c| config_environment(&c.text))
-    });
+    let environment = opts
+        .environment
+        .clone()
+        .or_else(|| find_config(&cwd, forced.as_deref()).and_then(|c| config_environment(&c.text)));
     if let Some(e) = environment {
         env.push(("TURBO_ENV", e));
     }
@@ -1351,7 +1433,9 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
     if coverage_on {
         if let Some(cov) = vitest_coverage(&cwd, forced.as_deref()) {
             if let Some(thr) = &cov.thresholds {
-                if !has_flag(&forward, "--coverage-thresholds") && !has_flag(&forward, "--coverage-threshold") {
+                if !has_flag(&forward, "--coverage-thresholds")
+                    && !has_flag(&forward, "--coverage-threshold")
+                {
                     forward.push("--coverage-thresholds".to_string());
                     forward.push(thr.clone());
                 }
@@ -1430,8 +1514,14 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
                     changed.contains(&abs)
                 });
                 if test_files.is_empty() {
-                    messages.push(format!("turbo-test: --changed: no changed test files (of {before}) — exiting 0."));
-                    return Plan { env, messages, outcome: Err(0) };
+                    messages.push(format!(
+                        "turbo-test: --changed: no changed test files (of {before}) — exiting 0."
+                    ));
+                    return Plan {
+                        env,
+                        messages,
+                        outcome: Err(0),
+                    };
                 }
             }
         }
@@ -1440,7 +1530,11 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
     // Effective argv for the runner loop: forwarded flags, then resolved files.
     let mut out = forward;
     out.extend(test_files.into_iter().map(|f| f.display().to_string()));
-    Plan { env, messages, outcome: Ok(out) }
+    Plan {
+        env,
+        messages,
+        outcome: Ok(out),
+    }
 }
 
 #[cfg(all(test, unix))]

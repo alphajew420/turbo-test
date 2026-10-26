@@ -86,7 +86,11 @@ struct Access {
 
 /// Sanitize a module specifier into the esbuild-style `import_<x>` variable suffix.
 fn import_var(source: &str, seq: usize) -> String {
-    let base = source.trim_end_matches('/').rsplit('/').next().unwrap_or(source);
+    let base = source
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(source);
     let mut s = String::from("import_");
     for c in base.chars() {
         if c.is_ascii_alphanumeric() || c == '_' || c == '$' {
@@ -174,7 +178,9 @@ impl<'a> EmitState<'a, '_> {
     /// `var.prop`, or `var["prop"]` when `prop` (a string-named import such as `"a-b"`) is not an
     /// identifier name.
     fn build_member(&self, access: &Access) -> Expression<'a> {
-        let obj = self.ast.expression_identifier(SPAN, self.ast.ident(&access.var));
+        let obj = self
+            .ast
+            .expression_identifier(SPAN, self.ast.ident(&access.var));
         if !is_plain_ident(&access.prop) {
             let key = self
                 .ast
@@ -285,16 +291,26 @@ impl<'a> EmitState<'a, '_> {
     /// `init_<id>(), <id>_exports` as a parenthesized sequence — the namespace of a bundled ESM
     /// module after ensuring it's initialized.
     fn build_init_exports(&self, id: &str) -> Expression<'a> {
-        let init = self.ast.expression_identifier(SPAN, self.ast.ident(&format!("init_{id}")));
-        let init_call = self.ast.expression_call(SPAN, init, NONE, self.ast.vec(), false);
-        let exports = self.ast.expression_identifier(SPAN, self.ast.ident(&format!("{id}_exports")));
-        self.ast.expression_sequence(SPAN, self.ast.vec_from_iter([init_call, exports]))
+        let init = self
+            .ast
+            .expression_identifier(SPAN, self.ast.ident(&format!("init_{id}")));
+        let init_call = self
+            .ast
+            .expression_call(SPAN, init, NONE, self.ast.vec(), false);
+        let exports = self
+            .ast
+            .expression_identifier(SPAN, self.ast.ident(&format!("{id}_exports")));
+        self.ast
+            .expression_sequence(SPAN, self.ast.vec_from_iter([init_call, exports]))
     }
 
     /// `require_<id>()` — the module.exports of a bundled CJS module.
     fn build_require_id(&self, id: &str) -> Expression<'a> {
-        let callee = self.ast.expression_identifier(SPAN, self.ast.ident(&format!("require_{id}")));
-        self.ast.expression_call(SPAN, callee, NONE, self.ast.vec(), false)
+        let callee = self
+            .ast
+            .expression_identifier(SPAN, self.ast.ident(&format!("require_{id}")));
+        self.ast
+            .expression_call(SPAN, callee, NONE, self.ast.vec(), false)
     }
 
     /// If `call` is a static `require("literal")`, return the specifier string.
@@ -302,7 +318,9 @@ impl<'a> EmitState<'a, '_> {
         if call.arguments.len() != 1 {
             return None;
         }
-        let Expression::Identifier(callee) = &call.callee else { return None };
+        let Expression::Identifier(callee) = &call.callee else {
+            return None;
+        };
         if callee.name != "require" {
             return None;
         }
@@ -325,8 +343,14 @@ impl<'a> VisitMut<'a> for EmitState<'a, '_> {
         if let (Some(resolve), Expression::CallExpression(call)) = (self.resolve, &*expr) {
             if let Some(spec) = Self::require_spec(call) {
                 match resolve(&spec) {
-                    SourceRef::BundledEsm { id } => { *expr = self.build_init_exports(&id); return; }
-                    SourceRef::BundledCjs { id } => { *expr = self.build_require_id(&id); return; }
+                    SourceRef::BundledEsm { id } => {
+                        *expr = self.build_init_exports(&id);
+                        return;
+                    }
+                    SourceRef::BundledCjs { id } => {
+                        *expr = self.build_require_id(&id);
+                        return;
+                    }
                     SourceRef::External => {}
                 }
             }
@@ -334,7 +358,9 @@ impl<'a> VisitMut<'a> for EmitState<'a, '_> {
         if matches!(expr, Expression::ImportExpression(_)) {
             // take the node out, rewrite its (recursively-visited) source into a require chain.
             let taken = std::mem::replace(expr, self.ast.expression_boolean_literal(SPAN, false));
-            let Expression::ImportExpression(imp) = taken else { unreachable!() };
+            let Expression::ImportExpression(imp) = taken else {
+                unreachable!()
+            };
             let mut imp = imp.unbox();
             self.visit_expression(&mut imp.source);
             *expr = self.lower_dynamic_import(imp.source);
@@ -417,7 +443,10 @@ fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -
     let scoping = sem.semantic.into_scoping();
     let ast = AstBuilder::new(&alloc);
 
-    let ctx = LowerCtx { exports_obj: "__tt_exports".to_string(), resolve: None };
+    let ctx = LowerCtx {
+        exports_obj: "__tt_exports".to_string(),
+        resolve: None,
+    };
     let map_src = if with_map { Some((path, src)) } else { None };
     let (parts, mappings) = lower(ast, scoping, &ctx, &mut program, map_src)?;
 
@@ -431,11 +460,18 @@ fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -
         }
         return Some(out);
     }
-    let mut out = assemble(&parts.requires, &parts.re_exports, &parts.exports, &parts.body_code);
+    let mut out = assemble(
+        &parts.requires,
+        &parts.re_exports,
+        &parts.exports,
+        &parts.body_code,
+    );
     if let Some(m) = &mappings {
         // lines before body_code in the output = preamble + the assembled-module prefix.
         let prefix = PREAMBLE.matches('\n').count()
-            + assemble_module(&parts.requires, &parts.re_exports, &parts.exports, "").matches('\n').count();
+            + assemble_module(&parts.requires, &parts.re_exports, &parts.exports, "")
+                .matches('\n')
+                .count();
         append_inline_map(&mut out, path, prefix, m);
     }
     Some(out)
@@ -509,8 +545,10 @@ fn lower<'a>(
         body_code = body_code.replacen("export default ", "var __tt_default = ", 1);
     }
 
-    let has_module_syntax =
-        !(requires.is_empty() && re_exports.is_empty() && exports.is_empty() && !p.default_needs_rewrite);
+    let has_module_syntax = !(requires.is_empty()
+        && re_exports.is_empty()
+        && exports.is_empty()
+        && !p.default_needs_rewrite);
     let uses_to_esm = state.uses_to_esm;
     Some((
         ModuleParts {
@@ -531,7 +569,10 @@ fn lower<'a>(
 fn append_inline_map(out: &mut String, path: &Path, prefix_lines: usize, body_mappings: &str) {
     use base64::Engine;
     let mappings = format!("{}{}", ";".repeat(prefix_lines), body_mappings);
-    let src_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let src_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let json = format!(
         "{{\"version\":3,\"sources\":[{}],\"sourcesContent\":[null],\"mappings\":{}}}",
         json_string(&src_name),
@@ -571,7 +612,12 @@ struct Plan<'a> {
     default_needs_rewrite: bool,
 }
 
-fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &mut Program<'a>) -> Option<Plan<'a>> {
+fn plan<'a>(
+    ast: &AstBuilder<'a>,
+    scoping: &Scoping,
+    ctx: &LowerCtx,
+    program: &mut Program<'a>,
+) -> Option<Plan<'a>> {
     let mut imports: HashMap<SymbolId, Access> = HashMap::new();
     let mut requires: Vec<String> = Vec::new();
     let mut re_exports: Vec<String> = Vec::new();
@@ -593,7 +639,15 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
             }
             Statement::ExportNamedDeclaration(decl) => {
                 seq += 1;
-                if !collect_export_named(scoping, decl.unbox(), seq, ctx, &mut requires, (&mut exports, &mut deferred_named), &mut body_stmts) {
+                if !collect_export_named(
+                    scoping,
+                    decl.unbox(),
+                    seq,
+                    ctx,
+                    &mut requires,
+                    (&mut exports, &mut deferred_named),
+                    &mut body_stmts,
+                ) {
                     return None;
                 }
             }
@@ -612,7 +666,10 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
                         let var = import_var(src, seq);
                         requires.extend(prelude);
                         requires.push(format!("var {var} = {expr};"));
-                        exports.push(ExportEntry { name: module_export_name(name), value_js: var });
+                        exports.push(ExportEntry {
+                            name: module_export_name(name),
+                            value_js: var,
+                        });
                     }
                     // `export * from "s"` → live merge into this module's exports object AND its
                     // module.exports. The 3rd arg is REQUIRED: `module.exports = __toCommonJS(obj)`
@@ -636,16 +693,31 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
             Some(access) => member_js(&access.var, &access.prop),
             None => local,
         };
-        exports.push(ExportEntry { name: exported, value_js });
+        exports.push(ExportEntry {
+            name: exported,
+            value_js,
+        });
     }
 
-    Some(Plan { imports, requires, re_exports, exports, body_stmts, default_needs_rewrite })
+    Some(Plan {
+        imports,
+        requires,
+        re_exports,
+        exports,
+        body_stmts,
+        default_needs_rewrite,
+    })
 }
 
 /// An expression evaluating to a module's namespace object, plus any prelude lines needed first.
 /// `toesm` wraps external/CJS results with `__toESM` (default-interop); a bundled ESM module's
 /// exports object already has the right getters so it's used directly.
-fn module_namespace_expr(ctx: &LowerCtx, src: &str, _seq: usize, toesm: bool) -> (Vec<String>, String) {
+fn module_namespace_expr(
+    ctx: &LowerCtx,
+    src: &str,
+    _seq: usize,
+    toesm: bool,
+) -> (Vec<String>, String) {
     match ctx.source_ref(src) {
         SourceRef::External => {
             let r = require_js(src);
@@ -671,13 +743,25 @@ fn map_var_specs(
         match spec {
             ImportDeclarationSpecifier::ImportDefaultSpecifier(d) => {
                 if let Some(sym) = d.local.symbol_id.get() {
-                    imports.insert(sym, Access { var: var.to_string(), prop: "default".into() });
+                    imports.insert(
+                        sym,
+                        Access {
+                            var: var.to_string(),
+                            prop: "default".into(),
+                        },
+                    );
                 }
             }
             ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => {}
             ImportDeclarationSpecifier::ImportSpecifier(s) => {
                 if let Some(sym) = s.local.symbol_id.get() {
-                    imports.insert(sym, Access { var: var.to_string(), prop: module_export_name(&s.imported) });
+                    imports.insert(
+                        sym,
+                        Access {
+                            var: var.to_string(),
+                            prop: module_export_name(&s.imported),
+                        },
+                    );
                 }
             }
         }
@@ -710,7 +794,11 @@ fn collect_import(
     };
 
     let has_default_or_ns = specifiers.iter().any(|s| {
-        matches!(s, ImportDeclarationSpecifier::ImportDefaultSpecifier(_) | ImportDeclarationSpecifier::ImportNamespaceSpecifier(_))
+        matches!(
+            s,
+            ImportDeclarationSpecifier::ImportDefaultSpecifier(_)
+                | ImportDeclarationSpecifier::ImportNamespaceSpecifier(_)
+        )
     });
     let ns_local = specifiers.iter().find_map(|s| match s {
         ImportDeclarationSpecifier::ImportNamespaceSpecifier(n) => Some(n.local.name.to_string()),
@@ -730,13 +818,25 @@ fn collect_import(
                 match spec {
                     ImportDeclarationSpecifier::ImportDefaultSpecifier(d) => {
                         if let Some(sym) = d.local.symbol_id.get() {
-                            imports.insert(sym, Access { var: exports_obj.clone(), prop: "default".into() });
+                            imports.insert(
+                                sym,
+                                Access {
+                                    var: exports_obj.clone(),
+                                    prop: "default".into(),
+                                },
+                            );
                         }
                     }
                     ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => {}
                     ImportDeclarationSpecifier::ImportSpecifier(s) => {
                         if let Some(sym) = s.local.symbol_id.get() {
-                            imports.insert(sym, Access { var: exports_obj.clone(), prop: module_export_name(&s.imported) });
+                            imports.insert(
+                                sym,
+                                Access {
+                                    var: exports_obj.clone(),
+                                    prop: module_export_name(&s.imported),
+                                },
+                            );
                         }
                     }
                 }
@@ -745,7 +845,11 @@ fn collect_import(
         // bundled CJS: `var v = require_<id>()` (or __toESM for default/ns), refs `v.name`.
         SourceRef::BundledCjs { id } => {
             let var = ns_local.unwrap_or_else(|| import_var(src, seq));
-            let expr = if has_default_or_ns { format!("__toESM(require_{id}())") } else { format!("require_{id}()") };
+            let expr = if has_default_or_ns {
+                format!("__toESM(require_{id}())")
+            } else {
+                format!("require_{id}()")
+            };
             requires.push(format!("var {var} = {expr};"));
             map_var_specs(specifiers, &var, imports);
         }
@@ -779,12 +883,19 @@ fn collect_export_named<'a>(
 ) -> bool {
     if let Some(d) = decl.declaration {
         for name in declaration_binding_names(&d) {
-            exports.push(ExportEntry { name: name.clone(), value_js: name });
+            exports.push(ExportEntry {
+                name: name.clone(),
+                value_js: name,
+            });
         }
         // re-emit the bare declaration as a statement (Declaration → Statement variant by variant).
         match d {
-            Declaration::VariableDeclaration(v) => body_stmts.push(Statement::VariableDeclaration(v)),
-            Declaration::FunctionDeclaration(f) => body_stmts.push(Statement::FunctionDeclaration(f)),
+            Declaration::VariableDeclaration(v) => {
+                body_stmts.push(Statement::VariableDeclaration(v))
+            }
+            Declaration::FunctionDeclaration(f) => {
+                body_stmts.push(Statement::FunctionDeclaration(f))
+            }
             Declaration::ClassDeclaration(c) => body_stmts.push(Statement::ClassDeclaration(c)),
             _ => return false, // TS-only decl (enum/interface/type) shouldn't survive the strip
         }
@@ -833,24 +944,38 @@ fn collect_export_default<'a>(
 ) -> bool {
     // named func/class default keeps a hoisted binding; register it by name, no rewrite.
     let named = match &decl.declaration {
-        ExportDefaultDeclarationKind::FunctionDeclaration(f) => f.id.as_ref().map(|i| i.name.to_string()),
-        ExportDefaultDeclarationKind::ClassDeclaration(c) => c.id.as_ref().map(|i| i.name.to_string()),
+        ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+            f.id.as_ref().map(|i| i.name.to_string())
+        }
+        ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+            c.id.as_ref().map(|i| i.name.to_string())
+        }
         _ => None,
     };
     if let Some(name) = named {
         let inner = decl.unbox();
         match inner.declaration {
-            ExportDefaultDeclarationKind::FunctionDeclaration(f) => body_stmts.push(Statement::FunctionDeclaration(f)),
-            ExportDefaultDeclarationKind::ClassDeclaration(c) => body_stmts.push(Statement::ClassDeclaration(c)),
+            ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                body_stmts.push(Statement::FunctionDeclaration(f))
+            }
+            ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+                body_stmts.push(Statement::ClassDeclaration(c))
+            }
             _ => unreachable!(),
         }
-        exports.push(ExportEntry { name: "default".into(), value_js: name });
+        exports.push(ExportEntry {
+            name: "default".into(),
+            value_js: name,
+        });
         return false;
     }
     // anonymous func/class OR an expression: keep the node (so the visitor rewrites inner import
     // refs), register default → __tt_default, signal the codegen prefix-swap.
     body_stmts.push(Statement::ExportDefaultDeclaration(decl));
-    exports.push(ExportEntry { name: "default".into(), value_js: "__tt_default".into() });
+    exports.push(ExportEntry {
+        name: "default".into(),
+        value_js: "__tt_default".into(),
+    });
     true
 }
 
@@ -865,10 +990,14 @@ fn declaration_binding_names(d: &Declaration) -> Vec<String> {
             out
         }
         Declaration::FunctionDeclaration(f) => {
-            f.id.as_ref().map(|id| vec![id.name.to_string()]).unwrap_or_default()
+            f.id.as_ref()
+                .map(|id| vec![id.name.to_string()])
+                .unwrap_or_default()
         }
         Declaration::ClassDeclaration(c) => {
-            c.id.as_ref().map(|id| vec![id.name.to_string()]).unwrap_or_default()
+            c.id.as_ref()
+                .map(|id| vec![id.name.to_string()])
+                .unwrap_or_default()
         }
         _ => Vec::new(),
     }
@@ -939,13 +1068,22 @@ var __esm = (fn) => { var done, res; return () => (done || (done = 1, res = fn()
 /// `module.exports = __toCommonJS(__tt_exports)` is written EARLY (before requires + body) so that
 /// under circular requires a re-entrant `require_<id>()` sees the live exports object. Order mirrors
 /// esbuild so the loader + `hoist_mock_setup` see the expected shape.
-pub(crate) fn assemble_module(requires: &[String], re_exports: &[String], exports: &[ExportEntry], body: &str) -> String {
+pub(crate) fn assemble_module(
+    requires: &[String],
+    re_exports: &[String],
+    exports: &[ExportEntry],
+    body: &str,
+) -> String {
     let mut out = String::with_capacity(body.len() + 512);
     out.push_str("var __tt_exports = {};\n");
     if !exports.is_empty() {
         out.push_str("__export(__tt_exports, {\n");
         for e in exports {
-            out.push_str(&format!("  {}: () => {},\n", quote_key(&e.name), e.value_js));
+            out.push_str(&format!(
+                "  {}: () => {},\n",
+                quote_key(&e.name),
+                e.value_js
+            ));
         }
         out.push_str("});\n");
     }
@@ -963,7 +1101,12 @@ pub(crate) fn assemble_module(requires: &[String], re_exports: &[String], export
 }
 
 /// App-mode full module: preamble + the assembled CJS module.
-fn assemble(requires: &[String], re_exports: &[String], exports: &[ExportEntry], body: &str) -> String {
+fn assemble(
+    requires: &[String],
+    re_exports: &[String],
+    exports: &[ExportEntry],
+    body: &str,
+) -> String {
     let mut out = String::with_capacity(PREAMBLE.len() + body.len() + 512);
     out.push_str(PREAMBLE);
     out.push_str(&assemble_module(requires, re_exports, exports, body));
@@ -1026,7 +1169,10 @@ mod tests {
     #[test]
     fn default_import_uses_toesm_and_default_member() {
         let o = e("import D from \"s\"; D();");
-        assert!(o.contains("var import_s_1 = __toESM(require(\"s\"));"), "{o}");
+        assert!(
+            o.contains("var import_s_1 = __toESM(require(\"s\"));"),
+            "{o}"
+        );
         assert!(o.contains("import_s_1.default()"), "{o}");
     }
 
@@ -1076,7 +1222,10 @@ mod tests {
     #[test]
     fn export_star() {
         let o = e("export * from \"s\";");
-        assert!(o.contains("__reExport(__tt_exports, require(\"s\"), module.exports)"), "{o}");
+        assert!(
+            o.contains("__reExport(__tt_exports, require(\"s\"), module.exports)"),
+            "{o}"
+        );
     }
 
     #[test]
@@ -1101,7 +1250,11 @@ mod tests_dynimport {
     use std::path::Path;
     #[test]
     fn dynamic_import_lowers_to_require() {
-        let o = emit(Path::new("t.ts"), "const m = await import(\"./x\"); m.default;").unwrap();
+        let o = emit(
+            Path::new("t.ts"),
+            "const m = await import(\"./x\"); m.default;",
+        )
+        .unwrap();
         assert!(
             o.contains("Promise.resolve().then(() => __toESM(require(\"./x\")))"),
             "{o}"
@@ -1111,12 +1264,14 @@ mod tests_dynimport {
     #[test]
     fn dynamic_import_with_imported_specifier_var() {
         // import() whose arg references an imported binding gets the live access rewrite too.
-        let o = emit(Path::new("t.ts"), "import { p } from \"s\"; await import(p);").unwrap();
+        let o = emit(
+            Path::new("t.ts"),
+            "import { p } from \"s\"; await import(p);",
+        )
+        .unwrap();
         assert!(o.contains("require(__tt_spec))))(import_s_1.p)"), "{o}");
     }
 }
-
-
 
 #[cfg(test)]
 #[path = "esm_cjs_tests.rs"]
