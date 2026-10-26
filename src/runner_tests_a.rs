@@ -1471,7 +1471,10 @@ fn ci_detection_is_std_env_is_ci() {
     // the first matching row decides
     assert!(is_ci(env(vec![("NETLIFY", "1"), ("NETLIFY_LOCAL", "1")])));
     assert!(is_ci(env(vec![("NOW_BUILDER", "1"), ("VERCEL", "1")])));
-    assert!(!is_ci(env(vec![("VERCEL", "1"), ("RAILWAY_PROJECT_ID", "1")])));
+    assert!(!is_ci(env(vec![
+        ("VERCEL", "1"),
+        ("RAILWAY_PROJECT_ID", "1")
+    ])));
     // `CI`: any non-empty value; an empty one falls through to the providers
     for v in ["true", "1", "false", "0", "yes"] {
         assert!(is_ci(env(vec![("CI", v)])), "CI={v}");
