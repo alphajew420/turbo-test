@@ -219,3 +219,44 @@ fn each_titles_are_formatted_like_vitest() {
     ];
     assert_eq!(names, want, "{}", r.all());
 }
+
+#[test]
+#[ignore = "turbo-test#68: fails until the fix"]
+fn for_collects_one_task_per_row() {
+    // turbo-test#68: `test.for` / `it.for` / `describe.for` were missing (TypeError at load).
+    // vitest 4.1.12 passes each row as ONE argument plus the test context; the expected TAP is
+    // vitest's for the same file.
+    let p = Project::new("rc-collect-for");
+    p.file(
+        "f.test.js",
+        r#"test.for([[1, 2], [3, 4]])('for %i %i', ([a, b], ctx) => {
+  expect(a + 1).toBe(b)
+  expect(typeof ctx.expect).toBe('function')
+})
+it.for([5])('it for %i', (n) => { expect(n).toBe(5) })
+test.for`
+  a | b
+  ${1} | ${2}
+`('tpl $a $b', ({ a, b }) => { expect(a + b).toBe(3) })
+describe.for([{ n: 'x' }])('d $n', (row) => {
+  test('t', () => { expect(row.n).toBe('x') })
+})
+test.for([[1, 2]])('opts %i', { timeout: 100 }, ([a]) => { expect(a).toBe(1) })
+"#,
+    );
+    let r = turbo_test(&p.dir, &["--reporter", "tap", "f.test.js"], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert_eq!(
+        tap_points(&r),
+        [
+            "ok 1 - for 1 2",
+            "ok 2 - for 3 4",
+            "ok 3 - it for 5",
+            "ok 4 - tpl 1 2",
+            "ok 5 - d 'x' > t",
+            "ok 6 - opts 1",
+        ],
+        "{}",
+        r.all()
+    );
+}
