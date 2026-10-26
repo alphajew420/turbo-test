@@ -76,6 +76,9 @@ thread_local! {
     /// Mock targets registered by setup files (run once per worker) — kept across files in the
     /// reuse path so e.g. the analytics mock survives, while per-file test mocks are evicted.
     static SETUP_MOCKS: RefCell<std::collections::HashSet<PathBuf>> = RefCell::new(std::collections::HashSet::new());
+    /// The error of a setup file that threw when the reused isolate ran them (once per worker):
+    /// every file on that isolate fails with it, as each would under vitest.
+    static REUSE_SETUP_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Snapshot (shallow clone) of each setup-mock's exports taken after the first file. A test
     /// file that re-mocks a setup path mutates the shared exports in place (to preserve identity
     /// for cached importers); restoring from this snapshot before the next file undoes that, so
@@ -1353,25 +1356,29 @@ fn run_setup_file(
     file: &Path,
     externals: &[String],
     rewrite_map: &std::collections::HashMap<String, PathBuf>,
-) {
+) -> Result<(), String> {
+    // A setup file that throws fails every test file that uses it, with its error (vitest).
+    let failed = |e: String| Err(format!("setup file {}: {e}", file.display()));
     if mr_enabled() && esbuild_transform_cjs(file, false).is_some() {
         run_entry_mocks(scope, file);
         // the setup's vi.hoisted() calls re-hit the prepass cache by index; afterwards the cache
         // is cleared so the test file's own vi.hoisted() calls never read the setup's values
         run_js(scope, "globalThis.__hoistedIdx = 0;");
-        {
-            // a throwing setup file is ignored, as on the bundle path
+        let err = {
             let tc = std::pin::pin!(v8::TryCatch::new(scope));
             let tc = &mut tc.init();
-            if load_cjs(tc, file, false).is_some() {
+            let loaded = load_cjs(tc, file, false).is_some();
+            if loaded {
                 tc.perform_microtask_checkpoint();
             }
-        }
+            caught_message(tc, "load failed")
+                .or_else(|| (!loaded).then(|| "load failed".to_string()))
+        };
         run_js(
             scope,
             "globalThis.__hoistedCache = []; globalThis.__hoistedIdx = 0;",
         );
-        return;
+        return err.map_or(Ok(()), failed);
     }
     // reset the pending-mock queue before this setup file runs
     {
@@ -1383,19 +1390,28 @@ fn run_setup_file(
     }
     let target = esbuild_bundle_full(file, externals, rewrite_map, None)
         .unwrap_or_else(|| file.to_path_buf());
-    if let Some(module) = load_graph(scope, &target) {
-        let tc = std::pin::pin!(v8::TryCatch::new(scope));
-        let tc = &mut tc.init();
-        if module.instantiate_module(tc, resolve_callback) == Some(true) {
-            let _ = module.evaluate(tc);
-            tc.perform_microtask_checkpoint();
+    let err = match load_graph(scope, &target) {
+        None => Some("graph load failed".to_string()),
+        Some(module) => {
+            let tc = std::pin::pin!(v8::TryCatch::new(scope));
+            let tc = &mut tc.init();
+            if module.instantiate_module(tc, resolve_callback) == Some(true) {
+                let ev = module.evaluate(tc);
+                tc.perform_microtask_checkpoint();
+                let caught = caught_message(tc, "unknown");
+                evaluate_error(caught, ev.is_some(), module.get_status(), || {
+                    module.get_exception().to_rust_string_lossy(tc)
+                })
+            } else {
+                Some(instantiate_error(caught_message(tc, "unknown")))
+            }
         }
-    }
+    };
     resolve_pending_mocks(scope);
     drain_pending_mocks(scope, file.parent().unwrap_or(Path::new(".")), true);
+    err.map_or(Ok(()), failed)
 }
 
-/// Run a short framework snippet in the current context.
 /// Run `js` as a script; whether it completed without throwing (the exception is cleared).
 fn run_js_ok(scope: &mut v8::PinScope, js: &str) -> bool {
     let tc = std::pin::pin!(v8::TryCatch::new(scope));
@@ -1406,6 +1422,7 @@ fn run_js_ok(scope: &mut v8::PinScope, js: &str) -> bool {
         .is_some()
 }
 
+/// Run a short framework snippet in the current context.
 fn run_js(scope: &mut v8::PinScope, js: &str) {
     if let Some(code) = v8::String::new(scope, js) {
         if let Some(s) = v8::Script::compile(scope, code, None) {
@@ -4939,7 +4956,9 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
             // 0b. project setupFiles: register jest-dom matchers (expect.extend) AND any
             //     global vi.mock()s, draining each into the path-keyed mock registry.
             for sf in &setup_files {
-                run_setup_file(scope, sf, &externals, &mock_targets);
+                if let Err(e) = run_setup_file(scope, sf, &externals, &mock_targets) {
+                    break 'work Err(e);
+                }
             }
 
             // 1. entry-file vi.mock(): hoisted + registered before instantiation, via a
@@ -5130,9 +5149,10 @@ fn run_test_file_reused(
             // matchers and mocks persist across files. After the first run we snapshot the hook
             // baseline (restored each file) and the setup-registered mock paths (kept on reset).
             if first_file {
-                for sf in setup_files {
-                    run_setup_file(scope, sf, externals, mock_targets);
-                }
+                let setup_err = setup_files
+                    .iter()
+                    .find_map(|sf| run_setup_file(scope, sf, externals, mock_targets).err());
+                REUSE_SETUP_ERROR.with(|e| *e.borrow_mut() = setup_err);
                 SETUP_MOCKS.with(|s| {
                     *s.borrow_mut() = REGISTRY.with(|r| r.borrow().mocks.keys().cloned().collect());
                 });
@@ -5145,6 +5165,10 @@ fn run_test_file_reused(
                     }
                 }
                 snapshot_setup_mocks(scope);
+            }
+            // a setup file that threw (on this worker's first file) fails every file after it too
+            if let Some(e) = REUSE_SETUP_ERROR.with(|e| e.borrow().clone()) {
+                break 'work Err(e);
             }
             run_entry_mocks(scope, entry_abs);
             {
@@ -5231,6 +5255,7 @@ pub fn end_worker_reuse() {
     DOM_INSTALLED.with(|d| d.set(false));
     SETUP_MOCKS.with(|s| s.borrow_mut().clear());
     SETUP_MOCK_SNAPSHOT.with(|s| s.borrow_mut().clear());
+    REUSE_SETUP_ERROR.with(|e| e.borrow_mut().take());
 }
 
 /// Whether isolate-reuse was selected for this run (env or vitest config). False until the first
@@ -5438,6 +5463,7 @@ pub fn forget_registry() {
     DOM_INSTALLED.with(|d| d.set(false));
     SETUP_MOCKS.with(|s| s.borrow_mut().clear());
     SETUP_MOCK_SNAPSHOT.with(|s| s.borrow_mut().clear());
+    REUSE_SETUP_ERROR.with(|e| e.borrow_mut().take());
 }
 
 fn clear_registry() {

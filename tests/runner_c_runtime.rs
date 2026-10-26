@@ -1,6 +1,7 @@
 //! Runtime semantics that follow Node/vitest: the `URL` polyfill resolves relative references
 //! like Node's WHATWG `URL`; an entry file's hoisted mock factory runs once; without esbuild the
-//! entry prepass replays `vi.hoisted` values and awaits async factories.
+//! entry prepass replays `vi.hoisted` values and awaits async factories; a setup file that throws
+//! fails every test file using it.
 #![cfg(unix)]
 
 mod common;
@@ -208,4 +209,67 @@ test('never runs', () => { expect(v).toBe('mock'); });
         "{}",
         r.all()
     );
+}
+
+#[test]
+fn a_throwing_setup_file_fails_every_file_that_uses_it() {
+    // turbo-test#38 item 3: a setup file that throws was ignored and the run passed. vitest fails
+    // each test file with the setup file's error. Module-runner (also with isolate reuse, where
+    // setup runs once per worker), TURBO_NO_MR (bundle path) and no esbuild.
+    for esbuild in [true, false] {
+        let p = if esbuild {
+            let p = Project::new("rc-setup-throws");
+            p.with_esbuild();
+            p.file("package.json", r#"{"name":"r38c"}"#);
+            p
+        } else {
+            esm_graph_project("rc-setup-throws-esm")
+        };
+        p.file(
+            "vitest.config.js",
+            "export default { test: { setupFiles: ['./setup.js'] } };\n",
+        );
+        p.file("setup.js", "throw new Error('setup boom');\n");
+        p.file("a.test.js", "test('a', () => {});\n");
+        p.file("b.test.js", "test('b', () => {});\n");
+        let envs: &[&[(&str, &str)]] = if esbuild {
+            &[
+                &[],
+                &[("TURBO_NO_MR", "1")],
+                &[("TURBO_REUSE_ISOLATE", "1"), ("TURBO_JOBS", "1")],
+            ]
+        } else {
+            &[&[], &[("TURBO_REUSE_ISOLATE", "1"), ("TURBO_JOBS", "1")]]
+        };
+        for env in envs {
+            let r = turbo_test(&p.dir, &["a.test.js", "b.test.js"], env);
+            assert_eq!(r.code, Some(1), "{env:?}\n{}", r.all());
+            for f in ["a.test.js", "b.test.js"] {
+                assert!(
+                    r.stdout.lines().any(|l| l.starts_with("ERROR")
+                        && l.contains(f)
+                        && l.contains("setup.js")
+                        && l.contains("setup boom")),
+                    "{env:?} {f}\n{}",
+                    r.all()
+                );
+            }
+        }
+    }
+    // a setup file that works is unaffected
+    let ok = Project::new("rc-setup-ok");
+    ok.with_esbuild();
+    ok.file("package.json", r#"{"name":"r38d"}"#);
+    ok.file(
+        "vitest.config.js",
+        "export default { test: { setupFiles: ['./setup.js'] } };\n",
+    );
+    ok.file("setup.js", "globalThis.SETUP = 1;\n");
+    ok.file(
+        "a.test.js",
+        "test('a', () => { expect(globalThis.SETUP).toBe(1); });\n",
+    );
+    for env in [&[][..], &[("TURBO_NO_MR", "1")][..]] {
+        assert_passes(&turbo_test(&ok.dir, &["a.test.js"], env), 1);
+    }
 }
