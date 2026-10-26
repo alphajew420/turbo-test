@@ -171,9 +171,9 @@ struct Config {
 
 /// Locate a vitest/vite config: with `forced` (a `-c/--config` path) use that exact file (its dir
 /// is the root); otherwise walk up from `start_dir`. Mirrors cli.js `findConfig`.
-fn find_config(start_dir: &Path, forced: Option<&str>) -> Option<Config> {
+fn find_config(start_dir: &Path, forced: Option<&Path>) -> Option<Config> {
     if let Some(f) = forced {
-        let p = std::path::absolute(f).unwrap_or_else(|_| PathBuf::from(f));
+        let p = std::path::absolute(f).unwrap_or_else(|_| f.to_path_buf());
         let text = std::fs::read_to_string(&p).ok()?;
         let dir = p.parent().unwrap_or(Path::new(".")).to_path_buf();
         return Some(Config { dir, text });
@@ -206,7 +206,7 @@ struct Patterns {
     exclude: Vec<String>,
 }
 
-fn vitest_patterns(start_dir: &Path, forced: Option<&str>) -> Option<Patterns> {
+fn vitest_patterns(start_dir: &Path, forced: Option<&Path>) -> Option<Patterns> {
     let cfg = find_config(start_dir, forced)?;
     // Scan include/exclude in the TEST config only — truncate before the coverage block. Otherwise
     // a project with no `test.exclude` but a `coverage.exclude` whose first entry is the test glob
@@ -256,7 +256,7 @@ struct CoverageCfg {
     thresholds: Option<String>,
 }
 
-fn vitest_coverage(start_dir: &Path, forced: Option<&str>) -> Option<CoverageCfg> {
+fn vitest_coverage(start_dir: &Path, forced: Option<&Path>) -> Option<CoverageCfg> {
     let cfg = find_config(start_dir, forced)?;
     let text = &cfg.text;
     // slice from the `coverage:` key so include/exclude/thresholds resolve to the coverage block,
@@ -666,7 +666,7 @@ fn find_key_blocks(text: &str, key: &str) -> Vec<String> {
 /// are applied in source order with later-wins, so a `test.alias` placed after `resolve.alias`
 /// (the conventional order) overrides it on a key collision. Values are arbitrary JS, so the target
 /// is derived heuristically (see `alias_target`); a regex `find` (leading `/`) is skipped.
-fn config_aliases(start_dir: &Path, forced: Option<&str>) -> Vec<(String, String)> {
+fn config_aliases(start_dir: &Path, forced: Option<&Path>) -> Vec<(String, String)> {
     let Some(cfg) = find_config(start_dir, forced) else {
         return vec![];
     };
@@ -953,7 +953,7 @@ fn top_level_comma(s: &str) -> Option<usize> {
 
 /// Default discovery: all test files under `cwd`, filtered by config include/exclude when a config
 /// with `test.include` is found. Mirrors cli.js `discover`.
-fn discover(cwd: &Path, forced_config: Option<&str>) -> Vec<PathBuf> {
+fn discover(cwd: &Path, forced_config: Option<&Path>) -> Vec<PathBuf> {
     let mut all = Vec::new();
     walk(cwd, &mut all);
     let Some(pats) = vitest_patterns(cwd, forced_config) else {
@@ -1047,10 +1047,47 @@ fn has_flag(forward: &[String], needle: &str) -> bool {
     forward.iter().any(|f| f == needle || f.starts_with(&format!("{needle}=")))
 }
 
+/// `p` made absolute against `cwd` (the process cwd) — what `std::path::absolute(p)` yields when
+/// `cwd` is the current directory, falling back to `p` itself when that fails (an empty path).
+fn absolute_in(cwd: &Path, p: &Path) -> PathBuf {
+    let joined = if p.as_os_str().is_empty() || p.is_absolute() { p.to_path_buf() } else { cwd.join(p) };
+    std::path::absolute(&joined).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// What `prepare` does, computed by `plan` without side effects.
+#[derive(Debug, PartialEq)]
+pub struct Plan {
+    /// Env vars to set (in order) for the runner.
+    pub env: Vec<(&'static str, String)>,
+    /// Lines to print to stderr (in order).
+    pub messages: Vec<String>,
+    /// `Ok(argv)` — the effective argv to run with — or `Err(code)` to exit with.
+    pub outcome: Result<Vec<String>, i32>,
+}
+
 /// Port of cli.js `main()` up to the point of spawning the native binary. Returns the effective
 /// argv (forwarded runner flags + resolved absolute test files) for `turbo_test.rs` to parse, or
 /// exits the process for the terminal cases. `raw` is argv WITHOUT the program name.
-pub fn prepare(mut raw: Vec<String>) -> Vec<String> {
+pub fn prepare(raw: Vec<String>) -> Vec<String> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let plan = plan(raw, &cwd);
+    for (k, v) in &plan.env {
+        std::env::set_var(k, v);
+    }
+    for m in &plan.messages {
+        eprintln!("{m}");
+    }
+    match plan.outcome {
+        Ok(argv) => argv,
+        Err(code) => std::process::exit(code),
+    }
+}
+
+/// The side-effect-free body of `prepare`: `proc_cwd` is the process cwd (relative file args,
+/// `-c` and `--root` resolve against it). Env vars / stderr lines / the exit decision are returned.
+pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
+    let mut env: Vec<(&'static str, String)> = Vec::new();
+    let mut messages: Vec<String> = Vec::new();
     // Accept-and-strip a leading vitest subcommand (`run`/`watch`/`dev`) — turbo-test is always a
     // single run; letting it reach the runner would look like a phantom test-file path.
     if raw.first().map(|s| matches!(s.as_str(), "run" | "watch" | "dev")).unwrap_or(false) {
@@ -1186,43 +1223,44 @@ pub fn prepare(mut raw: Vec<String>) -> Vec<String> {
 
     // Discovery root: --root/--dir override cwd.
     let cwd: PathBuf = match &opts.root {
-        Some(r) => std::path::absolute(r).unwrap_or_else(|_| PathBuf::from(r)),
-        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        Some(r) => absolute_in(proc_cwd, Path::new(r)),
+        None => proc_cwd.to_path_buf(),
     };
+    let forced = opts.config.as_ref().map(|f| absolute_in(proc_cwd, Path::new(f)));
 
     // `--isolate` / `--no-isolate` → the runner's reuse env switches (read per-file in runner.rs).
     match opts.isolate {
-        Some(false) => std::env::set_var("TURBO_REUSE_ISOLATE", "1"),
-        Some(true) => std::env::set_var("TURBO_NO_REUSE", "1"),
+        Some(false) => env.push(("TURBO_REUSE_ISOLATE", "1".to_string())),
+        Some(true) => env.push(("TURBO_NO_REUSE", "1".to_string())),
         None => {}
     }
 
     // `--environment` → TURBO_ENV (falls back to config `test.environment`). A per-file pragma
     // overrides this at runtime (runner.rs).
     let environment = opts.environment.clone().or_else(|| {
-        find_config(&cwd, opts.config.as_deref()).and_then(|c| config_environment(&c.text))
+        find_config(&cwd, forced.as_deref()).and_then(|c| config_environment(&c.text))
     });
-    if let Some(env) = environment {
-        std::env::set_var("TURBO_ENV", env);
+    if let Some(e) = environment {
+        env.push(("TURBO_ENV", e));
     }
 
     // `resolve.alias` / `test.alias` (incl. what plugins like vite-tsconfig-paths' non-tsconfig
     // fallback emit) → TURBO_ALIAS, read by the runner's module resolver. Serialized as
     // `find\x1ftarget` records joined by `\x1e`. tsconfig `paths` are handled separately (native).
-    let aliases = config_aliases(&cwd, opts.config.as_deref());
+    let aliases = config_aliases(&cwd, forced.as_deref());
     if !aliases.is_empty() {
         let ser = aliases
             .iter()
             .map(|(k, v)| format!("{k}\u{1f}{v}"))
             .collect::<Vec<_>>()
             .join("\u{1e}");
-        std::env::set_var("TURBO_ALIAS", ser);
+        env.push(("TURBO_ALIAS", ser));
     }
 
     // Coverage: fill thresholds/include/exclude from vitest config unless passed explicitly.
     let coverage_on = forward.iter().any(|f| f.starts_with("--coverage"));
     if coverage_on {
-        if let Some(cov) = vitest_coverage(&cwd, opts.config.as_deref()) {
+        if let Some(cov) = vitest_coverage(&cwd, forced.as_deref()) {
             if let Some(thr) = &cov.thresholds {
                 if !has_flag(&forward, "--coverage-thresholds") && !has_flag(&forward, "--coverage-threshold") {
                     forward.push("--coverage-thresholds".to_string());
@@ -1245,7 +1283,7 @@ pub fn prepare(mut raw: Vec<String>) -> Vec<String> {
     // so a project that raises testTimeout (e.g. 10000 for slow editor/auto-hide flows) spuriously
     // times out under turbo-test.
     if !has_flag(&forward, "--testTimeout") {
-        if let Some(cfg) = find_config(&cwd, opts.config.as_deref()) {
+        if let Some(cfg) = find_config(&cwd, forced.as_deref()) {
             if let Some(tt) = scan_number(&cfg.text, "testTimeout") {
                 forward.push("--testTimeout".to_string());
                 forward.push(tt);
@@ -1255,14 +1293,14 @@ pub fn prepare(mut raw: Vec<String>) -> Vec<String> {
 
     // Resolve the test file set.
     let mut test_files: Vec<PathBuf> = if files.is_empty() {
-        let discovered = discover(&cwd, opts.config.as_deref());
+        let discovered = discover(&cwd, forced.as_deref());
         if discovered.is_empty() {
             if opts.pass_with_no_tests {
-                eprintln!("turbo-test: no test files found — exiting 0 (--passWithNoTests).");
-                std::process::exit(0);
+                messages.push("turbo-test: no test files found — exiting 0 (--passWithNoTests).".to_string());
+                return Plan { env, messages, outcome: Err(0) };
             }
-            eprintln!("turbo-test: no test files found (looked for *.test.* / *.spec.*).");
-            std::process::exit(1);
+            messages.push("turbo-test: no test files found (looked for *.test.* / *.spec.*).".to_string());
+            return Plan { env, messages, outcome: Err(1) };
         }
         discovered
     } else {
@@ -1274,17 +1312,17 @@ pub fn prepare(mut raw: Vec<String>) -> Vec<String> {
     if let Some(since) = &opts.changed {
         match git_changed(since, &cwd) {
             None => {
-                eprintln!("turbo-test: --changed: git unavailable / not a repo — running all discovered tests.");
+                messages.push("turbo-test: --changed: git unavailable / not a repo — running all discovered tests.".to_string());
             }
             Some(changed) => {
                 let before = test_files.len();
                 test_files.retain(|f| {
-                    let abs = std::path::absolute(f).unwrap_or_else(|_| f.clone());
+                    let abs = absolute_in(proc_cwd, f);
                     changed.contains(&abs)
                 });
                 if test_files.is_empty() {
-                    eprintln!("turbo-test: --changed: no changed test files (of {before}) — exiting 0.");
-                    std::process::exit(0);
+                    messages.push(format!("turbo-test: --changed: no changed test files (of {before}) — exiting 0."));
+                    return Plan { env, messages, outcome: Err(0) };
                 }
             }
         }
@@ -1292,19 +1330,23 @@ pub fn prepare(mut raw: Vec<String>) -> Vec<String> {
 
     // Drop file args that no longer exist (stale paths would reach the runner as hard load-errors
     // and flip the exit code). Warn, don't fail.
-    let missing: Vec<&PathBuf> = test_files.iter().filter(|f| !f.exists()).collect();
+    let missing: Vec<&PathBuf> = test_files.iter().filter(|f| !proc_cwd.join(f).exists()).collect();
     if !missing.is_empty() {
         let names: Vec<String> = missing.iter().map(|f| f.display().to_string()).collect();
-        eprintln!("turbo-test: skipping {} missing file(s): {}", missing.len(), names.join(", "));
-        test_files.retain(|f| f.exists());
+        messages.push(format!("turbo-test: skipping {} missing file(s): {}", missing.len(), names.join(", ")));
+        test_files.retain(|f| proc_cwd.join(f).exists());
     }
     if test_files.is_empty() {
-        eprintln!("turbo-test: no existing test files to run.");
-        std::process::exit(0); // nothing to run is not a failure
+        messages.push("turbo-test: no existing test files to run.".to_string());
+        return Plan { env, messages, outcome: Err(0) }; // nothing to run is not a failure
     }
 
     // Effective argv for the runner loop: forwarded flags, then resolved files.
     let mut out = forward;
     out.extend(test_files.into_iter().map(|f| f.display().to_string()));
-    out
+    Plan { env, messages, outcome: Ok(out) }
 }
+
+#[cfg(all(test, unix))]
+#[path = "launcher_tests.rs"]
+mod tests;
