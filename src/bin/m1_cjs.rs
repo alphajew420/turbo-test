@@ -310,13 +310,9 @@ fn resolve_callback<'s>(
         let reg = r.borrow();
         let from = reg.path_by_hash.get(&ref_hash)?;
         let abs = resolve_spec(&spec, from.parent()?)?;
-        if let Some(g) = reg.esm_by_path.get(&abs) {
-            return Some(v8::Local::new(scope, g));
-        }
-        if let Some(g) = reg.cjs_synth_by_path.get(&abs) {
-            return Some(v8::Local::new(scope, g));
-        }
-        None
+        // load_graph registers every request (ESM or CJS synthetic) before instantiation.
+        let g = reg.esm_by_path.get(&abs).or_else(|| reg.cjs_synth_by_path.get(&abs))?;
+        Some(v8::Local::new(scope, g))
     })
 }
 

@@ -23,7 +23,30 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - Results: every remaining Rust test, `npm test` and fixtures/compat are identical per
   test; the 350 binding tests now run (identically) in turbo-dom-browser-env.
 
+### Fixed
+- `npm ci` failed on npm 11 (EUSAGE: `Missing: @esbuild/aix-ppc64@0.21.5 from lock
+  file`), so `typescript` was never installed and `npm test` silently skipped its two tsc
+  tests (turbo-test#30). `package-lock.json` is regenerated with npm 11 and records every
+  optional `@esbuild/*` platform entry; npm 10.9 and npm 11.20 install byte-identical
+  trees from it without rewriting it. New CI job `npm-lockfile` runs `npm ci` under
+  npm 10 and npm 11 so the lock cannot regress.
+
 ### Tests
+- Line-coverage gate for the Rust crate: 6.09% (361/5926) -> 99.87% of production
+  lines, enforced at `fail-under = 99` by the new CI `coverage` job (cargo-tarpaulin,
+  Llvm engine, `tarpaulin.toml`). 365 new behaviour-asserting tests: unit tests in
+  `src/*_tests.rs` and CLI integration tests in `tests/*.rs` (shared helper
+  `tests/common/mod.rs`) that spawn the real binary, the spike binaries and C Node-API
+  addons compiled at test time against throwaway projects. Every file is at 100% except
+  `src/runner.rs` (8 lines: three branches reachable only through pre-existing bugs, which
+  are filed separately, and a V8-unreachable empty-ranges skip; listed in tarpaulin.toml).
+- Testability refactors, output byte-identical: `src/bin/turbo_test.rs` is now a thin
+  wrapper over the new `cli` module (argument parsing, the retry/fresh-isolate policy,
+  the worker pool and pure reporter renderers); `launcher::prepare` wraps a side-effect-free
+  `plan()`; coverage reporting, napi panic guards, bundler/esm_cjs/runner helpers were
+  split into pure functions.
+- CI: `npm ci` now runs before `cargo test` on every non-Windows build leg (the
+  integration tests link its esbuild/typescript installs).
 - `tests/interceptor_should_throw.rs` is no longer ignored: its 4 tests (consumer copies
   of turbo-dom-v8's) pass against the fork. `release_v8_teardown.rs` and
   `weak_teardown.rs` stay as consumer checks.

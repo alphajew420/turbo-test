@@ -118,3 +118,7 @@ pub fn maybe_transform(path: &Path, src: String) -> Result<String, String> {
         Ok(src)
     }
 }
+
+#[cfg(test)]
+#[path = "transform_tests.rs"]
+mod tests;

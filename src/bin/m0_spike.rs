@@ -343,13 +343,24 @@ fn main() {
     println!("  => Keep FULL per-file isolation (fresh context). No need to trade compat for speed.");
 
     // PASS criterion, re-baselined against the real competitor (spec §8: >=5x vs Vitest).
-    let gate = (vitest_turbodom_env_ms / snap_ms) >= 5.0;
-    if gate {
-        println!("\n==> M0 PASS — snapshot fresh-context is >5x cheaper than even the FASTEST");
-        println!("    stock-vitest env path, with full isolation. Premise validated. Proceed to M1.");
-        std::process::exit(0);
+    let (code, verdict) = gate_verdict(vitest_turbodom_env_ms / snap_ms);
+    println!("{verdict}");
+    std::process::exit(code);
+}
+
+/// The M0 gate on the speedup vs the fastest stock-vitest env path: (exit code, verdict text).
+fn gate_verdict(speedup: f64) -> (i32, &'static str) {
+    if speedup >= 5.0 {
+        (
+            0,
+            "\n==> M0 PASS — snapshot fresh-context is >5x cheaper than even the FASTEST\n    \
+             stock-vitest env path, with full isolation. Premise validated. Proceed to M1.",
+        )
     } else {
-        println!("\n==> M0 FAIL — snapshot not >5x vs stock vitest env. Reconsider.");
-        std::process::exit(1);
+        (1, "\n==> M0 FAIL — snapshot not >5x vs stock vitest env. Reconsider.")
     }
 }
+
+#[cfg(test)]
+#[path = "spike_tests/m0.rs"]
+mod tests;

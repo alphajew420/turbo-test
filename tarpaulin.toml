@@ -1,0 +1,33 @@
+# Line-coverage gate for the turbo-test Rust crate (the runner, the launcher/CLI, the
+# Node-API host, transforms, coverage reporting and the milestone spike binaries).
+# Run: `cargo tarpaulin` (reads this file). CI: the `coverage` job in .github/workflows/ci.yml.
+#
+# Many tests drive the real CLI as a subprocess (tests/cli_*.rs spawn
+# CARGO_BIN_EXE_turbo-test against fixture projects). Those child processes are built
+# with the same LLVM instrumentation and write their own .profraw files; `objects` makes
+# tarpaulin load the coverage maps of those executables so bin-only code is attributed.
+#
+# The gate measures production code only: the #[path] unit-test modules under src/ are
+# excluded. Known uncovered lines (see CHANGELOG [Unreleased]): runner.rs jest_setup_files'
+# package.json "jest" branch, register_mock's "mocked but no exports" fallback and the
+# lazy-stub dynamic-import resolve are reachable only through pre-existing bugs (filed
+# separately; covering them means fixing them), and coverage_accumulate's "script with no
+# ranges" skip never sees such input from V8 (precise coverage always reports a script's
+# top-level function).
+[turbo-test]
+engine = "Llvm"
+target-dir = "target/cov"
+skip-clean = true
+timeout = "600s"
+objects = [
+    "target/cov/debug/turbo-test",
+    "target/cov/debug/m0-spike",
+    "target/cov/debug/m1-esm",
+    "target/cov/debug/m1-cjs",
+    "target/cov/debug/m1-transform",
+    "target/cov/debug/m5-affected",
+]
+out = ["Stdout", "Json"]
+output-dir = "target/cov/report"
+fail-under = 99
+exclude-files = ["src/*_tests.rs", "src/runner_tests_*.rs", "src/bin/spike_tests/*"]
