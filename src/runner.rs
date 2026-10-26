@@ -1539,7 +1539,7 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
 /// document/window exist before the test evaluates. (The legacy JS turbo-dom bootstrap —
 /// installGlobals + the `.node` parser — was removed in v0.3.0; rtdom is the only DOM now.)
 fn setup_dom(scope: &mut v8::PinScope, _entry: &Path) {
-    crate::browser_env::install(scope);
+    turbo_dom_browser_env::browser_env::install(scope);
 }
 
 /// Transform a TS file to **ESM** JS using the PROJECT'S OWN TypeScript (`ts.transpileModule`),
@@ -4222,8 +4222,8 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     struct DomGuard;
     impl Drop for DomGuard {
         fn drop(&mut self) {
-            if crate::browser_env::enabled() {
-                crate::browser_env::reset();
+            if turbo_dom_browser_env::browser_env::enabled() {
+                turbo_dom_browser_env::browser_env::reset();
             }
         }
     }

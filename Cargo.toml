@@ -51,20 +51,11 @@ oxc_resolver = "11.21.0"
 libloading = "0.9.0"
 serde_json = "1"
 base64 = "0.22"
-# BINDING-ONLY (removed with src/browser_env*): kept until the in-tree binding is deleted.
-url = "2.5"
-psl = "2"
-lightningcss = { version = "1.0.0-alpha.71", default-features = false }
-cssparser = "0.37"
-turbo-dom-parser = { package = "turbo-dom", version = "0.5.8" }
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-
-[dev-dependencies]
-sha2 = "0.10"
 
 # Pre-publish only (turbo-dom consolidation): resolve the unreleased turbo-dom crates
 # from git. turbo-dom and turbo-dom-browser-env come from the refactor branch of
