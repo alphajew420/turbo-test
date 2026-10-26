@@ -13,8 +13,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'cli.js');
 const FIX = path.join(ROOT, 'fixtures', 'compat');
 
+// CI variables put snapshots in vitest's CI mode (a missing snapshot fails, nothing is written);
+// these tests write snapshots, so they run without them.
+const CI_VARS = ['CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'CIRCLECI', 'TRAVIS', 'BUILDKITE', 'JENKINS_URL', 'TF_BUILD',
+  'TEAMCITY_VERSION', 'BITBUCKET_BUILD_NUMBER', 'CODEBUILD_BUILD_ARN', 'APPVEYOR', 'DRONE', 'SEMAPHORE'];
+const ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !CI_VARS.includes(k)));
 function run(args) {
-  const res = spawnSync('node', [CLI, ...args], { cwd: ROOT, encoding: 'utf8' });
+  const res = spawnSync('node', [CLI, ...args], { cwd: ROOT, encoding: 'utf8', env: ENV });
   return { code: res.status, out: res.stdout || '', err: res.stderr || '' };
 }
 function parseJson(out) {
@@ -26,7 +31,7 @@ const file = (name) => path.join(FIX, name);
 // Some fixtures need their OWN cwd so the launcher discovers their vitest.config.ts (resolve.alias,
 // test.alias) walking up from there — run them with cwd set to the fixture directory.
 function runIn(cwd, args, opts = {}) {
-  const res = spawnSync('node', [CLI, ...args], { cwd, encoding: 'utf8', ...opts });
+  const res = spawnSync('node', [CLI, ...args], { cwd, encoding: 'utf8', env: ENV, ...opts });
   return { code: res.status, out: res.stdout || '', err: res.stderr || '' };
 }
 
