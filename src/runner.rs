@@ -86,27 +86,37 @@ thread_local! {
     static SETUP_MOCK_SNAPSHOT: RefCell<HashMap<PathBuf, v8::Global<v8::Value>>> = RefCell::new(HashMap::new());
 }
 
+/// The registered CommonJS exports of the items' paths that have them: (path, item, exports).
+fn live_cjs_exports<T>(items: Vec<(PathBuf, T)>) -> Vec<(PathBuf, T, v8::Global<v8::Value>)> {
+    REGISTRY.with(|r| {
+        let reg = r.borrow();
+        let live = |(p, t): (PathBuf, T)| Some((reg.cjs_exports.get(&p)?.clone(), p, t));
+        items.into_iter().filter_map(live).map(|(g, p, t)| (p, t, g)).collect()
+    })
+}
+
 /// Shallow-clone each setup-mock's current exports into SETUP_MOCK_SNAPSHOT (called once, after
 /// the first file's setup runs).
 fn snapshot_setup_mocks(scope: &mut v8::PinScope) {
-    let paths: Vec<PathBuf> = SETUP_MOCKS.with(|s| s.borrow().iter().cloned().collect());
+    let paths: Vec<(PathBuf, ())> = SETUP_MOCKS.with(|s| s.borrow().iter().map(|p| (p.clone(), ())).collect());
     let global = scope.get_current_context().global(scope);
-    for p in paths {
-        let Some(g) = REGISTRY.with(|r| r.borrow().cjs_exports.get(&p).cloned()) else { continue };
+    for (p, (), g) in live_cjs_exports(paths) {
         let obj = v8::Local::new(scope, &g);
-        let Some(o) = obj.to_object(scope) else { continue };
-        let names = object_keys(scope, global, obj);
-        let clone = v8::Object::new(scope);
-        for n in &names {
-            if let Some(k) = v8::String::new(scope, n) {
-                if let Some(v) = o.get(scope, k.into()) {
-                    clone.set(scope, k.into(), v);
+        // (exports that are not an object have nothing to snapshot)
+        if let Some(o) = obj.to_object(scope) {
+            let names = object_keys(scope, global, obj);
+            let clone = v8::Object::new(scope);
+            for n in &names {
+                if let Some(k) = v8::String::new(scope, n) {
+                    if let Some(v) = o.get(scope, k.into()) {
+                        clone.set(scope, k.into(), v);
+                    }
                 }
             }
+            let clone_val: v8::Local<v8::Value> = clone.into();
+            let cg = v8::Global::new(scope, clone_val);
+            SETUP_MOCK_SNAPSHOT.with(|s| s.borrow_mut().insert(p, cg));
         }
-        let clone_val: v8::Local<v8::Value> = clone.into();
-        let cg = v8::Global::new(scope, clone_val);
-        SETUP_MOCK_SNAPSHOT.with(|s| s.borrow_mut().insert(p, cg));
     }
 }
 
@@ -116,8 +126,7 @@ fn restore_setup_mocks(scope: &mut v8::PinScope) {
     let snaps: Vec<(PathBuf, v8::Global<v8::Value>)> =
         SETUP_MOCK_SNAPSHOT.with(|s| s.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect());
     let global = scope.get_current_context().global(scope);
-    for (p, cg) in snaps {
-        let Some(lg) = REGISTRY.with(|r| r.borrow().cjs_exports.get(&p).cloned()) else { continue };
+    for (_, cg, lg) in live_cjs_exports(snaps) {
         let live = v8::Local::new(scope, &lg);
         let clone = v8::Local::new(scope, &cg);
         if let (Some(dst), Some(src)) = (live.to_object(scope), clone.to_object(scope)) {
@@ -672,6 +681,15 @@ fn is_asset(path: &Path) -> bool {
                 | "webm" | "wav" | "mp3" | "txt" | "md"
         )
     )
+}
+
+/// The origin of a CommonJS module wrapper (a classic script) named `name`: as
+/// [`module_origin`]'s, not a module.
+fn script_origin<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    name: v8::Local<'s, v8::String>,
+) -> v8::ScriptOrigin<'s> {
+    v8::ScriptOrigin::new(scope, name.into(), 0, 0, false, 123, None, false, false, false, None)
 }
 
 fn module_origin<'s>(
@@ -3134,8 +3152,8 @@ fn drain_pending_mocks(scope: &mut v8::PinScope, base_dir: &Path, skip_relative:
     // `vi.mocked(<named import>)` is undefined / points at the real export bug).
     let mut retained: Vec<v8::Local<v8::Value>> = Vec::new();
     for i in 0..arr.length() {
-        let Some(item_val) = arr.get_index(scope, i) else { continue };
-        let Some(item) = v8::Local::<v8::Object>::try_from(item_val).ok() else {
+        let item = arr.get_index(scope, i).and_then(|v| v8::Local::<v8::Object>::try_from(v).ok());
+        let Some(item) = item else {
             continue;
         };
         let Some(spec) = item.get(scope, spec_key.into()).map(|v| v.to_rust_string_lossy(scope)) else {
@@ -3144,7 +3162,7 @@ fn drain_pending_mocks(scope: &mut v8::PinScope, base_dir: &Path, skip_relative:
         let _ = skip_relative;
         let exports = item.get(scope, exp_key.into()).unwrap_or_else(|| v8::undefined(scope).into());
         if exports.is_promise() || is_thenable(scope, exports) {
-            retained.push(item_val); // unresolved factory — defer to the outer drain
+            retained.push(item.into()); // unresolved factory — defer to the outer drain
             continue;
         }
         if exports.is_undefined() {
@@ -3166,8 +3184,8 @@ fn drain_pending_mocks(scope: &mut v8::PinScope, base_dir: &Path, skip_relative:
 /// detected separately via `is_promise()`; both kinds must be deferred, not registered as mocks.
 fn is_thenable(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> bool {
     let Ok(obj) = v8::Local::<v8::Object>::try_from(val) else { return false };
-    let Some(k) = v8::String::new(scope, "then") else { return false };
-    obj.get(scope, k.into()).map(|v| v.is_function()).unwrap_or(false)
+    let then = v8::String::new(scope, "then");
+    then.and_then(|k| obj.get(scope, k.into())).is_some_and(|v| v.is_function())
 }
 
 // ---- CommonJS -------------------------------------------------------------
@@ -3214,7 +3232,8 @@ fn compile_cjs_cached<'s>(
         if !bytes.is_empty() {
             let cached = v8::CachedData::new(&bytes);
             let mut source = sc::Source::new_with_cached_data(code, None, cached);
-            let compiled = sc::compile(scope, &mut source, sc::CompileOptions::ConsumeCodeCache, sc::NoCacheReason::NoReason);
+            let (consume, reason) = (sc::CompileOptions::ConsumeCodeCache, sc::NoCacheReason::NoReason);
+            let compiled = sc::compile(scope, &mut source, consume, reason);
             // `bytes` stays alive through this block (Source borrowed it for the compile).
             if let Some(s) = compiled {
                 return Some(s);
@@ -3223,7 +3242,8 @@ fn compile_cjs_cached<'s>(
     }
     // Miss/reject: compile fresh and persist the bytecode for next time.
     let mut source = sc::Source::new(code, None);
-    let script = sc::compile(scope, &mut source, sc::CompileOptions::NoCompileOptions, sc::NoCacheReason::NoReason)?;
+    let (options, reason) = (sc::CompileOptions::NoCompileOptions, sc::NoCacheReason::NoReason);
+    let script = sc::compile(scope, &mut source, options, reason)?;
     if let Some(cc) = script.get_unbound_script(scope).create_code_cache() {
         write_atomic_bytes(&path, &cc);
     }
@@ -3253,9 +3273,7 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
         let tc = std::pin::pin!(v8::TryCatch::new(scope));
         let tc = &mut tc.init();
         let origin = if crate::coverage::enabled() {
-            v8::String::new(tc, &abs.to_string_lossy()).map(|name| {
-                v8::ScriptOrigin::new(tc, name.into(), 0, 0, false, 123, None, false, false, false, None)
-            })
+            v8::String::new(tc, &abs.to_string_lossy()).map(|name| script_origin(tc, name))
         } else {
             None
         };
@@ -3342,11 +3360,9 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
         );
         if r.is_none() && tc.has_caught() && std::env::var("TURBO_CJS_DEBUG").is_ok() {
             let stk = tc.stack_trace().map(|s| s.to_rust_string_lossy(tc)).unwrap_or_default();
-            eprintln!("  cjs body threw: {} :: {} :: {}",
-                abs.display(),
-                tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_default(),
-                stk.lines().take(4).collect::<Vec<_>>().join(" | ")
-            );
+            let exc = tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_default();
+            let top = stk.lines().take(4).collect::<Vec<_>>().join(" | ");
+            eprintln!("  cjs body threw: {} :: {exc} :: {top}", abs.display());
         }
         let exc = if r.is_none() {
             tc.exception().map(|e| v8::Global::new(tc, e))

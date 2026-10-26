@@ -195,7 +195,8 @@ impl<'a> EmitState<'a, '_> {
     /// `f(arg)` for a global function name.
     fn call_global(&self, name: &str, arg: Expression<'a>) -> Expression<'a> {
         let callee = self.ast.expression_identifier(SPAN, self.ast.ident(name));
-        self.ast.expression_call(SPAN, callee, NONE, self.ast.vec1(Argument::from(arg)), false)
+        let args = self.ast.vec1(Argument::from(arg));
+        self.ast.expression_call(SPAN, callee, NONE, args, false)
     }
 
     /// `object.method(args…)`.
@@ -471,17 +472,17 @@ fn lower<'a>(
     map_src: Option<(&Path, &'a str)>,
 ) -> Option<(ModuleParts, Option<String>)> {
     let stype = SourceType::mjs();
-    let Plan { imports, requires, re_exports, exports, body_stmts, default_needs_rewrite } =
-        plan(&ast, &scoping, ctx, program)?;
+    let p = plan(&ast, &scoping, ctx, program)?;
+    let (requires, re_exports, exports) = (p.requires, p.re_exports, p.exports);
 
     let mut state = EmitState {
         ast,
-        imports,
+        imports: p.imports,
         scoping,
         resolve: ctx.resolve,
         uses_to_esm: false,
     };
-    let mut body = body_stmts;
+    let mut body = p.body_stmts;
     for stmt in body.iter_mut() {
         state.visit_statement(stmt);
     }
@@ -489,7 +490,8 @@ fn lower<'a>(
     // codegen resolves sourcemap spans against `program.source_text` (NOT with_source_text), so the
     // synthetic program must carry the ORIGINAL source text for the map to point at the .ts lines.
     let prog_src = map_src.map(|(_, s)| s).unwrap_or("");
-    let prog2 = ast.program(SPAN, stype, prog_src, ast.vec(), None, ast.vec(), ast.vec_from_iter(body));
+    let body = ast.vec_from_iter(body);
+    let prog2 = ast.program(SPAN, stype, prog_src, ast.vec(), None, ast.vec(), body);
     let (mut body_code, mappings) = match map_src {
         Some((path, _)) => {
             let ret = Codegen::new()
@@ -502,13 +504,13 @@ fn lower<'a>(
         }
         None => (Codegen::new().build(&prog2).code, None),
     };
-    if default_needs_rewrite {
+    if p.default_needs_rewrite {
         // same-line replacement → does not shift line numbers, map stays valid.
         body_code = body_code.replacen("export default ", "var __tt_default = ", 1);
     }
 
     let has_module_syntax =
-        !(requires.is_empty() && re_exports.is_empty() && exports.is_empty() && !default_needs_rewrite);
+        !(requires.is_empty() && re_exports.is_empty() && exports.is_empty() && !p.default_needs_rewrite);
     let uses_to_esm = state.uses_to_esm;
     Some((
         ModuleParts {
