@@ -49,6 +49,10 @@ subcommand layer** — `argv[0]` that isn't a flag is treated as a test-file pat
 | `--coverage-reporter[s] a,b` | ✅ | `lcov,json-summary,text,html`. |
 | `--coverage-include GLOB` / `--coverage-exclude GLOB` | ✅ | Brace-alternation; auto-read from config. |
 
+> Every value flag accepts both the space form and vitest's inline form (`--reporter json` ≡
+> `--reporter=json`, `--testTimeout=5000`, `--shard=1/2`, `--outputFile=out/r.xml`, …; the value is
+> everything after the first `=`).
+
 > Note: turbo-test's coverage flags use a `--coverage-*` namespace, **not** vitest's dotted
 > `--coverage.*` form (`--coverage.reporter`, `--coverage.thresholds.lines`). A vitest invocation
 > using dotted coverage flags would not be understood. See §3 dotted-flag gap.

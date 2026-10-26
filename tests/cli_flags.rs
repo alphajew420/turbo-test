@@ -133,6 +133,33 @@ fn test_timeout_flag_and_config() {
     let r = tt(&p, &[]);
     assert!(r.stdout.contains("timed out in 40ms"), "{}", r.all());
     assert_eq!(tt(&p, &["--testTimeout=5000"]).code, Some(0));
+    // turbo-test#32 item 2: the inline form is honoured too (and, being passed, the config's
+    // value is not injected over it)
+    let r = tt(&p, &["--testTimeout=60"]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(r.stdout.contains("timed out in 60ms"), "{}", r.all());
+}
+
+#[test]
+fn inline_value_flags_end_to_end() {
+    // turbo-test#32 item 2: `--reporter=json` was warned about and ignored (text reporter ran).
+    let p = Project::new("flag-inline");
+    p.file("a.test.js", "test('a', () => {})\n");
+    let r = tt(&p, &["--reporter=json", "a.test.js"]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(
+        !r.stderr.contains("ignoring unsupported flag"),
+        "{}",
+        r.all()
+    );
+    assert_eq!(json_report(&r)["numPassedTests"], 1);
+    let r = tt(
+        &p,
+        &["--reporter=tap", "--outputFile=out/r.tap", "a.test.js"],
+    );
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    let tap = std::fs::read_to_string(p.path("out/r.tap")).unwrap();
+    assert!(tap.starts_with("TAP version 13\n1..1\nok 1 - a"), "{tap}");
 }
 
 #[test]

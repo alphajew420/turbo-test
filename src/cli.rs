@@ -139,6 +139,22 @@ pub fn default_jobs(turbo_jobs: Option<&str>) -> usize {
     })
 }
 
+/// Value-taking vitest flags with no effect on turbo-test (their value is consumed and dropped).
+const IGNORED_VALUE_FLAGS: [&str; 5] = [
+    "--pool",
+    "--mode",
+    "--project",
+    "--exclude",
+    "--maxConcurrency",
+];
+
+/// Whether `key` (the part of a `--key=value` token before the first `=`) is a runner value flag,
+/// so the token is its inline form rather than an unknown flag.
+fn takes_inline_value(key: &str) -> bool {
+    key.starts_with("--")
+        && (crate::launcher::VALUE_FLAGS.contains(&key) || IGNORED_VALUE_FLAGS.contains(&key))
+}
+
 /// Parse the runner flags + test files (the launcher already consumed its own flags and resolved
 /// the file set). Pure: env vars, coverage calls and warnings are returned, not applied.
 pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) -> Options {
@@ -156,18 +172,26 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
     };
     let mut args = argv.into_iter();
     while let Some(a) = args.next() {
-        match a.as_str() {
+        // `--flag=value` (vitest/cac accept it for every value flag) is the one-token form of
+        // `--flag value`: split it so both forms share one arm. The inline value is the WHOLE
+        // value (`--testNamePattern=a=b` → `a=b`) and the next token is never consumed for it.
+        let (key, mut inline) = match a.split_once('=') {
+            Some((k, v)) if takes_inline_value(k) => (k.to_string(), Some(v.to_string())),
+            _ => (a.clone(), None),
+        };
+        let mut value = || inline.take().or_else(|| args.next());
+        match key.as_str() {
             // `--maxWorkers N` is vitest's name for the worker count → maps to --jobs.
             "--jobs" | "-j" | "--maxWorkers" => {
-                o.jobs = args.next().and_then(|v| v.parse().ok()).unwrap_or(o.jobs)
+                o.jobs = value().and_then(|v| v.parse().ok()).unwrap_or(o.jobs)
             }
             // turbo-test has no minimum-worker concept; accept-and-ignore the value (documented).
             "--minWorkers" => {
-                let _ = args.next();
+                let _ = value();
             }
             // `--testTimeout N` → default per-test timeout (ms); runtime reads __TT_DEFAULT_TIMEOUT.
             "--testTimeout" => {
-                if let Some(v) = args.next() {
+                if let Some(v) = value() {
                     if v.parse::<u64>().is_ok() {
                         o.env.push(("TURBO_TEST_TIMEOUT", v));
                     }
@@ -175,21 +199,21 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
             }
             // `--retry N` → global default retry count; runtime reads __TT_DEFAULT_RETRY.
             "--retry" => {
-                if let Some(v) = args.next() {
+                if let Some(v) = value() {
                     if v.parse::<u64>().is_ok() {
                         o.env.push(("TURBO_TEST_RETRY", v));
                     }
                 }
             }
             // `--bail N` → stop the run after N failed tests total (cross-worker, file-granular).
-            "--bail" => o.bail = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            "--bail" => o.bail = value().and_then(|v| v.parse().ok()).unwrap_or(0),
             // `--silent` → suppress test console.* output; runtime reads __TT_SILENT.
             "--silent" => o.env.push(("TURBO_TEST_SILENT", "1".to_string())),
             // `--allowOnly` / `--no-allowOnly` → permit (default) or forbid stray `.only` tests.
             "--allowOnly" => o.allow_only = true,
             "--no-allowOnly" => o.allow_only = false,
             "--shard" => {
-                if let Some(v) = args.next() {
+                if let Some(v) = value() {
                     if let Some((i, n)) = v.split_once('/') {
                         if let (Ok(i), Ok(n)) = (i.parse(), n.parse()) {
                             o.shard = Some((i, n));
@@ -200,15 +224,15 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
             // `--reporter <r>`: select an output reporter. Implemented: default, dot, json,
             // junit, tap, verbose. Any other value (html, tap-flat, hanging-process, …) is
             // accepted-and-ignored → falls back to the text reporter (never an error).
-            "--reporter" | "--reporters" => o.reporter = Reporter::parse(args.next().as_deref()),
+            "--reporter" | "--reporters" => o.reporter = Reporter::parse(value().as_deref()),
             // `--outputFile <path>`: write the active reporter's output to a file (vitest writes
             // the reporter artifact here — JUnit XML, TAP, JSON). Text/dot/verbose still print.
-            "--outputFile" | "--output-file" => o.output_file = args.next(),
+            "--outputFile" | "--output-file" => o.output_file = value(),
             // `-t <re>` / `--testNamePattern <re>` — run only tests whose full `describe > it`
             // name matches the regex (vitest semantics: unanchored, case-sensitive). Plumbed to
             // the runtime via env → `globalThis.__TT_NAME_PATTERN` (see runner bootstrap).
             "-t" | "--testNamePattern" => {
-                if let Some(v) = args.next() {
+                if let Some(v) = value() {
                     o.env.push(("TURBO_TEST_NAME_PATTERN", v));
                 }
             }
@@ -219,14 +243,14 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
             // `--coverage-dir <path>` sets the lcov output dir (and implies --coverage).
             "--coverage-dir" => {
                 o.coverage.push(CoverageOp::Enable);
-                if let Some(d) = args.next() {
+                if let Some(d) = value() {
                     o.coverage.push(CoverageOp::OutDir(d));
                 }
             }
             // `--coverage-thresholds lines=90,functions=80,branches=80` — gate (implies --coverage).
             "--coverage-thresholds" | "--coverage-threshold" => {
                 o.coverage.push(CoverageOp::Enable);
-                if let Some(v) = args.next() {
+                if let Some(v) = value() {
                     o.coverage.push(CoverageOp::Thresholds(v));
                 }
             }
@@ -238,7 +262,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
             // `--coverage-reporter lcov,json-summary,text,html` (repeatable / comma-list).
             "--coverage-reporter" | "--coverage-reporters" => {
                 o.coverage.push(CoverageOp::Enable);
-                if let Some(v) = args.next() {
+                if let Some(v) = value() {
                     o.coverage.push(CoverageOp::Reporters(v));
                 }
             }
@@ -246,24 +270,23 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
             // launcher.
             "--coverage-include" => {
                 o.coverage.push(CoverageOp::Enable);
-                if let Some(v) = args.next() {
+                if let Some(v) = value() {
                     o.coverage.push(CoverageOp::Include(v));
                 }
             }
             "--coverage-exclude" => {
                 o.coverage.push(CoverageOp::Enable);
-                if let Some(v) = args.next() {
+                if let Some(v) = value() {
                     o.coverage.push(CoverageOp::Exclude(v));
                 }
             }
             // `--no-file-parallelism` (vitest: run test files serially) → jobs = 1.
             "--no-file-parallelism" => o.jobs = 1,
             // Value-taking vitest flags with no effect on a native single-run runner. Consume the
-            // following value token (the space form — the launcher forwards flag+value together)
-            // so it isn't mistaken for a test-file path. The `--flag=value` inline form is one
-            // token, absorbed by the `starts_with` catch-all below (nothing to consume).
+            // value (inline, or the following token — the launcher forwards flag+value together)
+            // so it isn't mistaken for a test-file path.
             "--pool" | "--mode" | "--project" | "--exclude" | "--maxConcurrency" => {
-                let _ = args.next();
+                let _ = value();
             }
             // Boolean / no-effect vitest flags — silently accepted (NOT warned) so scripts and CI
             // passing them stay quiet.
@@ -279,12 +302,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
             | "--segfaultRetry"
             | "--printConsoleTrace"
             | "--disableConsoleIntercept" => {}
-            _ if a.starts_with("--pool=")
-                || a.starts_with("--mode=")
-                || a.starts_with("--project=")
-                || a.starts_with("--exclude=")
-                || a.starts_with("--maxConcurrency=")
-                || a.starts_with("--sequence")
+            _ if a.starts_with("--sequence")
                 || a.starts_with("--inspect")
                 || a.starts_with("--browser") => {}
             // Unknown `-`/`--` token: a vitest flag turbo-test does not model. Warn + ignore —

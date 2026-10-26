@@ -300,16 +300,87 @@ fn parse_ignored_vitest_flags() {
 
 #[test]
 fn parse_unknown_flags_warn() {
-    let o = parse(&["--frobnicate", "a.test.ts", "-z", "--reporter=json"]);
+    let o = parse(&["--frobnicate", "a.test.ts", "-z", "--silent=yes"]);
     assert_eq!(o.files, vec![PathBuf::from("a.test.ts")]);
     assert_eq!(
         o.warnings,
         vec![
             "turbo-test: ignoring unsupported flag '--frobnicate'".to_string(),
             "turbo-test: ignoring unsupported flag '-z'".to_string(),
-            "turbo-test: ignoring unsupported flag '--reporter=json'".to_string(),
+            "turbo-test: ignoring unsupported flag '--silent=yes'".to_string(),
         ]
     );
+}
+
+#[test]
+fn parse_inline_value_forms() {
+    // turbo-test#32 item 2: every value flag also takes `--flag=value` (one token, nothing more
+    // consumed), exactly like its space form.
+    use CoverageOp::*;
+    let o = parse(&[
+        "--jobs=3",
+        "--testTimeout=250",
+        "--retry=2",
+        "--bail=1",
+        "--shard=1/2",
+        "--reporter=json",
+        "--outputFile=out.json",
+        "--testNamePattern=a=b",
+        "--coverage-dir=cov",
+        "--coverage-thresholds=lines=90",
+        "--coverage-reporter=lcov",
+        "--coverage-include=src/**",
+        "--coverage-exclude=x.ts",
+        "--pool=forks",
+        "a.test.ts",
+    ]);
+    assert_eq!(o.files, vec![PathBuf::from("a.test.ts")]);
+    assert!(o.warnings.is_empty(), "{:?}", o.warnings);
+    assert_eq!(o.jobs, 3);
+    assert_eq!((o.bail, o.shard), (1, Some((1, 2))));
+    assert_eq!(o.reporter, Reporter::Json);
+    assert_eq!(o.output_file.as_deref(), Some("out.json"));
+    assert_eq!(
+        o.env,
+        vec![
+            ("TURBO_TEST_TIMEOUT", "250".to_string()),
+            ("TURBO_TEST_RETRY", "2".to_string()),
+            ("TURBO_TEST_NAME_PATTERN", "a=b".to_string()),
+        ]
+    );
+    assert_eq!(
+        o.coverage,
+        vec![
+            Enable,
+            OutDir("cov".into()),
+            Enable,
+            Thresholds("lines=90".into()),
+            Enable,
+            Reporters("lcov".into()),
+            Enable,
+            Include("src/**".into()),
+            Enable,
+            Exclude("x.ts".into()),
+        ]
+    );
+    for (f, r) in [
+        ("--reporters=tap", Reporter::Tap),
+        ("--maxWorkers=5", Reporter::Default),
+    ] {
+        assert_eq!(parse(&[f]).reporter, r, "{f}");
+    }
+    assert_eq!(parse(&["--maxWorkers=5"]).jobs, 5);
+    assert_eq!(
+        parse(&["--output-file=p.xml"]).output_file.as_deref(),
+        Some("p.xml")
+    );
+    // the inline value is the whole value: the next token stays a file
+    let o = parse(&["--minWorkers=2", "--reporter=", "b.test.ts"]);
+    assert_eq!(o.files, vec![PathBuf::from("b.test.ts")]);
+    assert_eq!((o.jobs, o.reporter), (7, Reporter::Default));
+    // invalid inline numbers are ignored like their space forms
+    assert!(parse(&["--testTimeout=soon", "--retry=-1"]).env.is_empty());
+    assert_eq!(parse(&["--bail=x"]).bail, 0);
 }
 
 #[test]
