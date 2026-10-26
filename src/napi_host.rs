@@ -1165,9 +1165,13 @@ pub unsafe extern "C" fn napi_get_reference_value(
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_delete_reference(env: napi_env, r: napi_ref) -> napi_status {
+    // as Node (CHECK_ARG(env, ref)): a NULL reference is napi_invalid_arg
+    if r.is_null() {
+        return napi_invalid_arg;
+    }
     let e = &mut *env;
     let id = r as usize;
-    if id >= 1 && id <= e.refs.len() {
+    if id <= e.refs.len() {
         e.refs[id - 1] = None;
     }
     napi_ok

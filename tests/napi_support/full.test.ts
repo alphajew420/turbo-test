@@ -677,8 +677,11 @@ describe('references', () => {
     expect(a.status()).toBe(INVALID_ARG);
     expect(a.deref(1e6)).toBe(undefined);
     expect(a.status()).toBe(INVALID_ARG);
-    expect(a.delRef(0)).toBe(OK);
     expect(a.delRef(1e6)).toBe(OK);
+  });
+
+  test('napi_delete_reference of a NULL reference is napi_invalid_arg', () => {
+    expect(a.delRef(0)).toBe(INVALID_ARG);
   });
 });
 

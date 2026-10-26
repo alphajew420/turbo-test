@@ -36,7 +36,7 @@ fn every_implemented_entrypoint_behaves() {
     let p = project("napi-full");
     compile_addon(&p, "full");
     p.file("full.test.ts", spec("full.test.ts"));
-    assert_all_pass(&p, 40);
+    assert_all_pass(&p, 41);
 }
 
 #[test]
