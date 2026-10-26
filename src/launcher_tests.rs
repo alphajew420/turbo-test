@@ -862,14 +862,13 @@ fn plan_forwards_runner_flags() {
             "json",
             "-j",
             "2",
-            "--bail",
             "--retry",
             "1",
             "--frob",
             &fs,
             "--silent",
             "-t",
-            "-x",
+            "adds",
             "--no-file-parallelism",
         ],
     );
@@ -880,22 +879,49 @@ fn plan_forwards_runner_flags() {
             "json",
             "-j",
             "2",
-            "--bail",
             "--retry",
             "1",
             "--frob",
             "--silent",
             "-t",
-            "-x",
+            "adds",
             "--no-file-parallelism",
             &fs
         ])
     );
-    // a value-flag at the very end forwards alone
+    assert!(p.messages.is_empty(), "{:?}", p.messages);
+    // turbo-test#32 item 3: a value flag with NO value (the last token, or followed by another
+    // flag) is dropped with a warning. Forwarded alone it sat right before the appended files,
+    // so the runner took the first test file as its value (`a.test.js --reporter` → usage
+    // error; `-t` → the path became the name pattern).
+    for flag in [
+        "--outputFile",
+        "--reporter",
+        "-t",
+        "--testNamePattern",
+        "--shard",
+    ] {
+        let p = run_plan(&t, &[&fs, flag]);
+        assert_eq!(argv(&p), vec![fs.clone()], "{flag}");
+        assert_eq!(
+            p.messages,
+            vec![format!("turbo-test: ignoring '{flag}': missing value")],
+            "{flag}"
+        );
+    }
+    let p = run_plan(&t, &["--bail", "--retry", "1", "-t", "-x", &fs]);
+    assert_eq!(argv(&p), args(&["--retry", "1", "-x", &fs]));
     assert_eq!(
-        argv(&run_plan(&t, &[&fs, "--outputFile"])),
-        args(&["--outputFile", &fs])
+        p.messages,
+        vec![
+            "turbo-test: ignoring '--bail': missing value".to_string(),
+            "turbo-test: ignoring '-t': missing value".to_string(),
+        ]
     );
+    // a value-less `--coverage-*` value flag still implies --coverage (as in the runner)
+    let p = run_plan(&t, &[&fs, "--coverage-dir"]);
+    assert_eq!(argv(&p), args(&["--coverage", &fs]));
+    assert_eq!(p.messages.len(), 1);
     // inline value forms are forwarded as one token
     assert_eq!(
         argv(&run_plan(&t, &["--reporter=tap", &fs])),
@@ -1007,6 +1033,10 @@ fn plan_isolate_environment_and_root_flags() {
     assert_eq!(argv(&p), vec![t.p("plain/b.test.ts")]);
     // `--root ""` is an empty discovery root (nothing found), like the original
     assert_eq!(run_plan(&t, &["--root="]).outcome, Err(1));
+    // a value-less trailing --testTimeout is dropped (turbo-test#32 item 3), so it no longer
+    // counts as passed: the config's value is injected
+    let p = run_plan(&t, &["--root", "proj", "--testTimeout"]);
+    assert_eq!(argv(&p), args(&["--testTimeout", "1234", &a]));
 }
 
 #[test]

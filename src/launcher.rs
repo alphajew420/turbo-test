@@ -1207,13 +1207,25 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
             continue;
         }
 
-        if a.starts_with('-') {
-            forward.push(a.clone());
+        if flag_takes_value(&a) {
             // forward a value-flag's following value too (so it isn't seen as a file).
-            if flag_takes_value(&a) && i + 1 < raw.len() && !raw[i + 1].starts_with('-') {
+            if i + 1 < raw.len() && !raw[i + 1].starts_with('-') {
+                forward.push(a.clone());
                 forward.push(raw[i + 1].clone());
                 i += 1;
+            } else {
+                // No value (last token, or another flag follows). Forwarded alone it would sit
+                // right before the appended test files and the runner would take the first FILE
+                // as its value (`a.test.js --reporter` → usage error; `-t` → the path became the
+                // name pattern). Drop it with a warning; a `--coverage-*` one still implies
+                // --coverage, as it does in the runner.
+                messages.push(format!("turbo-test: ignoring '{a}': missing value"));
+                if a.starts_with("--coverage") {
+                    forward.push("--coverage".to_string());
+                }
             }
+        } else if a.starts_with('-') {
+            forward.push(a.clone());
         } else if !a.is_empty() {
             // skip empty args (e.g. a stray "" from a shell wrapper) — they'd be treated as a
             // missing file and abort the whole run.

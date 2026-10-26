@@ -51,7 +51,10 @@ subcommand layer** — `argv[0]` that isn't a flag is treated as a test-file pat
 
 > Every value flag accepts both the space form and vitest's inline form (`--reporter json` ≡
 > `--reporter=json`, `--testTimeout=5000`, `--shard=1/2`, `--outputFile=out/r.xml`, …; the value is
-> everything after the first `=`).
+> everything after the first `=`). A value flag given WITHOUT a value (the last token, or followed
+> by another `-` token) is dropped with a `turbo-test: ignoring '<flag>': missing value` warning
+> (a value-less `--coverage-*` still implies `--coverage`); it never swallows a test-file path.
+> A value that itself starts with `-` needs the inline form (`--testNamePattern=-x`).
 
 > Note: turbo-test's coverage flags use a `--coverage-*` namespace, **not** vitest's dotted
 > `--coverage.*` form (`--coverage.reporter`, `--coverage.thresholds.lines`). A vitest invocation

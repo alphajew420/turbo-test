@@ -88,6 +88,29 @@ fn subcommands_and_noop_flags_are_stripped() {
 }
 
 #[test]
+fn trailing_value_flag_without_value_keeps_the_test_file() {
+    // turbo-test#32 item 3: `a.test.ts --reporter` printed the usage line (exit 2) because the
+    // runner took the file as --reporter's value; with `-t` the path became the name pattern.
+    let p = Project::new("launch-valueless");
+    p.file("a.test.ts", PASS);
+    for flag in ["--reporter", "-t", "--outputFile"] {
+        let r = tt(&p, &["a.test.ts", flag]);
+        assert_eq!(r.code, Some(0), "{flag}: {}", r.all());
+        assert!(
+            r.stdout.contains("PASS  a.test.ts  (1 passed, 0 failed)"),
+            "{flag}: {}",
+            r.all()
+        );
+        assert!(
+            r.stderr
+                .contains(&format!("turbo-test: ignoring '{flag}': missing value")),
+            "{flag}: {}",
+            r.all()
+        );
+    }
+}
+
+#[test]
 fn environment_flag_and_config() {
     let p = Project::new("launch-env");
     p.file(
