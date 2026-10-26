@@ -157,6 +157,56 @@ Transform (turbo-test#35):
   `import_x["a-b"]` instead of `import_x.a-b` ("b is not defined"); export keys with `\` or
   line terminators are escaped correctly (item 2).
 
+The bugs found while fixing those (turbo-test#37-#41) are filed and fixed too.
+
+Native ESM->CJS emitter (turbo-test#37):
+- A module whose only import is a dynamic `import()` no longer fails with `__toESM is not
+  defined` (item 1).
+- `import()` of a module that throws returns a rejected promise instead of throwing
+  synchronously: the load is deferred (`Promise.resolve().then(() => __toESM(require(x)))`),
+  a computed specifier is evaluated at the call as in Node/vitest, and in the native
+  dependency bundler `import()` of an already-bundled module reuses that instance (item 2).
+- Module specifiers containing `"` or `\` are emitted as escaped string literals in
+  `require(...)`; the invalid native output used to be silently replaced by the esbuild
+  retry (item 3).
+
+Runtime (turbo-test#38):
+- The `URL` polyfill resolves relative references like Node's WHATWG `URL` (it appended the
+  reference to the whole base: `new URL('./x.json', 'file:///d/a.test.ts').pathname` was
+  `/d/a.test.ts/./x.json`), so `new URL(rel, import.meta.url)` works; dot segments are
+  normalized (item 1).
+- An entry file's hoisted `vi.mock` / `jest.mock` factory runs once (it ran in the mock
+  prepass and again in the module body) (item 2).
+- A setup file that throws (or fails to load or link) fails every test file using it with
+  `setup file <path>: <error>`, as in vitest; it was silently ignored. Under isolate reuse
+  the error fails every file on that worker (item 3).
+- Without esbuild, the entry's mock factories see the file's `vi.hoisted` values (item 4)
+  and async factories are awaited before the entry links (item 5).
+
+Mock resolution (turbo-test#39):
+- `vi.doMock` followed by `import()` returns the mock on the ESM graph and the `TURBO_NO_MR`
+  bundle path too, also for a module imported (real) before (item 1).
+- A mock whose specifier has a `?query` is a module id of its own: `vi.mock('./x.js?raw', …)`
+  no longer replaces the mock of `./x.js` (item 2).
+
+Coverage (turbo-test#40):
+- An `if` without `else` whose consequent always ran was reported as then 0 / else N, and a
+  later nested function's range could be taken as the else-count. The then-count is now
+  sampled at the consequent (as vitest's v8 provider does) and else = if-count - then;
+  matches vitest 4.1.12 on a 119-module corpus of if/else/ternary/logical shapes (item 1).
+
+Node-API host (turbo-test#41):
+- `napi_call_function` with `argc > 0` and a NULL `argv`, `napi_get_value_string_utf8` with
+  a NULL `buf` and NULL `result`, and `napi_delete_reference(NULL)` return
+  `napi_invalid_arg` as in Node (items 1-3).
+- `napi_wrap`, `napi_unwrap` and `napi_remove_wrap` are implemented with Node semantics
+  (one wrap per object, weak optional result reference, `remove_wrap` doesn't finalize,
+  finalizers on collection and at env teardown), so ObjectWrap-style addons can construct
+  objects (item 4).
+- Addon module init runs under the addon lock like every other entry into addon code, so
+  two workers loading the same `.node` no longer run its init concurrently; a nested
+  `require()` of a `.node` during init still works (item 5).
+
 ### Removed
 - runner.rs dead code listed in turbo-test#31 (`kind_of`, `mock_specifiers`,
   `is_react_family`), and the "mocked but no exports" fallbacks of `native_require` /
@@ -188,6 +238,8 @@ Transform (turbo-test#35):
   "script with no ranges" skip, which V8 precise coverage never triggers. 61 new
   regression tests (455 Rust tests, 64 `npm test`); new integration files
   `tests/runner_c_config.rs`, `tests/runner_c_mocks.rs`, `tests/runner_c_node.rs`.
+  After the turbo-test#37-#41 fixes: 6578/6579 lines (99.98%), 476 Rust tests, new files
+  `tests/runner_c_runtime.rs` and `tests/runner_c_mockres.rs`.
 - Testability refactors, output byte-identical: `src/bin/turbo_test.rs` is now a thin
   wrapper over the new `cli` module (argument parsing, the retry/fresh-isolate policy,
   the worker pool and pure reporter renderers); `launcher::prepare` wraps a side-effect-free
