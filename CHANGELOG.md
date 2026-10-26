@@ -71,6 +71,11 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - `-t` / `--testNamePattern` is matched against vitest's full name, the `describe` names and the
   test's joined with a space (turbo-test#66); it was matched against `describe > test`, so
   `-t "outer inner"` ran nothing and `-t "outer > inner"` ran what vitest skips.
+- `test.each` / `it.each` / `describe.each` titles are formatted as vitest formats them
+  (turbo-test#67): printf placeholders (`%s %d %i %f %j %o %O %c %%`), `%#` / `%$`, `$key` /
+  `$a.b` attributes and the tagged-template table, values rendered like vitest's `inspect`. They
+  were the template plus ` [i]` (`describe.each` kept the bare template), and a tagged table was
+  read as one row per cell.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

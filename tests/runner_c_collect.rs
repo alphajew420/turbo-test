@@ -162,7 +162,6 @@ test.each([[1]])('json %j %c%s', () => {})
 "#;
 
 #[test]
-#[ignore = "turbo-test#67: fails until the fix"]
 fn each_titles_are_formatted_like_vitest() {
     // turbo-test#67: `.each` titles were the template plus ` [i]` (`num %i [0]`) and
     // `describe.each` kept the template. Expected = vitest 4.1.12's names for the same file.

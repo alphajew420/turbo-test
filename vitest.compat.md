@@ -127,7 +127,7 @@ Mostly strong. Notable gaps:
 
 | API | status | Notes |
 |---|---|---|
-| `describe` / `.skip` / `.only` / `.each` | ✅ | `.each` template-name function form supported. |
+| `describe` / `.skip` / `.only` / `.each` | ✅ | `.each` titles are formatted as vitest's `formatTitle`: printf placeholders (`%s %d %i %f %j %o %O %c %%`), `%#` / `%$`, `$key` / `$a.b` / `$0` attributes and the tagged-template table, with values rendered as vitest's loupe `inspect` / `objDisplay`. A function title is its `name`, as in vitest. |
 | `describe.todo` / `.skipIf` / `.runIf` / `.concurrent` | ✅ | All four added (`runtime.js`). `todo` registers nothing; `skipIf`/`runIf` register the whole block only when the condition allows; `concurrent` is an accepted alias (tests still run **sequentially** within a file). |
 | `it`/`test`, `.skip`/`.only`/`.todo`/`.each`/`.skipIf`/`.runIf` | ✅ | |
 | `it.concurrent` | 🟡 | Accepted as alias; tests still run **sequentially** within a file. |

@@ -2666,6 +2666,296 @@ globalThis.jest = {
   replaceProperty: (obj, key, val) => { const orig = obj[key]; obj[key] = val; return { restore: () => { obj[key] = orig; } }; },
 };
 
+// ---- test.each / describe.each titles (turbo-test#67) ----
+// vitest's `formatTitle` (@vitest/runner): `%#` / `%$` (index / index + 1), printf placeholders
+// (`%s %d %i %f %j %o %O %c %%`, each formatting ONE row item as @vitest/utils `format` does) and
+// `$key` / `$a.b` / `$0` attributes shown as `objDisplay`. Values are rendered the way vitest's
+// loupe `inspect` renders them (`'str'`, `[ 1, 2 ]`, `{ a: 1 }`, `[Function f]`, `+0`).
+const __inspectEsc = /['\u0000-\u001f\u007f-\u009f\u00ad\u0600-\u0604\u070f\u17b4\u17b5\u200c-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff0-\uffff]/g;
+const __inspectEscMap = { '\b': '\\b', '\t': '\\t', '\n': '\\n', '\f': '\\f', '\r': '\\r', "'": "\\'" };
+function __inspectTrunc(str, len) {
+  str = String(str);
+  if (1 > len && str.length > 1) return '…';
+  if (str.length > len && str.length > 1) {
+    let end = len - 1;
+    if (end > 0 && str[end - 1] >= '\ud800' && str[end - 1] <= '\udbff') end--;
+    return `${str.slice(0, end)}…`;
+  }
+  return str;
+}
+function __inspectString(str, o) {
+  str = String(str).replace(__inspectEsc, (c) => __inspectEscMap[c] || `\\u${`0000${c.charCodeAt(0).toString(16)}`.slice(-4)}`);
+  return `'${__inspectTrunc(str, o.truncate - 2)}'`;
+}
+function __inspectNumber(n, o) {
+  if (Number.isNaN(n)) return 'NaN';
+  if (n === Infinity) return 'Infinity';
+  if (n === -Infinity) return '-Infinity';
+  if (n === 0) return 1 / n === Infinity ? '+0' : '-0';
+  return __inspectTrunc(String(n), o.truncate);
+}
+// loupe's `inspectList`: items joined with `sep`, cut with `…(n)` once `o.truncate` runs out.
+function __inspectList(list, o, item = __inspect, sep = ', ') {
+  if (!list.length) return '';
+  const orig = o.truncate;
+  let out = '';
+  let peek = '';
+  let cut = '';
+  for (let i = 0; i < list.length; i++) {
+    const last = i + 1 === list.length;
+    const second = i + 2 === list.length;
+    cut = `…(${list.length - i})`;
+    o.truncate = orig - out.length - (last ? 0 : sep.length);
+    const str = peek || item(list[i], o) + (last ? '' : sep);
+    const next = out.length + str.length;
+    const cutLen = next + cut.length;
+    if (last && next > orig && out.length + cut.length <= orig) break;
+    if (!last && !second && cutLen > orig) break;
+    peek = last ? '' : item(list[i + 1], o) + (second ? '' : sep);
+    if (!last && second && cutLen > orig && next + peek.length > orig) break;
+    out += str;
+    if (!last && !second && next + peek.length >= orig) { cut = `…(${list.length - i - 1})`; break; }
+    cut = '';
+  }
+  return `${out}${cut}`;
+}
+function __inspectProp([key, value], o) {
+  o.truncate -= 2;
+  if (typeof key === 'string') {
+    key = /^[a-zA-Z_][a-zA-Z_0-9]*$/.test(key) ? key : JSON.stringify(key).replace(/'/g, "\\'").replace(/\\"/g, '"').replace(/(^"|"$)/g, "'");
+  } else if (typeof key !== 'number') {
+    key = `[${__inspect(key, o)}]`;
+  }
+  o.truncate -= key.length;
+  return `${key}: ${__inspect(value, o)}`;
+}
+function __inspectObject(obj, o) {
+  const props = Object.getOwnPropertyNames(obj);
+  const syms = Object.getOwnPropertySymbols(obj);
+  if (!props.length && !syms.length) return '{}';
+  o.truncate -= 4;
+  if (o.seen.includes(obj)) return '[Circular]';
+  o.seen.push(obj);
+  const p = __inspectList(props.map((k) => [k, obj[k]]), o, __inspectProp);
+  const q = __inspectList(syms.map((k) => [k, obj[k]]), o, __inspectProp);
+  o.seen.pop();
+  return `{ ${p}${p && q ? ', ' : ''}${q} }`;
+}
+// vitest's loupe `inspect` (the value rendering of titles, `%o`/`%O`/`%s` objects); `o.truncate`
+// (default unlimited) bounds the output as loupe does.
+function __inspect(v, o = { truncate: Infinity, seen: [] }) {
+  if (v === null) return 'null';
+  switch (typeof v) {
+    case 'undefined': return 'undefined';
+    case 'boolean': return String(v);
+    case 'number': return __inspectNumber(v, o);
+    case 'bigint': { const n = __inspectTrunc(v.toString(), o.truncate - 1); return n === '…' ? n : `${n}n`; }
+    case 'string': return __inspectString(v, o);
+    case 'symbol': return v.description ? `Symbol(${v.description})` : 'Symbol()';
+    case 'function': {
+      const tag = v[Symbol.toStringTag] || 'Function';
+      return v.name ? `[${tag} ${__inspectTrunc(v.name, o.truncate - 11)}]` : `[${tag}]`;
+    }
+  }
+  const type = Object.prototype.toString.call(v).slice(8, -1);
+  switch (type) {
+    case 'Boolean': return String(v);
+    case 'Number': return __inspectNumber(Number(v), o);
+    case 'String': return __inspectString(v, o);
+    case 'Array': {
+      const extra = Object.keys(v).slice(v.length);
+      if (!v.length && !extra.length) return '[]';
+      o.truncate -= 4;
+      const items = __inspectList(Array.from({ length: v.length }, (_, i) => v[i]), o);
+      o.truncate -= items.length;
+      const props = extra.length ? __inspectList(extra.map((k) => [k, v[k]]), o, __inspectProp) : '';
+      return `[ ${items}${props ? `, ${props}` : ''} ]`;
+    }
+    case 'Date': {
+      const j = v.toJSON();
+      if (j === null) return 'Invalid Date';
+      const [d, t] = j.split('T');
+      return `${d}T${__inspectTrunc(t, o.truncate - d.length - 1)}`;
+    }
+    case 'Map':
+      if (!v.size) return 'Map{}';
+      o.truncate -= 7;
+      return `Map{ ${__inspectList([...v], o, ([k, x], oo) => { oo.truncate -= 4; const ks = __inspect(k, oo); oo.truncate -= ks.length; return `${ks} => ${__inspect(x, oo)}`; })} }`;
+    case 'Set':
+      if (!v.size) return 'Set{}';
+      o.truncate -= 7;
+      return `Set{ ${__inspectList([...v], o)} }`;
+    case 'RegExp': return `/${__inspectTrunc(v.source, o.truncate - (2 + v.flags.length))}/${v.flags}`;
+    case 'Promise': return 'Promise{…}';
+    case 'WeakSet': return 'WeakSet{…}';
+    case 'WeakMap': return 'WeakMap{…}';
+    case 'Arguments':
+      if (!v.length) return 'Arguments[]';
+      o.truncate -= 13;
+      return `Arguments[ ${__inspectList([...v], o)} ]`;
+    case 'Generator': case 'DataView': case 'ArrayBuffer': return '';
+    case 'Error': {
+      const skip = ['stack', 'line', 'column', 'name', 'message', 'fileName', 'lineNumber', 'columnNumber', 'number', 'description', 'cause'];
+      const keys = Object.getOwnPropertyNames(v).filter((k) => !skip.includes(k));
+      o.truncate -= v.name.length;
+      let msg = '';
+      if (typeof v.message === 'string') msg = __inspectTrunc(v.message, o.truncate);
+      else keys.unshift('message');
+      msg = msg ? `: ${msg}` : '';
+      o.truncate -= msg.length + 5;
+      if (o.seen.includes(v)) return '[Circular]';
+      o.seen.push(v);
+      const props = __inspectList(keys.map((k) => [k, v[k]]), o, __inspectProp);
+      return `${v.name}${msg}${props ? ` { ${props} }` : ''}`;
+    }
+  }
+  if (ArrayBuffer.isView(v)) {
+    const name = (typeof Buffer === 'function' && v instanceof Buffer) ? 'Buffer' : (v[Symbol.toStringTag] || v.constructor.name);
+    if (!v.length) return `${name}[]`;
+    o.truncate -= name.length + 4;
+    let out = '';
+    for (let i = 0; i < v.length; i++) {
+      const str = `${__inspectTrunc(v[i], o.truncate)}${i === v.length - 1 ? '' : ', '}`;
+      o.truncate -= str.length;
+      if (v[i] !== v.length && o.truncate <= 3) { out += `…(${v.length - v[i] + 1})`; break; }
+      out += str;
+    }
+    return `${name}[ ${out} ]`;
+  }
+  const chai = v[Symbol.for('chai/inspect')];
+  if (typeof chai === 'function') return String(chai.call(v, o));
+  const custom = v[Symbol.for('nodejs.util.inspect.custom')];
+  if (typeof custom === 'function') { const r = custom.call(v, 2, o, __inspect); return typeof r === 'string' ? r : __inspect(r, o); }
+  if (typeof v.inspect === 'function') { const r = v.inspect(2, o); return typeof r === 'string' ? r : __inspect(r, o); }
+  const proto = Object.getPrototypeOf(v);
+  if (proto === Object.prototype || proto === null) return __inspectObject(v, o);
+  let name = v[Symbol.toStringTag] || (v.constructor && v.constructor.name);
+  if (!name || name === '_class') name = '<Anonymous Class>';
+  o.truncate -= name.length;
+  return `${name}${__inspectObject(v, o)}`;
+}
+// @vitest/utils `objDisplay` (truncateThreshold 40): loupe-truncated, and a rendering still that
+// long collapses to a summary.
+function __objDisplay(v) {
+  const str = __inspect(v, { truncate: 40, seen: [] });
+  if (str.length < 40) return str;
+  const type = Object.prototype.toString.call(v);
+  if (type === '[object Function]') return v.name ? `[Function: ${v.name}]` : '[Function]';
+  if (type === '[object Array]') return `[ Array(${v.length}) ]`;
+  if (type === '[object Object]') {
+    const keys = Object.keys(v);
+    return `{ Object (${keys.length > 2 ? `${keys.slice(0, 2).join(', ')}, ...` : keys.join(', ')}) }`;
+  }
+  return str;
+}
+// @vitest/utils `format(spec, item)` for one placeholder.
+function __formatOne(spec, item) {
+  const v = item;
+  let consumed = true;
+  let out;
+  switch (spec) {
+    case '%%': consumed = false; out = '%'; break;
+    case '%s':
+      if (typeof v === 'bigint') out = `${v}n`;
+      else if (typeof v === 'number' && v === 0 && 1 / v < 0) out = '-0';
+      else if (typeof v === 'object' && v !== null) out = (typeof v.toString === 'function' && v.toString !== Object.prototype.toString) ? v.toString() : __inspect(v);
+      else out = String(v);
+      break;
+    case '%d': out = typeof v === 'bigint' ? `${v}n` : typeof v === 'symbol' ? 'NaN' : Number(v).toString(); break;
+    case '%i': out = typeof v === 'bigint' ? `${v}n` : Number.parseInt(String(v)).toString(); break;
+    case '%f': out = Number.parseFloat(String(v)).toString(); break;
+    case '%o': case '%O': out = __inspect(v); break;
+    case '%c': out = ''; break;
+    case '%j':
+      try { out = JSON.stringify(v); } catch (e) {
+        const m = String(e && e.message);
+        if (/circular structure|cyclic structures|cyclic object/.test(m)) out = '[Circular]'; else throw e;
+      }
+      break;
+  }
+  // an unconsumed item is appended, as `format` appends extra arguments
+  if (!consumed) out += ` ${v === null || typeof v !== 'object' ? (typeof v === 'symbol' ? v.toString() : v) : __inspect(v)}`;
+  return out;
+}
+function __objectAttr(source, path, dflt) {
+  let r = source;
+  for (const k of path.replace(/\[(\d+)\]/g, '.$1').split('.')) {
+    r = new Object(r)[k];
+    if (r === undefined) return dflt;
+  }
+  return r;
+}
+function __negZeroOrNaN(v) {
+  if (Object.is(v, -0)) return true;
+  if (!Number.isNaN(v) || typeof v !== 'number') return false;
+  const f = new Float64Array([v]);
+  return new Uint32Array(f.buffer)[1] >>> 31 === 1;
+}
+function __formatTitle(template, items, idx) {
+  if (template.includes('%#') || template.includes('%$')) {
+    template = template.replace(/%%/g, '__tt_escaped_%__').replace(/%#/g, `${idx}`).replace(/%\$/g, `${idx + 1}`).replace(/__tt_escaped_%__/g, '%%');
+  }
+  const count = template.split('%').length - 1;
+  if (template.includes('%f')) {
+    (template.match(/%f/g) || []).forEach((_, i) => {
+      if (__negZeroOrNaN(items[i])) {
+        let n = 0;
+        template = template.replace(/%f/g, (m) => (++n === i + 1 ? '-%f' : m));
+      }
+    });
+  }
+  const isObjectItem = items[0] != null && typeof items[0] === 'object' && !Array.isArray(items[0]);
+  const attrs = (str) => str.replace(/\$([$\w.]+)/g, (_, key) => {
+    const isArrayKey = /^\d+$/.test(key);
+    if (!isObjectItem && !isArrayKey) return `$${key}`;
+    const el = isArrayKey ? __objectAttr(items, key) : undefined;
+    return __objDisplay(isObjectItem ? __objectAttr(items[0], key, el) : el);
+  });
+  let out = '';
+  let last = 0;
+  let i = 0;
+  for (const m of template.matchAll(/%[sdjifoOc%]/g)) {
+    if (last < m.index) out += attrs(template.slice(last, m.index));
+    out += i < count ? __formatOne(m[0], items[i++]) : m[0];
+    last = m.index + m[0].length;
+  }
+  if (last < template.length) out += attrs(template.slice(last));
+  return out;
+}
+function __formatName(name) {
+  return typeof name === 'string' ? name : typeof name === 'function' ? name.name || '<anonymous>' : String(name);
+}
+// A tagged-template table (`` test.each`a | b ${1} | ${2}` ``) as one object per row.
+function __eachCases(cases, targs) {
+  if (!Array.isArray(cases) || !targs.length) return cases;
+  const header = cases.join('').trim().replace(/ /g, '').split('\n').map((l) => l.split('|'))[0];
+  const rows = [];
+  for (let r = 0; r < Math.floor(targs.length / header.length); r++) {
+    const row = {};
+    header.forEach((h, c) => { row[h] = targs[r * header.length + c]; });
+    rows.push(row);
+  }
+  return rows;
+}
+// `.each`: one task per row, the row spread into the handler when every row is an array.
+function __each(register, cases, targs) {
+  cases = __eachCases(cases, targs);
+  return (name, a, b) => {
+    const title = __formatName(name);
+    const fnFirst = typeof a === 'function';
+    const handler = fnFirst ? a : b;
+    const opts = fnFirst ? b : a;
+    const spread = cases.every(Array.isArray);
+    cases.forEach((row, idx) => {
+      const items = Array.isArray(row) ? row : [row];
+      const args = spread ? items : [row];
+      // `ctx` is only defined for an it.extend test (its resolved fixtures, passed last)
+      const fn = (ctx) => (typeof handler === 'function' ? (ctx === undefined ? handler(...args) : handler(...args, ctx)) : undefined);
+      register(__formatTitle(title, items, idx), fn, opts);
+    });
+  };
+}
+
 // ---- collector: describe / it / hooks ----
 // A suite's `tasks` hold its tests and child suites (`suite: true`) in declaration order: vitest
 // runs and reports them in that order (turbo-test#64).
@@ -2692,10 +2982,7 @@ describe.todo = (name) => { __tt.skippedSuites++; /* todo: collected as nothing 
 describe.skipIf = (cond) => (name, a, b) => { if (cond) { __tt.skippedSuites++; return; } describe(name, a, b); };
 describe.runIf = (cond) => (name, a, b) => { if (!cond) { __tt.skippedSuites++; return; } describe(name, a, b); };
 describe.concurrent = describe; // accepted; a file's tests still run sequentially
-describe.each = (rows) => (name, fn) => rows.forEach((row, i) => {
-  const args = Array.isArray(row) ? row : [row];
-  describe(typeof name === 'string' ? name : name(row), () => fn(...args));
-});
+describe.each = (cases, ...targs) => __each(describe, cases, targs);
 // Supports both vitest signatures: it(name, fn, opts) and it(name, opts, fn).
 function __normTest(a, b) {
   let fn, o;
@@ -2718,12 +3005,7 @@ it.skip = (name, a, b) => current.tasks.push({ name, fn: __normTest(a, b).fn, sk
 it.todo = (name) => current.tasks.push({ name, fn: () => {}, skip: true });
 it.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn, skip: false, only: true, retry: o.retry || 0, timeout: o.timeout }); };
 it.concurrent = it; // accepted; this runner executes a file's tests sequentially
-it.each = (rows) => (name, fn) => {
-  rows.forEach((row, i) => {
-    const args = Array.isArray(row) ? row : [row];
-    current.tasks.push({ name: `${name} [${i}]`, fn: () => fn(...args), skip: false, only: false, retry: 0 });
-  });
-};
+it.each = (cases, ...targs) => __each(it, cases, targs);
 it.skipIf = (cond) => (name, fn) => current.tasks.push({ name, fn, skip: !!cond, only: false, retry: 0 });
 it.runIf = (cond) => (name, fn) => current.tasks.push({ name, fn, skip: !cond, only: false, retry: 0 });
 // it.fails: the test PASSES iff its body throws (runSuite inverts the outcome via `fails`).
@@ -2753,10 +3035,7 @@ it.extend = (fixtures) => {
   const ext = (name, a, b) => { const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn: wrap(fn), skip: false, only: false, retry: o.retry || 0 }); };
   ext.skip = (name, a, b) => current.tasks.push({ name, fn: wrap(__normTest(a, b).fn), skip: true });
   ext.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn: wrap(fn), skip: false, only: true, retry: o.retry || 0 }); };
-  ext.each = (rows) => (name, fn) => rows.forEach((row, i) => {
-    const args = Array.isArray(row) ? row : [row];
-    current.tasks.push({ name: `${name} [${i}]`, fn: wrap((ctx) => fn(...args, ctx)), skip: false, only: false, retry: 0 });
-  });
+  ext.each = (cases, ...targs) => __each(ext, cases, targs);
   ext.extend = (more) => it.extend({ ...fixtures, ...more });
   return ext;
 };
