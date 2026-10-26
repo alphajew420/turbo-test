@@ -3326,6 +3326,7 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
     // mark in-progress (with its module object) so a circular require() returns live exports
     let module_global = v8::Global::new(scope, module_obj);
     REGISTRY.with(|r| r.borrow_mut().loading.insert(abs.to_path_buf(), module_global));
+    REQUIRE_STACK.with(|st| st.borrow_mut().push(abs.to_path_buf()));
     // (body result, the body's exception: re-thrown below unless the decorator retry runs)
     let (call_res, body_exc) = {
         let tc = std::pin::pin!(v8::TryCatch::new(scope));
@@ -3351,6 +3352,7 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
         (r, exc)
     };
     REGISTRY.with(|r| r.borrow_mut().loading.remove(abs));
+    REQUIRE_STACK.with(|st| st.borrow_mut().pop());
     if let (Some(k), Some(prev)) = (v8::String::new(scope, "__ttDir"), prev_dir) {
         global.set(scope, k.into(), prev);
     }
@@ -3708,7 +3710,7 @@ fn native_require(
                 return;
             }
         }
-        throw(scope, &format!("cannot resolve {spec}"));
+        throw_module_not_found(scope, &spec, args.get(3));
         return;
     };
     let abs = query_mock_variant(&spec, abs);
@@ -4018,6 +4020,63 @@ fn native_reset_modules(
             reg.esm_by_path.remove(&p);
         }
     });
+}
+
+thread_local! {
+    /// The CJS modules executing on this thread, outermost first: Node's require stack.
+    static REQUIRE_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Throw Node's MODULE_NOT_FOUND error for `spec` required by `importer` (runtime.js
+/// `__ttModuleNotFound` builds it: the message names the require stack).
+fn throw_module_not_found(scope: &mut v8::PinScope, spec: &str, importer: v8::Local<v8::Value>) {
+    let global = scope.get_current_context().global(scope);
+    let key = v8::String::new(scope, "__ttModuleNotFound").unwrap();
+    let spec = v8::String::new(scope, spec).unwrap();
+    let make = global.get(scope, key.into()).unwrap();
+    let make = v8::Local::<v8::Function>::try_from(make).unwrap();
+    let recv = v8::undefined(scope).into();
+    if let Some(err) = make.call(scope, recv, &[spec.into(), importer]) {
+        scope.throw_exception(err);
+    }
+}
+
+/// __ttRequireStack() -> the paths of the CJS modules executing, innermost first.
+fn native_require_stack(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let paths: Vec<v8::Local<v8::Value>> = REQUIRE_STACK.with(|st| {
+        st.borrow()
+            .iter()
+            .rev()
+            .map(|p| v8::String::new(scope, &p.to_string_lossy()).unwrap().into())
+            .collect()
+    });
+    rv.set(v8::Array::new_with_elements(scope, &paths).into());
+}
+
+/// __ttRequireResolve(dir, spec, esm) -> require.resolve(spec) from `dir`: the resolved path
+/// (a builtin or a test API module is its own name), undefined when nothing resolves.
+fn native_require_resolve(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let dir = args.get(0).to_rust_string_lossy(scope);
+    let spec = args.get(1).to_rust_string_lossy(scope);
+    let esm = args.get(2).boolean_value(scope);
+    let resolved = if is_node_builtin(&spec) {
+        Some(spec.clone())
+    } else {
+        resolve_spec_as(&spec, Path::new(&dir), esm)
+            .map(|p| p.to_string_lossy().into_owned())
+            .or_else(|| is_test_api_module(&spec).then(|| spec.clone()))
+    };
+    if let Some(r) = resolved {
+        rv.set(v8::String::new(scope, &r).unwrap().into());
+    }
 }
 
 fn throw(scope: &mut v8::PinScope, msg: &str) {
@@ -4554,6 +4613,8 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "__ttResetModules", native_reset_modules);
     bind_fn(scope, global, "__ttUnmock", native_unmock);
     bind_fn(scope, global, "__ttResolveSpec", native_resolve_spec);
+    bind_fn(scope, global, "__ttRequireResolve", native_require_resolve);
+    bind_fn(scope, global, "__ttRequireStack", native_require_stack);
     bind_fn(scope, global, "__fs_existsSync", fs_exists_sync);
     bind_fn(scope, global, "__fs_readFileSync", fs_read_file_sync);
     bind_fn(scope, global, "__fs_writeFileSync", fs_write_file_sync);

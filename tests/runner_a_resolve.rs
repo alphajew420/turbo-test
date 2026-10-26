@@ -97,7 +97,7 @@ test('svgr stub renders an svg with props and ref', () => {
   expect(Icon.render({}, r).props.ref).toBe(r);
 });
 test('a missing module names the specifier', () => {
-  expect(() => require('./nope')).toThrow('cannot resolve ./nope');
+  expect(() => require('./nope')).toThrow("Cannot find module './nope'");
 });
 test('node_modules/<pkg>/... specifiers', async () => {
   const m = await import('node_modules/plain/lib/x');

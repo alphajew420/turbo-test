@@ -496,3 +496,41 @@ fn os_tmpdir_and_homedir_follow_the_environment() {
     );
     assert_passes(&r, 1);
 }
+
+/// turbo-test#56: require.resolve gives the resolved path (a builtin its name), and require /
+/// require.resolve of a module that cannot be found throw Node's MODULE_NOT_FOUND with the
+/// require stack. The spec passes under vitest 4.1.12.
+const REQUIRE_RESOLVE_TEST: &str = r#"import { test, expect } from 'vitest';
+import * as fs from 'fs';
+
+// expected values: vitest 4.1.12 (Node's require)
+const dir = new URL('.', import.meta.url).pathname;
+const here = dir + 'resolve.test.ts';
+fs.writeFileSync(dir + 'res-m.js', 'module.exports = 1;');
+fs.writeFileSync(dir + 'res-inner.js', "module.exports = () => require('./res-missing');");
+
+test('require.resolve gives the resolved path; a builtin stays its name', () => {
+  expect(require.resolve('./res-m.js')).toBe(dir + 'res-m.js');
+  expect(require.resolve('./res-m')).toBe(dir + 'res-m.js');
+  expect([require.resolve('fs'), require.resolve('node:path')]).toEqual(['fs', 'node:path']);
+});
+
+test('a module that cannot be found is MODULE_NOT_FOUND, with the require stack', () => {
+  const caught = (f: () => unknown) => { try { f(); } catch (e: any) { return [e.code, e.message]; } return 'no throw'; };
+  const want = ['MODULE_NOT_FOUND', `Cannot find module './res-nope'\nRequire stack:\n- ${here}`];
+  expect(caught(() => require.resolve('./res-nope'))).toEqual(want);
+  expect(caught(() => require('./res-nope'))).toEqual(want);
+  expect(caught(() => require('./res-inner.js')())).toEqual([
+    'MODULE_NOT_FOUND', `Cannot find module './res-missing'\nRequire stack:\n- ${dir}res-inner.js\n- ${here}`,
+  ]);
+});
+"#;
+
+#[test]
+fn require_resolve_follows_node() {
+    let p = Project::new("rc-require-resolve");
+    p.with_esbuild();
+    p.file("resolve.test.ts", REQUIRE_RESOLVE_TEST);
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_passes(&r, 2);
+}

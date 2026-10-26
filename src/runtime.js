@@ -1787,11 +1787,27 @@ globalThis.__nodeBuiltins = {
 // ---- loader helpers (used by the CJS wrapper) ----
 globalThis.__keys = (o) =>
   o && (typeof o === 'object' || typeof o === 'function') ? Object.keys(o) : [];
+// Node's MODULE_NOT_FOUND error for `spec`: the message lists the require stack (the requiring
+// module, the modules loading it, the test file)
+globalThis.__ttModuleNotFound = (spec, importer) => {
+  const stack = [];
+  const add = (p) => { if (p && !stack.includes(p)) stack.push(p); };
+  add(importer);
+  for (const p of globalThis.__ttRequireStack()) add(p);
+  add(globalThis.__ttFile);
+  const e = new Error(`Cannot find module '${spec}'` + (stack.length ? `\nRequire stack:\n- ${stack.join('\n- ')}` : ''));
+  e.code = 'MODULE_NOT_FOUND';
+  e.requireStack = stack;
+  return e;
+};
 globalThis.__mkRequire = (dir, isEsm, importer) => {
   const req = (spec) => globalThis.__nativeRequire(dir, spec, isEsm, importer);
-  // node libs call require.resolve(); we don't expose a resolver to JS, so echo the spec back
-  // (good enough — callers use it to locate a file, and a missing one stubs gracefully).
-  req.resolve = (spec) => String(spec);
+  // as Node: the resolved path (a builtin stays its name); MODULE_NOT_FOUND when nothing resolves
+  req.resolve = (spec) => {
+    const r = globalThis.__ttRequireResolve(dir, String(spec), isEsm === undefined ? true : !!isEsm);
+    if (r === undefined) throw globalThis.__ttModuleNotFound(String(spec), importer);
+    return r;
+  };
   req.cache = {};
   req.extensions = {};
   req.main = undefined;
