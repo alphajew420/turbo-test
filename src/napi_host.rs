@@ -28,7 +28,6 @@
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::path::Path;
-use std::ptr::NonNull;
 
 pub type napi_status = i32;
 pub const napi_ok: napi_status = 0;
@@ -356,10 +355,8 @@ unsafe fn run_finalizer(env: napi_env, fin: &Finalizer) {
         // as Node's Reference::Finalize: the record's own reference loses its value first (a
         // deleted one stays deleted)
         let refs = &mut (*env).refs;
-        if let Some(slot) = refs.get_mut(fin.own_ref.wrapping_sub(1)) {
-            if let Some(r) = slot {
-                r.value = RefValue::Empty;
-            }
+        if let Some(Some(r)) = refs.get_mut(fin.own_ref.wrapping_sub(1)) {
+            r.value = RefValue::Empty;
         }
         let pending = (*env).last_exception.take();
         let _ = call_addon(|| cb(env, fin.native, fin.hint));
@@ -941,13 +938,13 @@ fn forget_external_strings(env: napi_env) {
 
 /// node_api_create_external_string_latin1 / _utf16, as Node without the V8 sandbox: the string
 /// is external (`*copied` false), its buffer the caller's, and the finalizer runs when the
-/// string is collected. `make` builds the string over the buffer with the destructor.
+/// string is collected (`finalizer`: the finalize callback and its hint). `make` builds the
+/// string over the buffer with the destructor.
 unsafe fn external_string(
     env: napi_env,
     buffer: *mut c_void,
     len: usize,
-    finalize: Option<napi_finalize>,
-    hint: *mut c_void,
+    (finalize, hint): (Option<napi_finalize>, *mut c_void),
     out: *mut napi_value,
     copied: *mut bool,
     make: impl FnOnce(&mut v8::PinScope<'static, 'static>) -> Option<v8::Local<'static, v8::String>>,
@@ -981,7 +978,7 @@ pub unsafe extern "C" fn node_api_create_external_string_latin1(
     out: *mut napi_value,
     copied: *mut bool,
 ) -> napi_status {
-    external_string(env, str_.cast(), len, finalize, hint, out, copied, |s| {
+    external_string(env, str_.cast(), len, (finalize, hint), out, copied, |s| {
         let len = latin1_arg(str_, len).len();
         v8::String::new_external_onebyte_raw(s, str_, len, external_onebyte_gone)
     })
@@ -998,7 +995,7 @@ pub unsafe extern "C" fn node_api_create_external_string_utf16(
     out: *mut napi_value,
     copied: *mut bool,
 ) -> napi_status {
-    external_string(env, str_.cast(), len, finalize, hint, out, copied, |s| {
+    external_string(env, str_.cast(), len, (finalize, hint), out, copied, |s| {
         let len = utf16_arg(str_, len).len();
         v8::String::new_external_twobyte_raw(s, str_, len, external_twobyte_gone)
     })
@@ -3558,7 +3555,7 @@ pub unsafe extern "C" fn napi_add_env_cleanup_hook(
     // (the same fun and arg twice: Node aborts the process)
     if teardown
         .iter()
-        .any(|t| matches!(*t, Teardown::Hook(_, f, a) if f == fun && a == arg))
+        .any(|t| matches!(*t, Teardown::Hook(_, f, a) if std::ptr::fn_addr_eq(f, fun) && a == arg))
     {
         return record(env, napi_invalid_arg);
     }
@@ -3580,7 +3577,9 @@ pub unsafe extern "C" fn napi_remove_env_cleanup_hook(
     };
     // as Node: removing a hook that is not registered does nothing
     let mut teardown = teardown_of(env).borrow_mut();
-    teardown.retain(|t| !matches!(*t, Teardown::Hook(_, f, a) if f == fun && a == arg));
+    teardown.retain(
+        |t| !matches!(*t, Teardown::Hook(_, f, a) if std::ptr::fn_addr_eq(f, fun) && a == arg),
+    );
     napi_ok
 }
 
@@ -3634,7 +3633,7 @@ pub unsafe extern "C" fn napi_adjust_external_memory(
 /// A napi_handle_scope / napi_escapable_handle_scope: whether it has escaped a value. Values
 /// are not freed when a scope closes (they live until the native call returns); the scopes are
 /// counted, and an escapable one escapes once, as Node's.
-struct HandleScopeRecord {
+pub struct HandleScopeRecord {
     escaped: bool,
 }
 
