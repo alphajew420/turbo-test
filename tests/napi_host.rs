@@ -219,13 +219,15 @@ fn every_node_api_family_behaves() {
     );
     let j = json_report(&r);
     assert_eq!(j["numFailedTests"], 0, "{}", r.all());
-    assert_eq!(j["numPassedTests"], 45, "{}", r.all());
-    // napi_fatal_exception reported the error as uncaught (what a throwing timer callback gets)
-    assert!(
-        r.stderr.contains("uncaught reported as uncaught"),
-        "{}",
-        r.all()
-    );
+    assert_eq!(j["numPassedTests"], 46, "{}", r.all());
+    // napi_fatal_exception reported the error as uncaught (what a throwing timer callback
+    // gets), and so is what a finalizer threw (turbo-test#53)
+    for line in [
+        "uncaught reported as uncaught",
+        "uncaught thrown by a finalizer",
+    ] {
+        assert!(r.stderr.contains(line), "{line}\n{}", r.all());
+    }
 }
 
 /// napi_fatal_error prints `FATAL ERROR: <location> <message>` and aborts the process, as

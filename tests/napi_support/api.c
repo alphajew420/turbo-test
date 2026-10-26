@@ -1183,6 +1183,17 @@ static napi_value f_buffers(napi_env env, napi_callback_info info) {
     return list(env, 4, it);
 }
 
+static void throwing_finalize(napi_env env, void *data, void *hint) {
+    (void)data;
+    (void)hint;
+    napi_throw_error(env, NULL, "thrown by a finalizer");
+}
+/* throwingFinalizer(obj) -> status: a finalizer that throws */
+static napi_value f_throwing_finalizer(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    return num(env, napi_add_finalizer(env, arg(env, &a, 0), NULL, throwing_finalize, NULL, NULL));
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -1308,6 +1319,7 @@ static const struct {
     {"coreNulls", f_core_nulls},
     {"typedArrayOver", f_typed_array_over},
     {"buffers", f_buffers},
+    {"throwingFinalizer", f_throwing_finalizer},
     {"nullEnv", f_null_env},
 };
 

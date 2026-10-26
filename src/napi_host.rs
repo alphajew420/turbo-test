@@ -350,8 +350,7 @@ pub struct Finalizer {
 }
 
 /// Run `fin`'s finalizer (if any) in the env's current scope: addon code, so under the lock.
-/// The env's pending exception is set aside for it, and what the finalizer leaves pending is
-/// dropped (Node reports it as an uncaught exception; there is no JS caller to throw it to).
+/// The env's pending exception is set aside for it.
 unsafe fn run_finalizer(env: napi_env, fin: &Finalizer) {
     if let Some(cb) = fin.finalize {
         // as Node's Reference::Finalize: the record's own reference loses its value first (a
@@ -364,7 +363,14 @@ unsafe fn run_finalizer(env: napi_env, fin: &Finalizer) {
         }
         let pending = (*env).last_exception.take();
         let _ = call_addon(|| cb(env, fin.native, fin.hint));
-        (*env).last_exception = pending;
+        // as Node's CallFinalizer: what the finalizer leaves pending is an uncaught exception,
+        // reported from the event loop (a finalizer may run inside a GC, where JS cannot); at
+        // teardown, when JS cannot run, it is dropped
+        if let Some(exc) = std::mem::replace(&mut (*env).last_exception, pending) {
+            if !(*env).tearing_down {
+                async_host::defer_uncaught(env, exc);
+            }
+        }
     }
 }
 

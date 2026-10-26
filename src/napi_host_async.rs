@@ -27,6 +27,8 @@ enum NativeTask {
     Dispatch(SendPtr<Tsfn>),
     /// A threadsafe function's handles are closed: drop what is queued, run its finalizer.
     Finalize(SendPtr<Tsfn>),
+    /// An exception a finalizer left: reported as uncaught.
+    Uncaught(napi_env, SendPtr<v8::Global<v8::Value>>),
 }
 
 /// The native callbacks posted for an isolate, and the async work it has in flight.
@@ -76,6 +78,14 @@ pub fn run_native_task(scope: &mut v8::PinScope) -> bool {
         match task {
             NativeTask::Complete(work, status) => complete_work(scope, work.0, status),
             NativeTask::Dispatch(tsfn) => dispatch_one(scope, tsfn.0),
+            NativeTask::Uncaught(env, exc) => {
+                let exc = Box::from_raw(exc.0);
+                in_env_scope(scope, env, || {
+                    let s = super::scope(env);
+                    let exc = v8::Local::new(s, &*exc);
+                    report_uncaught(s, exc);
+                });
+            }
             NativeTask::Finalize(tsfn) => {
                 let env = (*tsfn.0).env;
                 in_env_scope(scope, env, || finalize_tsfn(tsfn.0));
@@ -83,6 +93,13 @@ pub fn run_native_task(scope: &mut v8::PinScope) -> bool {
         }
     }
     true
+}
+
+/// Report `exc`, which a finalizer left, as an uncaught exception once the JS thread runs its
+/// native callbacks again.
+pub(super) unsafe fn defer_uncaught(env: napi_env, exc: v8::Global<v8::Value>) {
+    let exc = SendPtr(Box::into_raw(Box::new(exc)));
+    shared_env(env).native.post(NativeTask::Uncaught(env, exc));
 }
 
 /// Whether this isolate's addons keep the event loop alive, as libuv's referenced handles and

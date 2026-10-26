@@ -681,6 +681,25 @@ describe('NULL arguments of the core entrypoints', () => {
   });
 });
 
+describe('finalizers', () => {
+  test('an exception a finalizer leaves is uncaught', async () => {
+    const seen: string[] = [];
+    const onUncaught = (e: Error) => seen.push(e.message);
+    (globalThis as any).process.on('uncaughtException', onUncaught);
+    try {
+      expect((() => api.throwingFinalizer({}))()).toBe(OK);
+      for (let i = 0; i < 3; i++) {
+        (globalThis as any).gc();
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      // (Node: process 'uncaughtException'; turbo-test reports it on stderr, as a timer's)
+      (globalThis as any).__seenUncaught = seen;
+    } finally {
+      (globalThis as any).process.off('uncaughtException', onUncaught);
+    }
+  });
+});
+
 describe('a NULL env', () => {
   test('is napi_invalid_arg for every entrypoint', () => {
     const statuses = api.nullEnv();
