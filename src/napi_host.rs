@@ -370,13 +370,7 @@ fn napi_fn_trampoline(
         // race (intermittent "document is not defined" / load flakiness). Serialize native addon
         // entry across threads with a global lock; a thread-local guard allows same-thread
         // re-entry (the addon calling a JS callback that re-enters) without self-deadlock.
-        let reentrant = IN_ADDON.with(|f| f.get());
-        let _guard = if reentrant {
-            None
-        } else {
-            IN_ADDON.with(|f| f.set(true));
-            Some(ADDON_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
-        };
+        let (reentrant, _guard) = enter_addon();
         // Calling the addon's native callback crosses the FFI boundary. A panic there is UB and
         // can crash the process; catch_unwind converts it into a thrown JS error instead.
         let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
@@ -385,17 +379,48 @@ fn napi_fn_trampoline(
         if !reentrant {
             IN_ADDON.with(|f| f.set(false));
         }
-        match ret {
-            Ok(ret) if !ret.is_null() => rv.set(unsafe { to_local(ret) }),
-            Ok(_) => {}
-            Err(_) => {
-                if let Some(msg) = v8::String::new(scope, "turbo-test: native addon callback panicked") {
-                    let exc = v8::Exception::error(scope, msg);
-                    scope.throw_exception(exc);
-                }
-            }
+        if let Some(ret) = callback_return(scope, ret) {
+            rv.set(unsafe { to_local(ret) });
         }
     });
+}
+
+/// Enter native addon code on this thread: `(reentrant, guard)`. The outermost entry marks the
+/// thread as inside the addon and takes the process-global `ADDON_LOCK`; a same-thread re-entry
+/// takes no lock (it would self-deadlock). The caller clears `IN_ADDON` when not `reentrant`.
+fn enter_addon() -> (bool, Option<std::sync::MutexGuard<'static, ()>>) {
+    let reentrant = IN_ADDON.with(|f| f.get());
+    let guard = if reentrant {
+        None
+    } else {
+        IN_ADDON.with(|f| f.set(true));
+        Some(ADDON_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+    };
+    (reentrant, guard)
+}
+
+/// The JS-visible outcome of a native callback: a non-null `napi_value` is the return value,
+/// NULL leaves the return slot `undefined` (`None`), and a panic is thrown as a JS error.
+fn callback_return(
+    scope: &mut v8::PinScope,
+    ret: std::thread::Result<napi_value>,
+) -> Option<napi_value> {
+    match ret {
+        Ok(ret) if !ret.is_null() => Some(ret),
+        Ok(_) => None,
+        Err(_) => {
+            if let Some(msg) = v8::String::new(scope, "turbo-test: native addon callback panicked") {
+                let exc = v8::Exception::error(scope, msg);
+                scope.throw_exception(exc);
+            }
+            None
+        }
+    }
+}
+
+/// A panic out of the addon's module init becomes a load error naming the addon.
+fn init_outcome(result: std::thread::Result<napi_value>, path: &Path) -> Result<napi_value, String> {
+    result.map_err(|_| format!("native addon panicked during module init: {}", path.display()))
 }
 
 #[no_mangle]
@@ -1083,12 +1108,7 @@ pub fn load_addon(
                 register(env_ptr, exports_napi)
             })
         }));
-        let result = match result {
-            Ok(r) => r,
-            Err(_) => {
-                return Err(format!("native addon panicked during module init: {}", path.display()));
-            }
-        };
+        let result = init_outcome(result, path)?;
         if tc.has_caught() {
             let msg = tc
                 .exception()
@@ -1106,3 +1126,7 @@ pub fn load_addon(
         Ok(v8::Global::new(tc, ret_local))
     }
 }
+
+#[cfg(test)]
+#[path = "napi_host_tests.rs"]
+mod tests;
