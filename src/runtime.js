@@ -256,7 +256,8 @@ globalThis.__resolvePendingMocks = async () => {
   const list = globalThis.__pendingMocks || [];
   for (const m of list) {
     if (m.exports && typeof m.exports.then === 'function') {
-      try { m.exports = await m.exports; } catch (e) { m.exports = __ttFactoryErrorMock(e, m.vitest !== false); }
+      try { m.exports = __ttStrictMock(await m.exports, m.key, m.spec); }
+      catch (e) { m.exports = __ttFactoryErrorMock(e, m.vitest !== false); }
     }
   }
 };
@@ -2202,8 +2203,27 @@ const __spies = [];
 // here, in the calling module's scope (so closures over setup-file vars work). `vitest` is
 // false for jest.mock/doMock (jest semantics where they differ).
 const __ttMockErrorSpecs = new Set();
+// vitest: reading a name the factory did not return throws (an ES import of it fails on access
+// rather than reading undefined). Probes that interop/thenable checks make (`then`, `__esModule`),
+// symbols and inherited members never throw. Keys (dir + spec) last mocked with jest.mock/doMock
+// read undefined instead (jest semantics); checked on access, because the mock prepass registers
+// every factory via vi.mock and an isolate reuse keeps that first exports object.
+const __ttLenientMockKeys = new Set();
+function __ttStrictMock(mod, key, spec) {
+  if (mod === null || typeof mod !== 'object' || __ttMockErrors.has(mod)) return mod;
+  return new Proxy(mod, {
+    get: (t, k, r) => {
+      if (typeof k === 'symbol' || k in t || k === 'then' || k === '__esModule' || __ttLenientMockKeys.has(key)) return Reflect.get(t, k, r);
+      throw new Error(`[vitest] No "${k}" export is defined on the "${spec}" mock. Did you want to return the actual module?`);
+    },
+  });
+}
 function __ttMock(spec, factory, vitest) {
   let exports;
+  const key = (globalThis.__ttDir || '') + '\0' + String(spec);
+  if (!globalThis.__ttMockPrepass) {
+    if (vitest) __ttLenientMockKeys.delete(key); else __ttLenientMockKeys.add(key);
+  }
   // vitest passes `importOriginal` (a fn returning the real module, as a Promise) as the
   // factory's first arg — `vi.mock('x', async (importOriginal) => ({...await importOriginal(), y}))`.
   const importOriginal = () => Promise.resolve(globalThis.__ttImportActual(globalThis.__ttDir, String(spec)));
@@ -2226,20 +2246,20 @@ function __ttMock(spec, factory, vitest) {
   // ran in THIS module's scope, so it shares the test's bindings). Async (Promise) factory:
   // queue for __resolvePendingMocks (run_entry_mocks prepass / drain).
   if (exports && typeof exports.then === 'function') {
-    (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest });
+    (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest, key });
     return;
   }
+  if (factory !== undefined) exports = __ttStrictMock(exports, key, String(spec));
   if (globalThis.__ttRegisterMock && globalThis.__ttDir) {
     // An error stand-in replaces (never merges into) a module already registered under this
     // isolate; a later working factory for the same spec replaces the stand-in the same way.
-    const key = globalThis.__ttDir + '\0' + String(spec);
     if (__ttMockErrors.has(exports) || __ttMockErrorSpecs.has(key)) {
       globalThis.vi.unmock(spec);
       if (__ttMockErrors.has(exports)) __ttMockErrorSpecs.add(key); else __ttMockErrorSpecs.delete(key);
     }
     try { globalThis.__ttRegisterMock(globalThis.__ttDir, String(spec), exports); return; } catch (e) {}
   }
-  (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest });
+  (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest, key });
 }
 globalThis.vi = {
   fn: (impl) => { const s = makeSpy(impl); __spies.push(s); return s; },

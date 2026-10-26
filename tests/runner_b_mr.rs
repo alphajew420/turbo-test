@@ -551,7 +551,7 @@ fn an_exception_escaping_the_entry_load_is_the_load_error() {
 }
 
 #[test]
-fn setup_file_mocks_are_externalized_and_lenient() {
+fn setup_file_mocks_reach_test_files_with_vitest_missing_export_semantics() {
     let p = esbuild_project("rb-mr-setup-mocks");
     p.file(
         "vitest.config.ts",
@@ -566,14 +566,23 @@ fn setup_file_mocks_are_externalized_and_lenient() {
         "vi.mock('./src/svc', () => { return { a: 'setup-a' }; });\n\
          vi.mock('*.svg?url', () => ({ default: 'x' }));\n",
     );
-    // `b` is imported but missing from the factory: the mock module still links
+    // `b` is imported but missing from the factory: the mock module still links; reading `b`
+    // throws on the module runner (a property access, as in vitest) and reads undefined on the
+    // legacy bundle (an ES import binding cannot throw)
     p.file(
         "s.test.ts",
         "import { a, b } from './src/svc';\n\
+         test('setup mock', () => { expect(a).toBe('setup-a'); \
+         expect(() => b).toThrow('No \"b\" export is defined on the \"./src/svc\" mock'); });\n",
+    );
+    p.file(
+        "legacy.test.ts",
+        "import { a, b } from './src/svc';\n\
          test('setup mock', () => { expect(a).toBe('setup-a'); expect(b).toBe(undefined); });\n",
     );
-    for env in [&[][..], &[("TURBO_NO_MR", "1")][..]] {
-        let r = turbo_test(&p.dir, &[], env);
-        assert_passes(&r, 1);
-    }
+    assert_passes(&turbo_test(&p.dir, &["s.test.ts"], &[]), 1);
+    assert_passes(
+        &turbo_test(&p.dir, &["legacy.test.ts"], &[("TURBO_NO_MR", "1")]),
+        1,
+    );
 }

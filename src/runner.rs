@@ -3330,6 +3330,12 @@ fn synth_eval<'s>(
                 continue;
             }
             let k = v8::String::new(scope, &n)?;
+            // A name the object lacks (requested by an importer, missing from a mock factory)
+            // stays undefined without being read: an ES import binding is vitest-lenient at link
+            // time, and a strict mock's missing-export throw must not fire while linking.
+            if !obj.has(scope, k.into()).unwrap_or(false) {
+                continue;
+            }
             if let Some(v) = obj.get(scope, k.into()) {
                 module.set_synthetic_module_export(scope, k, v)?;
             }

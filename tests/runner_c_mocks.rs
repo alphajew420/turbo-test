@@ -2,7 +2,7 @@
 //! is the reported cause (entry import, `require()`, dynamic `import()`); `import.meta`
 //! (url/filename/dirname) and CSS-module class-name proxies; a mock factory that throws fails the
 //! import of the mocked module with that error; a setup file's `vi.mock` is hoisted above its own
-//! imports.
+//! imports; reading an export a `vi.mock` factory did not return throws.
 #![cfg(unix)]
 
 mod common;
@@ -339,5 +339,80 @@ test("the setup's vi.hoisted values do not leak into the test file's", () => {
     );
     for env in FRESH_AND_REUSE {
         assert_passes(&turbo_test(&p.dir, &[], env), 3);
+    }
+}
+
+/// vitest's error for reading a name the factory did not return.
+fn no_export(name: &str, spec: &str) -> String {
+    format!(
+        "[vitest] No \"{name}\" export is defined on the \"{spec}\" mock. \
+         Did you want to return the actual module?"
+    )
+}
+
+#[test]
+fn module_runner_missing_mock_exports_throw_on_access() {
+    let p = esbuild_project("rc-strict-mock");
+    p.file(
+        "vitest.config.js",
+        "export default { test: { setupFiles: ['./setup.js'] } };\n",
+    );
+    p.file(
+        "m.js",
+        "export const v = 'real';\nexport const w = 'real-w';\n",
+    );
+    p.file(
+        "n.js",
+        "export const a = 'real-a';\nexport const b = 'real-b';\n",
+    );
+    p.file(
+        "j.js",
+        "export const a = 'real-a';\nexport const b = 'real-b';\n",
+    );
+    p.file(
+        "o.js",
+        "export const o = 'real-o';\nexport const p = 'real-p';\n",
+    );
+    p.file(
+        "setup.js",
+        "import { v } from './m.js';\nvi.mock('./m.js', () => ({ v: 'mocked' }));\n\
+         globalThis.SETUP_SAW = v;\n",
+    );
+    p.file(
+        "a.test.js",
+        &format!(
+            r#"import {{ w }} from './m.js';
+import * as n from './n.js';
+import {{ b as jb }} from './j.js';
+import {{ p }} from './o.js';
+vi.mock('./n.js', () => ({{ a: 'mock-a' }}));
+jest.mock('./j.js', () => ({{ a: 'mock-a' }}));
+vi.mock('./o.js', async () => ({{ o: 'mock-o' }}));
+test('a setup mock: present names read, missing ones throw', () => {{
+  expect(globalThis.SETUP_SAW).toBe('mocked');
+  expect(() => w).toThrow('{w}');
+}});
+test('a test-file mock', () => {{
+  expect(n.a).toBe('mock-a');
+  expect(() => n.b).toThrow('{b}');
+  // interop probes, symbols and inherited members never throw
+  expect(n.then).toBe(undefined);
+  expect(n.__esModule).toBe(undefined);
+  expect(typeof n.hasOwnProperty).toBe('function');
+  expect(n[Symbol.toStringTag]).toBe(undefined);
+  expect(Object.keys(n)).toEqual(['a']);
+}});
+test('an async factory', () => {{ expect(() => p).toThrow('{p}'); }});
+test('jest.mock keeps jest semantics: a missing name reads undefined', () => {{
+  expect(jb).toBe(undefined);
+}});
+"#,
+            w = no_export("w", "./m.js"),
+            b = no_export("b", "./n.js"),
+            p = no_export("p", "./o.js"),
+        ),
+    );
+    for env in FRESH_AND_REUSE {
+        assert_passes(&turbo_test(&p.dir, &[], env), 4);
     }
 }
