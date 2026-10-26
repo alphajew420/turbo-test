@@ -566,8 +566,8 @@ static napi_value f_cls_ctor(napi_env env, napi_callback_info info) {
     return a.self;
 }
 
-/* Strings / property keys / function names longer than V8's String::kMaxLength cannot be
- * created. */
+/* Strings / property keys / function names / error messages and codes longer than V8's
+ * String::kMaxLength cannot be created. */
 static napi_value f_huge(napi_env env, napi_callback_info info) {
     (void)info;
     const size_t n = (size_t)1 << 29;
@@ -577,16 +577,22 @@ static napi_value f_huge(napi_env env, napi_callback_info info) {
     b[n] = 0;
     napi_value s = NULL, out = NULL, f = NULL, o;
     napi_create_object(env, &o);
-    napi_value it[7];
+    napi_value it[10];
     it[0] = dbl(env, napi_create_string_utf8(env, b, n, &s));
     it[1] = dbl(env, napi_set_named_property(env, o, b, o));
     it[2] = dbl(env, napi_get_named_property(env, o, b, &out));
     it[5] = dbl(env, napi_create_function(env, b, n, f_status, NULL, &f));
+    /* an error message / code V8 cannot hold: nothing is thrown */
+    it[7] = dbl(env, napi_throw_error(env, NULL, b));
+    it[8] = dbl(env, napi_throw_error(env, b, "m"));
+    bool pending = true;
+    napi_is_exception_pending(env, &pending);
+    it[9] = boolv(env, pending);
     free(b);
     it[3] = boolv(env, s == NULL);
     it[4] = boolv(env, out == NULL);
     it[6] = boolv(env, f == NULL);
-    return list(env, 7, it);
+    return list(env, 10, it);
 }
 
 /* throwPending(msg): napi_throw_error, then read and clear the pending exception ->

@@ -545,7 +545,7 @@ pub unsafe extern "C" fn napi_create_function(
         let tmpl = v8::FunctionTemplate::builder(napi_fn_trampoline)
             .data(data_val.into())
             .build(s);
-        let f = tmpl.get_function(s).unwrap();
+        let f = tmpl.get_function(s).ok_or(napi_generic_failure)?;
         // as Node: a non-NULL name becomes the function's `name` (a name V8 cannot hold is
         // napi_generic_failure)
         if !name.is_null() {
@@ -655,52 +655,71 @@ pub unsafe extern "C" fn napi_create_typedarray(
         let ab: v8::Local<v8::ArrayBuffer> = to_local(arraybuffer)
             .try_into()
             .map_err(|_| napi_invalid_arg)?;
-        // napi_typedarray_type codes (Node 26: 0..=11) -> matching v8 typed array. `length` is
-        // in ELEMENTS.
-        let ta: v8::Local<v8::Value> = match type_ {
-            0 => v8::Int8Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            1 => v8::Uint8Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            2 => v8::Uint8ClampedArray::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            3 => v8::Int16Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            4 => v8::Uint16Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            5 => v8::Int32Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            6 => v8::Uint32Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            7 => v8::Float32Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            8 => v8::Float64Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            9 => v8::BigInt64Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            10 => v8::BigUint64Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
-            // (this V8 binding has no Float16Array -> Value `From`; the upcast is always valid)
-            11 => v8::Local::<v8::Value>::cast_unchecked(
-                v8::Float16Array::new(s, ab, byte_offset, length).unwrap(),
-            ),
+        // napi_typedarray_type codes (Node 26: 0..=11): element size and constructor name.
+        let (size, name) = match type_ {
+            0 => (1, "Int8Array"),
+            1 => (1, "Uint8Array"),
+            2 => (1, "Uint8ClampedArray"),
+            3 => (2, "Int16Array"),
+            4 => (2, "Uint16Array"),
+            5 => (4, "Int32Array"),
+            6 => (4, "Uint32Array"),
+            7 => (4, "Float32Array"),
+            8 => (8, "Float64Array"),
+            9 => (8, "BigInt64Array"),
+            10 => (8, "BigUint64Array"),
+            11 => (2, "Float16Array"),
             // as Node: an unknown napi_typedarray_type is napi_invalid_arg
             _ => return Err(napi_invalid_arg),
         };
-        put(out, ta);
+        // As Node (THROW_RANGE_ERROR_IF_FALSE): a misaligned offset or a view running past the
+        // buffer throws a RangeError; V8's constructors would not check (or abort). `length` is
+        // in ELEMENTS; a product overflowing usize is a length error too.
+        if !byte_offset.is_multiple_of(size) {
+            let msg = format!("start offset of {name} should be a multiple of {size}");
+            return throw_range_error(s, "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT", &msg);
+        }
+        let end = length
+            .checked_mul(size)
+            .and_then(|n| n.checked_add(byte_offset));
+        if end.is_none_or(|end| end > ab.byte_length()) {
+            let code = "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH";
+            return throw_range_error(s, code, "Invalid typed array length");
+        }
+        let (o, n) = (byte_offset, length);
+        let ta: Option<v8::Local<v8::Value>> = match type_ {
+            0 => v8::Int8Array::new(s, ab, o, n).map(Into::into),
+            1 => v8::Uint8Array::new(s, ab, o, n).map(Into::into),
+            2 => v8::Uint8ClampedArray::new(s, ab, o, n).map(Into::into),
+            3 => v8::Int16Array::new(s, ab, o, n).map(Into::into),
+            4 => v8::Uint16Array::new(s, ab, o, n).map(Into::into),
+            5 => v8::Int32Array::new(s, ab, o, n).map(Into::into),
+            6 => v8::Uint32Array::new(s, ab, o, n).map(Into::into),
+            7 => v8::Float32Array::new(s, ab, o, n).map(Into::into),
+            8 => v8::Float64Array::new(s, ab, o, n).map(Into::into),
+            9 => v8::BigInt64Array::new(s, ab, o, n).map(Into::into),
+            // (this V8 binding has no Float16Array -> Value `From`; the upcast is always valid)
+            11 => v8::Float16Array::new(s, ab, o, n).map(|t| v8::Local::cast_unchecked(t)),
+            _ => v8::BigUint64Array::new(s, ab, o, n).map(Into::into), // 10
+        };
+        put(out, ta.ok_or(napi_generic_failure)?);
         Ok(())
     })
+}
+
+/// Throw a RangeError carrying `code`, as Node's napi_throw_range_error, and fail the call with
+/// napi_generic_failure.
+unsafe fn throw_range_error(
+    s: &mut v8::PinScope<'static, 'static>,
+    code: &str,
+    msg: &str,
+) -> NapiResult {
+    let msg = v8::String::new(s, msg).ok_or(napi_generic_failure)?;
+    let code = v8::String::new(s, code).ok_or(napi_generic_failure)?;
+    let err = v8::Exception::range_error(s, msg);
+    set_error_code(s, err, code)?;
+    s.throw_exception(err);
+    Err(napi_generic_failure)
 }
 
 #[no_mangle]
@@ -1011,7 +1030,7 @@ pub unsafe extern "C" fn napi_throw_error(
 ) -> napi_status {
     js_call(env, |s| {
         let m = std::ffi::CStr::from_ptr(msg).to_string_lossy();
-        let ms = v8::String::new(s, &m).unwrap();
+        let ms = v8::String::new(s, &m).ok_or(napi_generic_failure)?;
         let exc = v8::Exception::error(s, ms);
         if !code.is_null() {
             let code = std::ffi::CStr::from_ptr(code).to_string_lossy();

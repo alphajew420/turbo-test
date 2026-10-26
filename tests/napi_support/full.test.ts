@@ -397,6 +397,51 @@ describe('arraybuffers, typed arrays, buffers', () => {
     expect(a.status()).toBe(INVALID_ARG);
   });
 
+  test('napi_create_typedarray: a view outside its buffer is a RangeError', () => {
+    const buf = new ArrayBuffer(32);
+    const rangeError = (f: () => unknown, message: string, code: string) => {
+      let caught: any;
+      try {
+        f();
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(RangeError);
+      expect([caught.message, caught.code]).toEqual([message, code]);
+      expect(a.status()).toBe(GENERIC_FAILURE);
+    };
+    const ALIGNMENT = 'ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT';
+    const LENGTH = 'ERR_NAPI_INVALID_TYPEDARRAY_LENGTH';
+    rangeError(
+      () => a.ta(3, 1, buf, 1),
+      'start offset of Int16Array should be a multiple of 2',
+      ALIGNMENT,
+    );
+    rangeError(
+      () => a.ta(10, 1, buf, 4),
+      'start offset of BigUint64Array should be a multiple of 8',
+      ALIGNMENT,
+    );
+    rangeError(() => a.ta(1, 33, buf, 0), 'Invalid typed array length', LENGTH);
+    rangeError(() => a.ta(5, 7, buf, 8), 'Invalid typed array length', LENGTH);
+    // exactly filling the buffer is fine
+    expect(a.ta(5, 6, buf, 8).length).toBe(6);
+    expect(a.status()).toBe(OK);
+  });
+
+  test('napi_create_typedarray: a length overflowing size_t is a RangeError, not an abort', () => {
+    // (Node itself lets length * 8 wrap and dies in a V8 CHECK here)
+    let caught: any;
+    try {
+      a.ta(8, 2 ** 61, new ArrayBuffer(8), 0);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(RangeError);
+    expect(caught.code).toBe('ERR_NAPI_INVALID_TYPEDARRAY_LENGTH');
+    expect(a.status()).toBe(GENERIC_FAILURE);
+  });
+
   test('napi_create_external_arraybuffer copies the external bytes', () => {
     expect([...new Uint8Array(a.extAb(3))]).toEqual([120, 121, 122]);
     expect(a.extAb(0).byteLength).toBe(0);
