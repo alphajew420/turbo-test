@@ -12,4 +12,5 @@ pub mod graph;
 pub mod launcher;
 pub mod napi_host;
 pub mod runner;
+pub mod structured_clone;
 pub mod transform;

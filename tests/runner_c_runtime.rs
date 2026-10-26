@@ -346,3 +346,77 @@ fn passing_matchers_do_not_format_their_operands() {
     let r = turbo_test(&p.dir, &[], &[]);
     assert_passes(&r, 18);
 }
+
+/// turbo-test#46: structuredClone is the HTML structured clone (V8's serializer, as Node's):
+/// types, cycles and shared references survive, `transfer` moves ArrayBuffers (the originals
+/// are detached), SharedArrayBuffers are shared, and what cannot be cloned or transferred
+/// throws Node's DataCloneError. The spec passes under vitest 4.1.12.
+const STRUCTURED_CLONE_TEST: &str = r#"import { test, expect } from 'vitest';
+
+// expected values: vitest 4.1.12 (Node 26.11's structuredClone)
+const err = (f: () => unknown) => {
+  try { f(); } catch (e: any) { return [e.constructor.name, e.name, e.message]; }
+  return 'no throw';
+};
+
+test('values keep their types; cycles and shared references survive', () => {
+  const o: any = { d: new Date(5), m: new Map([[1, new Set(['a'])]]), r: /x/gi, big: 10n, u: undefined, n: null };
+  o.self = o;
+  o.twice = [o.d, o.d];
+  const c = structuredClone(o);
+  expect(c).not.toBe(o);
+  expect(c.self).toBe(c);
+  expect(c.d).toBeInstanceOf(Date);
+  expect(c.d.getTime()).toBe(5);
+  expect(c.twice[0]).toBe(c.twice[1]);
+  expect(c.m.get(1).has('a')).toBe(true);
+  expect([c.r.source, c.r.flags, c.big, 'u' in c, c.n]).toEqual(['x', 'gi', 10n, true, null]);
+  const e = structuredClone(new RangeError('boom'));
+  expect([e instanceof RangeError, e.message]).toEqual([true, 'boom']);
+  const u8 = new Uint8Array([1, 2, 3]);
+  const cu = structuredClone(u8);
+  expect([cu instanceof Uint8Array, [...cu], cu.buffer === u8.buffer]).toEqual([true, [1, 2, 3], false]);
+});
+
+test('transfer moves ArrayBuffers; SharedArrayBuffers are shared', () => {
+  const b = new ArrayBuffer(4);
+  new Uint8Array(b)[0] = 9;
+  const c = structuredClone(b, { transfer: [b] });
+  expect([b.byteLength, c.byteLength, new Uint8Array(c)[0]]).toEqual([0, 4, 9]);
+  const u = new Uint8Array([1, 2, 3]);
+  const r = structuredClone({ u }, { transfer: [u.buffer] });
+  expect([u.byteLength, [...r.u]]).toEqual([0, [1, 2, 3]]);
+  const s = new SharedArrayBuffer(4);
+  new Uint8Array(structuredClone(s))[0] = 7;
+  expect(new Uint8Array(s)[0]).toBe(7);
+  expect(structuredClone(1, { transfer: undefined })).toBe(1);
+  expect(structuredClone(2, null as any)).toBe(2);
+});
+
+test('what cannot be cloned or transferred throws as Node', () => {
+  const ab = new ArrayBuffer(2);
+  expect(err(() => structuredClone(1, { transfer: [{} as any] }))).toEqual(['DOMException', 'DataCloneError', 'Found invalid value in transferList.']);
+  expect(err(() => structuredClone(1, { transfer: [ab, ab] }))).toEqual(['DOMException', 'DataCloneError', 'Transfer list contains duplicate ArrayBuffer']);
+  expect(err(() => structuredClone(() => 1))).toEqual(['DOMException', 'DataCloneError', '() => 1 could not be cloned.']);
+  expect(err(() => structuredClone(Symbol()))).toEqual(['DOMException', 'DataCloneError', 'Symbol() could not be cloned.']);
+  expect(err(() => (structuredClone as any)())).toEqual(['TypeError', 'TypeError', 'The "The value argument must be specified" argument must be specified']);
+  expect(err(() => structuredClone(1, { transfer: 5 as any }))).toEqual(['TypeError', 'TypeError', "Failed to execute 'structuredClone': transfer in Options cannot be converted to sequence."]);
+  expect(err(() => structuredClone(1, { transfer: [new SharedArrayBuffer(1) as any] }))).toEqual(['DOMException', 'DataCloneError', 'Found invalid value in transferList.']);
+  const mem = new WebAssembly.Memory({ initial: 1 });
+  expect(err(() => structuredClone(1, { transfer: [mem.buffer] }))).toEqual(['DOMException', 'DataCloneError', 'Cannot transfer object of unsupported type.']);
+  const d = new ArrayBuffer(1);
+  structuredClone(d, { transfer: [d] });
+  expect(err(() => structuredClone(d, { transfer: [d] }))).toEqual(['DOMException', 'DataCloneError', 'Cannot transfer object of unsupported type.']);
+  expect(err(() => structuredClone(d))).toEqual(['DOMException', 'DataCloneError', 'An ArrayBuffer is detached and could not be cloned.']);
+});
+"#;
+
+#[test]
+fn structured_clone_follows_node() {
+    for env in ["node", "jsdom"] {
+        let p = Project::new("rc-structured-clone");
+        p.file("sc.test.ts", STRUCTURED_CLONE_TEST);
+        let r = turbo_test(&p.dir, &["--environment", env], &[]);
+        assert_passes(&r, 3);
+    }
+}

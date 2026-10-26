@@ -658,7 +658,20 @@ if (typeof globalThis.FormData === 'undefined') {
   globalThis.FormData = class FormData { constructor() { this._ = []; } append(k, v) { this._.push([k, v]); } get(k) { const e = this._.find((x) => x[0] === k); return e ? e[1] : null; } getAll(k) { return this._.filter((x) => x[0] === k).map((x) => x[1]); } has(k) { return this._.some((x) => x[0] === k); } forEach(f) { this._.forEach(([k, v]) => f(v, k)); } };
 }
 if (typeof globalThis.structuredClone === 'undefined') {
-  globalThis.structuredClone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+  // V8's structured clone (src/structured_clone.rs), with Node's argument checks: the ArrayBuffers
+  // of `transfer` move to the clone
+  globalThis.structuredClone = function structuredClone(value, options) {
+    if (arguments.length === 0) throw new TypeError('The "The value argument must be specified" argument must be specified');
+    let transfer = [];
+    const t = options == null ? undefined : options.transfer;
+    if (t !== undefined) {
+      if (t === null || (typeof t !== 'object' && typeof t !== 'function') || typeof t[Symbol.iterator] !== 'function') {
+        throw new TypeError("Failed to execute 'structuredClone': transfer in Options cannot be converted to sequence.");
+      }
+      transfer = [...t];
+    }
+    return globalThis.__ttStructuredClone(value, transfer);
+  };
 }
 if (typeof globalThis.global === 'undefined') globalThis.global = globalThis;
 // Tell React it's in a test act() environment: concurrent work defers to the act queue instead

@@ -4549,6 +4549,7 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "__fs_mkdirSync", fs_mkdir_sync);
     bind_fn(scope, global, "__fs_rmSync", fs_rm_sync);
     bind_fn(scope, global, "__fs_readdirSync", fs_readdir_sync);
+    bind_fn(scope, global, "__ttStructuredClone", crate::structured_clone::native_structured_clone);
     if std::env::var("TURBO_STACK").is_ok() {
         if let Some(code) = v8::String::new(scope, "globalThis.__TT_STACK=true") {
             if let Some(s) = v8::Script::compile(scope, code, None) {
