@@ -45,7 +45,7 @@ fn out_dir() -> PathBuf {
 // / html only.)
 
 // Per-metric minimum percentages (0..=100). None = not gated on that metric.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct Thresholds {
     pub lines: Option<f64>,
     pub functions: Option<f64>,
@@ -58,7 +58,12 @@ static PER_FILE: AtomicBool = AtomicBool::new(false);
 /// Parse `lines=90,functions=80,branches=80,statements=90` (any subset, any order). Unknown
 /// keys ignored.
 pub fn set_thresholds(spec: &str) {
-    let mut t = THRESHOLDS.lock().unwrap().unwrap_or_default();
+    let t = THRESHOLDS.lock().unwrap().unwrap_or_default();
+    let t = parse_thresholds(t, spec);
+    *THRESHOLDS.lock().unwrap() = Some(t);
+}
+/// Apply a threshold spec on top of `t` (later keys win; malformed parts are skipped).
+fn parse_thresholds(mut t: Thresholds, spec: &str) -> Thresholds {
     for part in spec.split(',') {
         let Some((k, v)) = part.split_once('=') else { continue };
         let Ok(n) = v.trim().parse::<f64>() else { continue };
@@ -70,7 +75,7 @@ pub fn set_thresholds(spec: &str) {
             _ => {}
         }
     }
-    *THRESHOLDS.lock().unwrap() = Some(t);
+    t
 }
 pub fn set_per_file(on: bool) {
     PER_FILE.store(on, Ordering::Relaxed);
@@ -279,10 +284,15 @@ fn passes_globs(file: &Path) -> bool {
     let rel = rel.to_string_lossy().replace('\\', "/");
     let inc = INCLUDE.lock().unwrap();
     let exc = EXCLUDE.lock().unwrap();
-    if !inc.is_empty() && !inc.iter().any(|g| glob_match(g, &rel)) {
+    glob_filter(&rel, &inc, &exc)
+}
+
+/// Include/exclude decision for a cwd-relative POSIX path: empty include = everything.
+fn glob_filter(rel: &str, inc: &[String], exc: &[String]) -> bool {
+    if !inc.is_empty() && !inc.iter().any(|g| glob_match(g, rel)) {
         return false;
     }
-    if exc.iter().any(|g| glob_match(g, &rel)) {
+    if exc.iter().any(|g| glob_match(g, rel)) {
         return false;
     }
     true
@@ -789,6 +799,7 @@ pub fn map_statements(file: &Path, ranges: &[(usize, usize, i64)]) {
 // ---- report emission ------------------------------------------------------------------------
 
 /// Per-file coverage row used by every reporter + the gate.
+#[derive(Debug, Clone, PartialEq)]
 struct Row {
     path: PathBuf,
     lh: u64,
@@ -835,34 +846,156 @@ pub fn report() -> bool {
         })
         .unwrap_or_default();
     if files.is_empty() {
-        eprintln!("\n  coverage ERROR: 0 source files instrumented.");
-        if nothing_collected {
-            eprintln!("    No instrumentable source was loaded under --coverage.");
-        } else {
-            let inc = INCLUDE.lock().unwrap();
-            eprintln!(
-                "    The coverage.include globs matched no loaded source: [{}]",
-                inc.join(", ")
-            );
-        }
-        eprintln!("    Refusing to report a vacuous 0/0 pass — check coverage.include / paths.");
+        let inc = INCLUDE.lock().unwrap();
+        eprint!("{}", zero_files_message(nothing_collected, &inc));
         return false;
     }
     files.sort_by(|a, b| a.0.cmp(b.0));
 
     let fn_g = FN_COV.lock().unwrap();
-    let fn_map = fn_g.as_ref();
     let br_g = BR_COV.lock().unwrap();
-    let br_map = br_g.as_ref();
     let st_g = ST_COV.lock().unwrap();
-    let st_map = st_g.as_ref();
+    let (lcov, rows, total) = build_rows(&files, fn_g.as_ref(), br_g.as_ref(), st_g.as_ref());
 
+    let out_dir = out_dir();
+    let _ = std::fs::create_dir_all(&out_dir);
+    let reporters = reporters();
+    let has = |r: &str| reporters.iter().any(|x| x == r);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    // ---- lcov ----
+    let lcov_path = out_dir.join("lcov.info");
+    if has("lcov") {
+        let _ = std::fs::write(&lcov_path, &lcov);
+    }
+    // ---- json-summary (vitest/c8 shape; no `statements` — V8 has no statement metric) ----
+    if has("json-summary") || has("json") {
+        let json_path = out_dir.join("coverage-summary.json");
+        let _ = std::fs::write(&json_path, json_summary(&total, &rows));
+    }
+    // ---- html (browsable overview table) ----
+    if has("html") {
+        let html_path = out_dir.join("index.html");
+        let _ = std::fs::write(&html_path, html_summary(&total, &rows, &cwd));
+    }
+
+    // ---- text (terminal summary) — on by default, suppress only if reporters set without it ----
+    if has("text") {
+        let mut outs: Vec<String> = Vec::new();
+        if has("lcov") {
+            outs.push(lcov_path.display().to_string());
+        }
+        if has("json-summary") || has("json") {
+            outs.push(out_dir.join("coverage-summary.json").display().to_string());
+        }
+        if has("html") {
+            outs.push(out_dir.join("index.html").display().to_string());
+        }
+        print!("{}", text_summary(&total, &rows, &cwd, &outs));
+    }
+
+    // ---- threshold gate ----
+    gate(&total, &rows, &cwd)
+}
+
+/// Check global (and, under `--coverage-per-file`, per-file) thresholds. Prints each unmet metric
+/// and returns `false` if any failed. No thresholds configured → always `true`.
+fn gate(total: &Row, rows: &[Row], cwd: &Path) -> bool {
+    let Some(t) = *THRESHOLDS.lock().unwrap() else { return true };
+    let failures = threshold_failures(&t, PER_FILE.load(Ordering::Relaxed), total, rows, cwd);
+    print!("{}", gate_message(&failures));
+    failures.is_empty()
+}
+
+/// Every unmet metric as `<label>: <metric> <pct>% < <min>%` — the total first, then (under
+/// `per_file`) each file by its cwd-relative path.
+fn threshold_failures(
+    t: &Thresholds,
+    per_file: bool,
+    total: &Row,
+    rows: &[Row],
+    cwd: &Path,
+) -> Vec<String> {
+    let mut failures: Vec<String> = Vec::new();
+
+    let check = |label: &str, fails: &mut Vec<String>, row: &Row| {
+        let metrics: [(Option<f64>, &str, f64); 4] = [
+            (t.lines, "lines", row.lpct()),
+            (t.functions, "functions", row.fpct()),
+            (t.branches, "branches", row.bpct()),
+            (t.statements, "statements", row.spct()),
+        ];
+        for (thr, name, pct) in metrics {
+            if let Some(min) = thr {
+                if pct + 1e-9 < min {
+                    fails.push(format!("{label}: {name} {pct:.2}% < {min}%"));
+                }
+            }
+        }
+    };
+
+    check("total", &mut failures, total);
+    if per_file {
+        for r in rows {
+            check(&short_path(&r.path, cwd), &mut failures, r);
+        }
+    }
+    failures
+}
+
+/// The gate's stdout block: a pass line, or the numbered list of failures.
+fn gate_message(failures: &[String]) -> String {
+    if failures.is_empty() {
+        return "  coverage thresholds met ✓\n".to_string();
+    }
+    let mut s = format!("\n  coverage threshold FAILURES ({}):\n", failures.len());
+    for f in failures {
+        s.push_str(&format!("    ✗ {f}\n"));
+    }
+    s
+}
+
+/// `path` relative to `cwd` when it lies under it, else the full path.
+fn short_path(path: &Path, cwd: &Path) -> String {
+    path.strip_prefix(cwd)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string_lossy().into_owned())
+}
+
+/// stderr explanation for the "0 instrumented files" hard failure.
+fn zero_files_message(nothing_collected: bool, inc: &[String]) -> String {
+    let mut s = String::from("\n  coverage ERROR: 0 source files instrumented.\n");
+    if nothing_collected {
+        s.push_str("    No instrumentable source was loaded under --coverage.\n");
+    } else {
+        s.push_str(&format!(
+            "    The coverage.include globs matched no loaded source: [{}]\n",
+            inc.join(", ")
+        ));
+    }
+    s.push_str("    Refusing to report a vacuous 0/0 pass — check coverage.include / paths.\n");
+    s
+}
+
+type LineHits = HashMap<u32, u64>;
+type FnHits = HashMap<PathBuf, HashMap<(u32, String), u64>>;
+type BrHits = HashMap<PathBuf, HashMap<(u32, u32), (u32, bool, u64)>>;
+type StHits = HashMap<PathBuf, HashMap<u32, (u32, u64)>>;
+
+/// Build the lcov text, the per-file rows and the totals row from the merged hit maps for the
+/// (already filtered + sorted) `files`.
+fn build_rows(
+    files: &[(&PathBuf, &LineHits)],
+    fn_map: Option<&FnHits>,
+    br_map: Option<&BrHits>,
+    st_map: Option<&StHits>,
+) -> (String, Vec<Row>, Row) {
     let mut lcov = String::new();
     let (mut tot_lf, mut tot_lh, mut tot_fnf, mut tot_fnh, mut tot_brf, mut tot_brh) =
         (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let (mut tot_sf, mut tot_sh) = (0u64, 0u64);
     let mut rows: Vec<Row> = Vec::new();
-    for (file, lines) in &files {
+    for (file, lines) in files {
         lcov.push_str(&format!("SF:{}\n", file.display()));
 
         // functions (FN/FNDA), sorted by line then name
@@ -935,125 +1068,42 @@ pub fn report() -> bool {
         sh: tot_sh,
         sf: tot_sf,
     };
-
-    let out_dir = out_dir();
-    let _ = std::fs::create_dir_all(&out_dir);
-    let reporters = reporters();
-    let has = |r: &str| reporters.iter().any(|x| x == r);
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-    // ---- lcov ----
-    let lcov_path = out_dir.join("lcov.info");
-    if has("lcov") {
-        let _ = std::fs::write(&lcov_path, &lcov);
-    }
-    // ---- json-summary (vitest/c8 shape; no `statements` — V8 has no statement metric) ----
-    if has("json-summary") || has("json") {
-        let json_path = out_dir.join("coverage-summary.json");
-        let _ = std::fs::write(&json_path, json_summary(&total, &rows));
-    }
-    // ---- html (browsable overview table) ----
-    if has("html") {
-        let html_path = out_dir.join("index.html");
-        let _ = std::fs::write(&html_path, html_summary(&total, &rows, &cwd));
-    }
-
-    // ---- text (terminal summary) — on by default, suppress only if reporters set without it ----
-    if has("text") {
-        println!("\n Coverage — {} files (lines | funcs | branches | stmts)", rows.len());
-        for r in &rows {
-            let short = r
-                .path
-                .strip_prefix(&cwd)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| r.path.to_string_lossy().into_owned());
-            println!(
-                "  {:>6.2}% ln  {:>6.2}% fn  {:>6.2}% br  {:>6.2}% st   {}",
-                r.lpct(),
-                r.fpct(),
-                r.bpct(),
-                r.spct(),
-                short
-            );
-        }
-        println!("  ------");
-        println!(
-            "  {:>6.2}% lines ({}/{})   {:>6.2}% fns ({}/{})   {:>6.2}% branches ({}/{})   {:>6.2}% stmts ({}/{})",
-            total.lpct(),
-            total.lh,
-            total.lf,
-            total.fpct(),
-            total.fnh,
-            total.fnf,
-            total.bpct(),
-            total.brh,
-            total.brf,
-            total.spct(),
-            total.sh,
-            total.sf
-        );
-        let mut outs: Vec<String> = Vec::new();
-        if has("lcov") {
-            outs.push(lcov_path.display().to_string());
-        }
-        if has("json-summary") || has("json") {
-            outs.push(out_dir.join("coverage-summary.json").display().to_string());
-        }
-        if has("html") {
-            outs.push(out_dir.join("index.html").display().to_string());
-        }
-        if !outs.is_empty() {
-            println!("  → {}", outs.join("  "));
-        }
-    }
-
-    // ---- threshold gate ----
-    gate(&total, &rows, &cwd)
+    (lcov, rows, total)
 }
 
-/// Check global (and, under `--coverage-per-file`, per-file) thresholds. Prints each unmet metric
-/// and returns `false` if any failed. No thresholds configured → always `true`.
-fn gate(total: &Row, rows: &[Row], cwd: &Path) -> bool {
-    let Some(t) = *THRESHOLDS.lock().unwrap() else { return true };
-    let mut failures: Vec<String> = Vec::new();
-
-    let check = |label: &str, fails: &mut Vec<String>, row: &Row| {
-        let metrics: [(Option<f64>, &str, f64); 4] = [
-            (t.lines, "lines", row.lpct()),
-            (t.functions, "functions", row.fpct()),
-            (t.branches, "branches", row.bpct()),
-            (t.statements, "statements", row.spct()),
-        ];
-        for (thr, name, pct) in metrics {
-            if let Some(min) = thr {
-                if pct + 1e-9 < min {
-                    fails.push(format!("{label}: {name} {pct:.2}% < {min}%"));
-                }
-            }
-        }
-    };
-
-    check("total", &mut failures, total);
-    if PER_FILE.load(Ordering::Relaxed) {
-        for r in rows {
-            let short = r
-                .path
-                .strip_prefix(cwd)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| r.path.to_string_lossy().into_owned());
-            check(&short, &mut failures, r);
-        }
+/// The `text` reporter's terminal summary; `outs` = the report files written (may be empty).
+fn text_summary(total: &Row, rows: &[Row], cwd: &Path, outs: &[String]) -> String {
+    let mut s = format!("\n Coverage — {} files (lines | funcs | branches | stmts)\n", rows.len());
+    for r in rows {
+        s.push_str(&format!(
+            "  {:>6.2}% ln  {:>6.2}% fn  {:>6.2}% br  {:>6.2}% st   {}\n",
+            r.lpct(),
+            r.fpct(),
+            r.bpct(),
+            r.spct(),
+            short_path(&r.path, cwd)
+        ));
     }
-
-    if failures.is_empty() {
-        println!("  coverage thresholds met ✓");
-        return true;
+    s.push_str("  ------\n");
+    s.push_str(&format!(
+        "  {:>6.2}% lines ({}/{})   {:>6.2}% fns ({}/{})   {:>6.2}% branches ({}/{})   {:>6.2}% stmts ({}/{})\n",
+        total.lpct(),
+        total.lh,
+        total.lf,
+        total.fpct(),
+        total.fnh,
+        total.fnf,
+        total.bpct(),
+        total.brh,
+        total.brf,
+        total.spct(),
+        total.sh,
+        total.sf
+    ));
+    if !outs.is_empty() {
+        s.push_str(&format!("  → {}\n", outs.join("  ")));
     }
-    println!("\n  coverage threshold FAILURES ({}):", failures.len());
-    for f in &failures {
-        println!("    ✗ {f}");
-    }
-    false
+    s
 }
 
 /// vitest/c8 `coverage-summary.json`: a `total` block + one block per absolute file path. Each
@@ -1105,11 +1155,7 @@ fn html_summary(total: &Row, rows: &[Row], cwd: &Path) -> String {
         )
     };
     for r in rows {
-        let short = r
-            .path
-            .strip_prefix(cwd)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| r.path.to_string_lossy().into_owned());
+        let short = short_path(&r.path, cwd);
         body.push_str(&format!(
             "<tr><td class=\"file\">{}</td>{}{}{}{}</tr>\n",
             esc(&short),
@@ -1141,6 +1187,10 @@ tfoot td{{font-weight:600;border-top:2px solid #ccc}}\
         cell(total.bpct(), total.brh, total.brf)
     )
 }
+
+#[cfg(test)]
+#[path = "coverage_tests.rs"]
+mod unit_tests;
 
 #[cfg(test)]
 mod tests {

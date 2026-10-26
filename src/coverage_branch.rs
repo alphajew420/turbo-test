@@ -113,6 +113,10 @@ pub fn extract_all(file: &Path, source: &str) -> (Vec<RawBranch>, Vec<u32>) {
 }
 
 #[cfg(test)]
+#[path = "coverage_branch_tests.rs"]
+mod unit_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
