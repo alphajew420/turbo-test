@@ -767,3 +767,21 @@ fn short_path_strips_only_a_matching_prefix() {
     );
     assert_eq!(short_path(Path::new("/q/a.ts"), Path::new("/p")), "/q/a.ts");
 }
+
+// ---- inspector channel ------------------------------------------------------------------------
+
+#[test]
+fn channel_keeps_only_the_latest_response_and_ignores_notifications() {
+    use v8::inspector::{ChannelImpl, StringBuffer, StringView};
+    let resp = Rc::new(RefCell::new(None));
+    let ch = CovChannel { resp: resp.clone() };
+    let buf = |s: &'static str| StringBuffer::create(StringView::from(s.as_bytes()));
+    ch.send_response(3, buf("{\"id\":3,\"result\":{}}"));
+    assert_eq!(resp.borrow().as_deref(), Some("{\"id\":3,\"result\":{}}"));
+    // notifications (e.g. Profiler.consoleProfileStarted) never clobber the pending response
+    ch.send_notification(buf("{\"method\":\"Profiler.consoleProfileStarted\"}"));
+    ch.flush_protocol_notifications();
+    // nor does a null response buffer
+    ch.send_response(4, v8::UniquePtr::default());
+    assert_eq!(resp.borrow().as_deref(), Some("{\"id\":3,\"result\":{}}"));
+}
