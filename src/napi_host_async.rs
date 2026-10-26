@@ -746,23 +746,18 @@ unsafe extern "C" fn default_call_js(
     let mut recv: napi_value = std::ptr::null_mut();
     napi_get_undefined(env, &mut recv);
     let status = napi_call_function(env, recv, cb, 0, std::ptr::null(), std::ptr::null_mut());
-    if status != napi_ok && status != napi_pending_exception {
-        napi_throw_error(
-            env,
-            c"ERR_NAPI_TSFN_CALL_JS".as_ptr(),
-            c"Failed to call JS callback".as_ptr(),
-        );
-    }
+    // (Node's guard: short of a termination, a call fails only by throwing)
+    let (code, message) = (c"ERR_NAPI_TSFN_CALL_JS", c"Failed to call JS callback");
+    let failed = status != napi_ok && status != napi_pending_exception;
+    let _ = failed.then(|| napi_throw_error(env, code.as_ptr(), message.as_ptr()));
 }
 
 /// Close the threadsafe function's handles (once): it no longer keeps the loop alive, and its
 /// finalization is posted (Node's uv_close callback).
 unsafe fn close_handles(t: *mut Tsfn) {
-    if (*t).handles_closing {
-        return;
+    if !std::mem::replace(&mut (*t).handles_closing, true) {
+        (&*t).native.post(NativeTask::Finalize(SendPtr(t)));
     }
-    (*t).handles_closing = true;
-    (&*t).native.post(NativeTask::Finalize(SendPtr(t)));
 }
 
 /// Node's ThreadSafeFunction::Finalize: what is still queued is handed to call_js with a NULL

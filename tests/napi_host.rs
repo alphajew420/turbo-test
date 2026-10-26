@@ -364,7 +364,7 @@ fn async_work_and_threadsafe_functions_run_on_the_event_loop() {
     let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
     let j = json_report(&r);
     assert_eq!(j["numFailedTests"], 0, "{}", r.all());
-    assert_eq!(j["numPassedTests"], 15, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 17, "{}", r.all());
     assert!(
         r.stderr.contains("uncaught thrown by a complete callback"),
         "{}",

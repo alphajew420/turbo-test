@@ -327,6 +327,50 @@ static napi_value f_tsfn_held_let_go(napi_env env, napi_callback_info info) {
     return nums(env, 2, st);
 }
 
+/* tsfnDefaultAborted(fn) -> a promise as tsfnThreads': a call through the default call_js left
+ * queued by an abort; at finalization it reaches the default call_js with a NULL env, which
+ * does not call fn */
+static napi_value f_tsfn_default_aborted(napi_env env, napi_callback_info info) {
+    napi_value argv[1], promise;
+    args(env, info, argv, 1);
+    Tsfn *t = calloc(1, sizeof *t);
+    for (int i = 0; i < 16; i++) t->statuses[i] = -1;
+    napi_create_promise(env, &t->done, &promise);
+    t->statuses[0] = napi_create_threadsafe_function(env, argv[0], NULL, str(env, "aborted"), 0,
+                                                     1, NULL, tsfn_finalize, t, NULL, &t->tsfn);
+    t->statuses[1] = napi_call_threadsafe_function(t->tsfn, NULL, napi_tsfn_nonblocking);
+    t->statuses[2] = napi_release_threadsafe_function(t->tsfn, napi_tsfn_abort);
+    return promise;
+}
+
+/* host-only: tsfnHeldLate() -> as tsfnHeld, the holders let go only after the finalization
+ * has completed (in Node the threadsafe function is freed then, and these calls are a use after
+ * free); tsfnLateLetGo(release) -> [a call (napi_closing: one holder left), then the last
+ * holder's call (napi_closing) or release (napi_ok); the last one frees it] */
+static napi_threadsafe_function g_late;
+static napi_value f_tsfn_held_late(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value promise;
+    Tsfn *t = calloc(1, sizeof *t);
+    for (int i = 0; i < 16; i++) t->statuses[i] = -1;
+    napi_create_promise(env, &t->done, &promise);
+    t->statuses[0] = napi_create_threadsafe_function(env, NULL, NULL, str(env, "late"), 0, 3, NULL,
+                                                     tsfn_finalize, t, tsfn_call_js, &g_late);
+    t->statuses[1] = napi_release_threadsafe_function(g_late, napi_tsfn_abort);
+    return promise;
+}
+static napi_value f_tsfn_late_let_go(napi_env env, napi_callback_info info) {
+    napi_value argv[1];
+    args(env, info, argv, 1);
+    bool release = false;
+    napi_get_value_bool(env, argv[0], &release);
+    double st[2];
+    st[0] = napi_call_threadsafe_function(g_late, NULL, napi_tsfn_nonblocking);
+    st[1] = release ? napi_release_threadsafe_function(g_late, napi_tsfn_release)
+                    : napi_call_threadsafe_function(g_late, NULL, napi_tsfn_nonblocking);
+    return nums(env, 2, st);
+}
+
 static void throwing_call_js(napi_env env, napi_value js_cb, void *context, void *data) {
     (void)js_cb;
     (void)data;
@@ -460,6 +504,9 @@ static const struct {
     {"tsfnRelease", f_tsfn_release},
     {"tsfnHeld", f_tsfn_held},
     {"tsfnHeldLetGo", f_tsfn_held_let_go},
+    {"tsfnDefaultAborted", f_tsfn_default_aborted},
+    {"tsfnHeldLate", f_tsfn_held_late},
+    {"tsfnLateLetGo", f_tsfn_late_let_go},
     {"tsfnThrows", f_tsfn_throws},
     {"tsfnChecks", f_tsfn_checks},
     {"makeCallback", f_make_callback},

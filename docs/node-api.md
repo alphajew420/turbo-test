@@ -33,7 +33,7 @@ exit.
 The expected values of the tests are Node 26.11's: each fixture under `tests/napi_support/`
 (`*.c`, compiled at test time) is run by its spec both under turbo-test
 (`tests/napi_host.rs`) and under Node with the same addon, apart from the cases marked
-host-only in the specs (where Node aborts, crashes or deadlocks).
+host-only in the specs (where Node aborts, crashes, deadlocks or uses freed memory).
 
 ## Inventory
 
@@ -164,7 +164,7 @@ Version: the first `NAPI_VERSION` that declares the function. Tests: the specs u
 | `napi_create_threadsafe_function` | 4 | node_api.h | implemented | api.test.ts, async.test.ts, cleanup.test.ts, full.test.ts | the calls run on the JS thread between macrotasks; a referenced one keeps the event loop alive |
 | `napi_get_threadsafe_function_context` | 4 | node_api.h | implemented | async.test.ts |  |
 | `napi_ref_threadsafe_function` | 4 | node_api.h | implemented | async.test.ts |  |
-| `napi_release_threadsafe_function` | 4 | node_api.h | implemented | async.test.ts |  |
+| `napi_release_threadsafe_function` | 4 | node_api.h | implemented | async.test.ts | finalized while threads still hold it, it is freed when the last one lets go (Node frees it at finalization; their later calls are a use after free) |
 | `napi_unref_threadsafe_function` | 4 | node_api.h | implemented | async.test.ts, cleanup.test.ts, full.test.ts |  |
 | `napi_add_finalizer` | 5 | js_native_api.h | implemented | api.test.ts, typetag.test.ts, wrap.test.ts | an exception the finalizer leaves pending is uncaught (reported from the event loop) |
 | `napi_create_date` | 5 | js_native_api.h | implemented | api.test.ts |  |

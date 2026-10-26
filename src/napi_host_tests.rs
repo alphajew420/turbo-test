@@ -307,3 +307,31 @@ fn native_tasks_keep_the_loop_alive_until_they_run() {
         }
     });
 }
+
+/// The host-only answers where Node crashes or aborts the process: a NULL deferred, and the
+/// same env cleanup hook (function and argument) registered twice.
+#[test]
+fn null_deferred_and_duplicate_cleanup_hook_are_invalid_arg() {
+    unsafe extern "C" fn hook(_: *mut c_void) {}
+    with_scope(|s| {
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        let arg = 1usize as *mut c_void;
+        unsafe {
+            let v = to_napi(v8::undefined(s).into());
+            let null = std::ptr::null_mut();
+            assert_eq!(napi_resolve_deferred(e, null, v), napi_invalid_arg);
+            assert_eq!(napi_reject_deferred(e, null, v), napi_invalid_arg);
+            assert_eq!(napi_add_env_cleanup_hook(e, Some(hook), arg), napi_ok);
+            assert_eq!(
+                napi_add_env_cleanup_hook(e, Some(hook), arg),
+                napi_invalid_arg
+            );
+            // another argument is another hook
+            assert_eq!(napi_add_env_cleanup_hook(e, Some(hook), null), napi_ok);
+            assert_eq!(napi_remove_env_cleanup_hook(e, Some(hook), arg), napi_ok);
+            assert_eq!(napi_remove_env_cleanup_hook(e, Some(hook), null), napi_ok);
+            assert!(teardown_of(e).borrow().is_empty());
+        }
+    });
+}

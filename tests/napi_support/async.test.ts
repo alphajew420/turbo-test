@@ -69,6 +69,13 @@ describe('threadsafe functions', () => {
     expect(r.slice(0, 3)).toEqual([OK, OK, OK]);
   });
 
+  test('an aborted call through the default call_js never calls the function', async () => {
+    const calls: unknown[][] = [];
+    const r = await a.tsfnDefaultAborted((...args: unknown[]) => calls.push(args));
+    expect(r.slice(0, 3)).toEqual([OK, OK, OK]);
+    expect(calls).toEqual([]);
+  });
+
   test('a full queue, acquire, context, ref / unref, abort', async () => {
     const r = await a.tsfnLifecycle();
     // ... and with no holder left a call is napi_invalid_arg
@@ -99,6 +106,16 @@ describe('threadsafe functions', () => {
   test('argument checks', () => {
     expect(a.tsfnChecks(() => {})).toEqual([INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG,
       INVALID_ARG]);
+  });
+
+  // host-only: in Node these calls come after the threadsafe function was freed
+  test('host-only: holders letting go after the finalization free it', async () => {
+    for (const release of [false, true]) {
+      const r = await a.tsfnHeldLate();
+      expect(r.slice(0, 2)).toEqual([OK, OK]);
+      await sleep(0);
+      expect(a.tsfnLateLetGo(release)).toEqual([CLOSING, release ? OK : CLOSING]);
+    }
   });
 
   // host-only: Node aborts on a NULL threadsafe function

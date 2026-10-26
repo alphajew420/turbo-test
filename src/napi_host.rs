@@ -3300,17 +3300,17 @@ unsafe fn fatal_error_line(
     format!("FATAL ERROR: {location} {message}")
 }
 
-/// Write the coverage counters of an instrumented build (LLVM's profile runtime) before the
-/// process aborts, which skips the exit hook that normally writes them; nothing otherwise.
-#[cfg(unix)]
+/// Write the coverage counters of a `cargo tarpaulin` build (LLVM's profile runtime, linked into
+/// instrumented binaries) before the process aborts, which skips the exit hook that normally
+/// writes them; nothing otherwise.
+#[cfg(tarpaulin)]
 fn flush_coverage() {
-    let this = libloading::os::unix::Library::this();
-    let write = unsafe { this.get::<unsafe extern "C" fn() -> i32>(b"__llvm_profile_write_file") };
-    if let Ok(write) = write {
-        unsafe { write() };
+    extern "C" {
+        fn __llvm_profile_write_file() -> i32;
     }
+    unsafe { __llvm_profile_write_file() };
 }
-#[cfg(not(unix))]
+#[cfg(not(tarpaulin))]
 fn flush_coverage() {}
 
 #[no_mangle]
