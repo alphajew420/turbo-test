@@ -2164,9 +2164,9 @@ dependencies = [
 
 [[package]]
 name = "turbo-dom"
-version = "0.5.7"
+version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c759ebdc434d90ce8ba1301ff94a5b17553b61c594de60118e0af8d337f25e4"
+checksum = "b5adc7f11b1ce74d816e23d713bb824fa2375188e31b90fd0f37d88aa4e22502"
 dependencies = [
  "html5ever",
  "log",
@@ -2178,7 +2178,9 @@ dependencies = [
 
 [[package]]
 name = "turbo-surf-v8"
-version = "149.3.0"
+version = "150.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c120db93d7df8c391e904ae6cee92aff7fe780f20e4fc68c8d5d63a6c446fb0"
 dependencies = [
  "bindgen",
  "bitflags",

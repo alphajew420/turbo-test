@@ -34,7 +34,7 @@ url = "2.5"
 # Public-suffix registry for document.domain's top-level-domain check (Blink
 # includes private registries such as github.io).
 psl = "2"
-v8 = { package = "turbo-surf-v8", version = "=149.3.0", path = "vendor/rusty_v8" }
+v8 = { package = "turbo-surf-v8", version = "=150.4.0" }
 oxc_allocator = "0.134"
 oxc_parser = "0.134"
 oxc_span = "0.134"
@@ -54,7 +54,7 @@ cssparser = "0.37"
 # Public native rtdom API only. The published0.5.7 release supplies custom
 # state selectors, bounded storage accounting and actual-context fragments.
 # Keep the existing turbo_dom_parser import name through the package alias.
-turbo-dom-parser = { package = "turbo-dom", version = "0.5.7" }
+turbo-dom-parser = { package = "turbo-dom", version = "0.5.8" }
 
 
 [profile.release]
