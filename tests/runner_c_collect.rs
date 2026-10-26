@@ -221,7 +221,6 @@ fn each_titles_are_formatted_like_vitest() {
 }
 
 #[test]
-#[ignore = "turbo-test#68: fails until the fix"]
 fn for_collects_one_task_per_row() {
     // turbo-test#68: `test.for` / `it.for` / `describe.for` were missing (TypeError at load).
     // vitest 4.1.12 passes each row as ONE argument plus the test context; the expected TAP is

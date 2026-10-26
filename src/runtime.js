@@ -2956,6 +2956,24 @@ function __each(register, cases, targs) {
   };
 }
 
+// `.for` (turbo-test#68): like `.each`, but the row is passed as ONE argument (never spread),
+// followed by the test context for a test (its fixtures under it.extend; otherwise a minimal
+// context carrying `expect`). A `describe.for` body gets the row only.
+function __for(register, cases, targs, isSuite) {
+  cases = __eachCases(cases, targs);
+  return (name, a, b) => {
+    const title = __formatName(name);
+    const fnFirst = typeof a === 'function';
+    const handler = fnFirst ? a : b;
+    const opts = fnFirst ? b : a;
+    cases.forEach((item, idx) => {
+      const ctxOf = (ctx) => (ctx === undefined ? { expect: globalThis.expect } : ctx);
+      const fn = (ctx) => (typeof handler !== 'function' ? undefined : isSuite ? handler(item) : handler(item, ctxOf(ctx)));
+      register(__formatTitle(title, item == null ? [] : Array.isArray(item) ? item : [item], idx), fn, opts);
+    });
+  };
+}
+
 // ---- collector: describe / it / hooks ----
 // A suite's `tasks` hold its tests and child suites (`suite: true`) in declaration order: vitest
 // runs and reports them in that order (turbo-test#64).
@@ -2983,6 +3001,7 @@ describe.skipIf = (cond) => (name, a, b) => { if (cond) { __tt.skippedSuites++; 
 describe.runIf = (cond) => (name, a, b) => { if (!cond) { __tt.skippedSuites++; return; } describe(name, a, b); };
 describe.concurrent = describe; // accepted; a file's tests still run sequentially
 describe.each = (cases, ...targs) => __each(describe, cases, targs);
+describe.for = (cases, ...targs) => __for(describe, cases, targs, true);
 // Supports both vitest signatures: it(name, fn, opts) and it(name, opts, fn).
 function __normTest(a, b) {
   let fn, o;
@@ -3006,6 +3025,7 @@ it.todo = (name) => current.tasks.push({ name, fn: () => {}, skip: true });
 it.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn, skip: false, only: true, retry: o.retry || 0, timeout: o.timeout }); };
 it.concurrent = it; // accepted; this runner executes a file's tests sequentially
 it.each = (cases, ...targs) => __each(it, cases, targs);
+it.for = (cases, ...targs) => __for(it, cases, targs);
 it.skipIf = (cond) => (name, fn) => current.tasks.push({ name, fn, skip: !!cond, only: false, retry: 0 });
 it.runIf = (cond) => (name, fn) => current.tasks.push({ name, fn, skip: !cond, only: false, retry: 0 });
 // it.fails: the test PASSES iff its body throws (runSuite inverts the outcome via `fails`).
@@ -3036,6 +3056,7 @@ it.extend = (fixtures) => {
   ext.skip = (name, a, b) => current.tasks.push({ name, fn: wrap(__normTest(a, b).fn), skip: true });
   ext.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn: wrap(fn), skip: false, only: true, retry: o.retry || 0 }); };
   ext.each = (cases, ...targs) => __each(ext, cases, targs);
+  ext.for = (cases, ...targs) => __for(ext, cases, targs);
   ext.extend = (more) => it.extend({ ...fixtures, ...more });
   return ext;
 };

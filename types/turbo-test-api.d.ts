@@ -79,6 +79,22 @@ export interface TestEachFunction {
   (...args: [TemplateStringsArray, ...any]): EachFunctionReturn<any[]>;
 }
 
+// `test.for` / `describe.for`: the row is ONE argument (not spread); a test also gets its context.
+export interface TestForFunctionReturn<Arg> {
+  (name: string | Function, fn: (arg: Arg, context: TestContext) => any): void;
+  (name: string | Function, options: TestOptions, fn: (arg: Arg, context: TestContext) => any): void;
+}
+
+export interface TestForFunction {
+  <T>(cases: ReadonlyArray<T>): TestForFunctionReturn<T>;
+  (strings: TemplateStringsArray, ...values: any[]): TestForFunctionReturn<any>;
+}
+
+export interface SuiteForFunction {
+  <T>(cases: ReadonlyArray<T>): (name: string | Function, fn: (arg: T) => any) => void;
+  (strings: TemplateStringsArray, ...values: any[]): (name: string | Function, fn: (arg: any) => any) => void;
+}
+
 export interface TestAPI {
   (name: string, fn?: TestFunction, timeout?: number | TestOptions): void;
   only: TestAPI;
@@ -87,6 +103,7 @@ export interface TestAPI {
   concurrent: TestAPI;
   fails: TestAPI;
   each: TestEachFunction;
+  for: TestForFunction;
 }
 
 export interface SuiteAPI {
@@ -96,6 +113,7 @@ export interface SuiteAPI {
   todo: (name: string) => void;
   concurrent: SuiteAPI;
   each: TestEachFunction;
+  for: SuiteForFunction;
 }
 
 // vitest's hooks pass a context (`beforeEach((ctx, suite) => …)`) and accept any return — a

@@ -107,3 +107,19 @@ void expect.soft;
 void expect.unreachable;
 void expect.poll;
 void expect.assertType;
+
+// ---- test.for / describe.for: the row is one argument, plus the test context ------------------
+test.for([[1, 2]] as const)('for %i %i', ([a, b], ctx) => {
+  const sum: number = a + b;
+  void sum;
+  void ctx.expect;
+});
+it.for(['x'])('for %s', (s) => {
+  const str: string = s;
+  void str;
+});
+test.for`a | b ${1} | ${2}`('tpl $a $b', (row) => void row);
+describe.for([{ n: 'x' }])('d $n', (row) => {
+  const n: string = row.n;
+  void n;
+});

@@ -129,7 +129,7 @@ Mostly strong. Notable gaps:
 |---|---|---|
 | `describe` / `.skip` / `.only` / `.each` | ✅ | `.each` titles are formatted as vitest's `formatTitle`: printf placeholders (`%s %d %i %f %j %o %O %c %%`), `%#` / `%$`, `$key` / `$a.b` / `$0` attributes and the tagged-template table, with values rendered as vitest's loupe `inspect` / `objDisplay`. A function title is its `name`, as in vitest. |
 | `describe.todo` / `.skipIf` / `.runIf` / `.concurrent` | ✅ | All four added (`runtime.js`). `todo` registers nothing; `skipIf`/`runIf` register the whole block only when the condition allows; `concurrent` is an accepted alias (tests still run **sequentially** within a file). |
-| `it`/`test`, `.skip`/`.only`/`.todo`/`.each`/`.skipIf`/`.runIf` | ✅ | |
+| `it`/`test`, `.skip`/`.only`/`.todo`/`.each`/`.for`/`.skipIf`/`.runIf` | ✅ | `.for` (also `describe.for`) passes each row as one argument, then a minimal test context (`{ expect }`; the fixtures under `it.extend`). |
 | `it.concurrent` | 🟡 | Accepted as alias; tests still run **sequentially** within a file. |
 | `it.fails` | ✅ | Outcome inverted in `runSuite` (a throwing body passes; a clean body fails). Honors per-test `{ retry }`. |
 | `it.extend` (fixtures) | 🟡 | Best-effort. Fixtures (plain values + `async ({deps}, use) => use(v)` functions) are resolved and passed as the test fn's first-arg context. `.skip/.only/.each/.extend` chain off the returned test. No per-fixture teardown after `use()`, no `{ auto }`/scoped fixtures, no `TestContext` extras (`task`, `expect`, `onTestFinished`, `annotate`). |

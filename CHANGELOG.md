@@ -76,6 +76,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   `$a.b` attributes and the tagged-template table, values rendered like vitest's `inspect`. They
   were the template plus ` [i]` (`describe.each` kept the bare template), and a tagged table was
   read as one row per cell.
+- `test.for` / `it.for` / `describe.for` (turbo-test#68): a file using one failed to load
+  (`TypeError: test.for is not a function`). Each row is one argument (not spread), followed for
+  a test by its context; titles are formatted like `.each`. Typed in the `.d.ts` shim.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain
