@@ -634,7 +634,8 @@ pub unsafe extern "C" fn napi_create_typedarray(
         let ab: v8::Local<v8::ArrayBuffer> = to_local(arraybuffer)
             .try_into()
             .map_err(|_| napi_invalid_arg)?;
-        // napi typedarray type codes -> matching v8 typed array. `length` is in ELEMENTS.
+        // napi_typedarray_type codes (Node 26: 0..=11) -> matching v8 typed array. `length` is
+        // in ELEMENTS.
         let ta: v8::Local<v8::Value> = match type_ {
             0 => v8::Int8Array::new(s, ab, byte_offset, length)
                 .unwrap()
@@ -669,9 +670,12 @@ pub unsafe extern "C" fn napi_create_typedarray(
             10 => v8::BigUint64Array::new(s, ab, byte_offset, length)
                 .unwrap()
                 .into(),
-            _ => v8::Uint8Array::new(s, ab, byte_offset, length)
-                .unwrap()
-                .into(),
+            // (this V8 binding has no Float16Array -> Value `From`; the upcast is always valid)
+            11 => v8::Local::<v8::Value>::cast_unchecked(
+                v8::Float16Array::new(s, ab, byte_offset, length).unwrap(),
+            ),
+            // as Node: an unknown napi_typedarray_type is napi_invalid_arg
+            _ => return Err(napi_invalid_arg),
         };
         put(out, ta);
         Ok(())

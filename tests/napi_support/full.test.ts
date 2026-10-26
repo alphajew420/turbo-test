@@ -354,6 +354,7 @@ describe('arraybuffers, typed arrays, buffers', () => {
       'Float64Array',
       'BigInt64Array',
       'BigUint64Array',
+      'Float16Array', // napi_float16_array (11), accepted by Node 26
     ];
     names.forEach((name, type) => {
       const ta = a.ta(type, 2, buf, 8);
@@ -363,8 +364,11 @@ describe('arraybuffers, typed arrays, buffers', () => {
       expect(ta.byteOffset).toBe(8);
       expect(ta.buffer).toBe(buf);
     });
-    // Host-specific leniency (Node returns napi_invalid_arg): an unknown code builds a Uint8Array.
-    expect(a.ta(99, 4, buf, 0).constructor.name).toBe('Uint8Array');
+    // an unknown type code is napi_invalid_arg
+    for (const type of [12, 99, -1]) {
+      expect(a.ta(type, 4, buf, 0)).toBe(undefined);
+      expect(a.status()).toBe(INVALID_ARG);
+    }
     expect(a.ta(1, 1, {}, 0)).toBe(undefined);
     expect(a.status()).toBe(INVALID_ARG);
   });
