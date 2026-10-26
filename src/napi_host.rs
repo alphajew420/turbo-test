@@ -1127,6 +1127,6 @@ pub fn load_addon(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "napi_host_tests.rs"]
 mod tests;

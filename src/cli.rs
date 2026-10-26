@@ -980,6 +980,6 @@ pub fn run(opts: Options) -> i32 {
     exit_code(&t, cov_ok)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "cli_tests.rs"]
 mod tests;

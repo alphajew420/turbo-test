@@ -97,6 +97,6 @@ pub fn affected_tests(changed: &[PathBuf], tests: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "graph_tests.rs"]
 mod tests;

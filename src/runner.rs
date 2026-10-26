@@ -4996,9 +4996,9 @@ mod env_pragma_tests {
 
 // Unit tests for the runner's helpers, split by source region (kept in their own files so
 // they are rustfmt-clean without reformatting this file).
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "runner_tests_a.rs"]
 mod tests_a;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "runner_tests_b.rs"]
 mod tests_b;

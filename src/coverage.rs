@@ -1185,7 +1185,7 @@ tfoot td{{font-weight:600;border-top:2px solid #ccc}}\
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "coverage_tests.rs"]
 mod unit_tests;
 

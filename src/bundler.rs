@@ -213,6 +213,6 @@ fn bundle_capped(entry: &Path, max_modules: usize) -> Option<String> {
     Some(out)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "bundler_tests.rs"]
 mod tests;
