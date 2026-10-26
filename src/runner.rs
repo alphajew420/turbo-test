@@ -2794,8 +2794,13 @@ fn collect_named_imports(text: &str, abs: &str) -> Vec<String> {
         while let Some(pos) = text.get(search..).and_then(|s| s.find(needle.as_str())) {
             let at = search + pos;
             search = at + needle.len();
-            // look back for the `{ ... }` clause of this import statement
+            // look back for the `{ ... }` clause of THIS import statement only: a brace before
+            // the statement's own `import` keyword belongs to an earlier import (a default-only
+            // `import d from "<abs>"` has no clause of its own)
             let head = text.get(..at).unwrap_or("");
+            let head = head
+                .get(import_keyword_before(head).unwrap_or(0)..)
+                .unwrap_or("");
             if let Some(close) = head.rfind('}') {
                 if let Some(open) = head.get(..close).unwrap_or("").rfind('{') {
                     for part in head.get(open + 1..close).unwrap_or("").split(',') {
@@ -2809,6 +2814,22 @@ fn collect_named_imports(text: &str, abs: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Byte offset of the last `import` KEYWORD in `head` (not part of a longer identifier such as
+/// `importer`).
+fn import_keyword_before(head: &str) -> Option<usize> {
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut end = head.len();
+    while let Some(at) = head[..end].rfind("import") {
+        let before = head[..at].chars().next_back();
+        let after = head[at + "import".len()..].chars().next();
+        if !before.is_some_and(ident) && !after.is_some_and(ident) {
+            return Some(at);
+        }
+        end = at;
+    }
+    None
 }
 
 fn register_mock_value<'s>(

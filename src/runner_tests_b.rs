@@ -121,6 +121,30 @@ fn extract_mocks_factory_less_call_does_not_take_a_later_factory() {
 }
 
 #[test]
+fn collect_named_imports_stays_inside_the_import_statement() {
+    // turbo-test#31 item 13: a default-only import took the previous import's `{...}` names
+    assert!(collect_named_imports(
+        "import { x } from \"./x\";\nimport d from \"./d\";\n",
+        "./d"
+    )
+    .is_empty());
+    assert!(collect_named_imports("import{x}from\"./x\";import d from\"./d\";", "./d").is_empty());
+    // a name that contains `import` does not end the look-back early
+    assert_eq!(
+        collect_named_imports(r#"import { importer, reimport as r } from "/p";"#, "/p"),
+        vec!["importer", "r"]
+    );
+    // the statement's own clause is still read, also after a default binding
+    assert_eq!(
+        collect_named_imports(
+            "import { x } from \"./x\";\nimport d, { e as f } from \"./d\";",
+            "./d"
+        ),
+        vec!["f"]
+    );
+}
+
+#[test]
 fn collect_named_imports_reads_brace_clauses_for_the_path() {
     let text = r#"import { a, b as c, $d, _e } from "/abs/m.js";
 import{x}from"/abs/m.js";
