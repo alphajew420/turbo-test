@@ -273,3 +273,30 @@ fn a_throwing_setup_file_fails_every_file_that_uses_it() {
         assert_passes(&turbo_test(&ok.dir, &["a.test.js"], env), 1);
     }
 }
+
+#[test]
+fn a_setup_file_that_fails_to_link_fails_the_test_file() {
+    // turbo-test#38 item 3, ESM graph: a setup file whose imports do not link (a missing named
+    // export) fails the test file with the instantiate error.
+    let p = esm_graph_project("rc-setup-link");
+    p.file(
+        "vitest.config.js",
+        "export default { test: { setupFiles: ['./setup.js'] } };\n",
+    );
+    p.file("m.js", "export const v = 1;\n");
+    p.file(
+        "setup.js",
+        "import { nope } from './m.js';\nglobalThis.N = nope;\n",
+    );
+    p.file("a.test.js", "test('a', () => {});\n");
+    let r = turbo_test(&p.dir, &["a.test.js"], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout.lines().any(|l| l.starts_with("ERROR")
+            && l.contains("setup file")
+            && l.contains("instantiate:")
+            && l.contains("nope")),
+        "{}",
+        r.all()
+    );
+}
