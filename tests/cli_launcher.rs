@@ -174,6 +174,28 @@ fn concatenated_dirname_alias_resolves() {
 }
 
 #[test]
+fn slash_led_string_find_alias_resolves() {
+    // turbo-test#32 item 8b: a quoted `find: '/@z'` was skipped as if it were a regex
+    let p = Project::new("launch-alias-slash");
+    p.file("z/m.js", "export const m = 'zed'\n");
+    p.file(
+        "vitest.config.js",
+        "import path from 'node:path'\n\
+         export default { resolve: { alias: [\n\
+           { find: /^nope$/, replacement: path.resolve(__dirname, 'nope') },\n\
+           { find: '/@z', replacement: path.resolve(__dirname, 'z') },\n\
+         ] } };\n",
+    );
+    p.file(
+        "a.test.js",
+        "import { m } from '/@z/m.js'\ntest('alias', () => { expect(m).toBe('zed') })\n",
+    );
+    let r = tt(&p, &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(r.stdout.contains("(1 passed, 0 failed)"), "{}", r.all());
+}
+
+#[test]
 fn forced_config_and_root() {
     let p = Project::new("launch-config");
     p.file(

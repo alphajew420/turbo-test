@@ -666,7 +666,8 @@ fn find_key_blocks(text: &str, key: &str) -> Vec<String> {
 /// decoy `resolve: { conditions }` before the real `resolve: { alias }` can't suppress it). Blocks
 /// are applied in source order with later-wins, so a `test.alias` placed after `resolve.alias`
 /// (the conventional order) overrides it on a key collision. Values are arbitrary JS, so the target
-/// is derived heuristically (see `alias_target`); a regex `find` (leading `/`) is skipped.
+/// is derived heuristically (see `alias_target`); a regex-literal `find` is skipped, a quoted one is
+/// a prefix string whatever its first char (`'/@z'`).
 fn config_aliases(start_dir: &Path, forced: Option<&Path>) -> Vec<(String, String)> {
     let Some(cfg) = find_config(start_dir, forced) else {
         return vec![];
@@ -700,12 +701,14 @@ fn parse_alias_inner(inner: &str, dir: &Path) -> Vec<(String, String)> {
             let e = entry.trim();
             let e = e.strip_prefix('{').unwrap_or(e);
             let e = e.strip_suffix('}').unwrap_or(e);
-            let find = value_after_key(e, "find").and_then(|v| first_quoted(&v));
+            // Only a quoted string `find` is a (prefix) alias, whatever its first char (`'/@z'`);
+            // a regex literal `find` (unquoted — already blanked by strip_comments) is skipped.
+            let find = value_after_key(e, "find")
+                .filter(|v| v.starts_with(['\'', '"', '`']))
+                .and_then(|v| first_quoted(&v));
             let repl = value_after_key(e, "replacement").and_then(|v| alias_target(dir, &v));
             if let (Some(f), Some(r)) = (find, repl) {
-                if !f.starts_with('/') {
-                    out.push((f, r));
-                }
+                out.push((f, r));
             }
         }
         return out;

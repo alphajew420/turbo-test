@@ -641,6 +641,20 @@ fn alias_inner_forms() {
         ]
     );
     assert!(parse_alias_inner("", d).is_empty());
+    // turbo-test#32 item 8b: a QUOTED find is a prefix string whatever its first char — only a
+    // regex literal find is skipped (unquoted; config_aliases has blanked it by then)
+    let arr = parse_alias_inner(
+        " { find: '/@z', replacement: './z' }, { find: \"/x\", replacement: './x' }, \
+         { find: /^\\/re/, replacement: './r' }, { find:      , replacement: './b' } ",
+        d,
+    );
+    assert_eq!(
+        arr,
+        vec![
+            ("/@z".to_string(), "/r/z".to_string()),
+            ("/x".into(), "/r/x".into())
+        ]
+    );
 }
 
 #[test]
