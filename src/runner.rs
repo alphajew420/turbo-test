@@ -3833,7 +3833,7 @@ const RUNTIME_JS: &str = include_str!("runtime.js");
 /// default context, serialized. Native callbacks (log/__nativeRequire) are NOT in the
 /// snapshot — V8 can't serialize native function pointers — so they are re-bound per
 /// context after deserialization (`install_natives`).
-fn framework_snapshot() -> &'static Vec<u8> {
+pub(crate) fn framework_snapshot() -> &'static Vec<u8> {
     static SNAP: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     SNAP.get_or_init(|| {
         let mut creator = v8::Isolate::snapshot_creator(None, None);

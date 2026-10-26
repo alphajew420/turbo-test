@@ -6,10 +6,15 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Run `f` inside a fresh isolate + context.
+/// Run `f` inside a fresh isolate + context. The isolate boots from the runner's framework
+/// snapshot like every production isolate: V8's read-only heap is shared process-wide, so an
+/// isolate from V8's built-in snapshot must never be alive at the same time as snapshot-booted
+/// ones (other unit tests run concurrently and use the framework snapshot).
 fn with_scope(f: impl FnOnce(&mut v8::PinScope)) {
     crate::runner::init_v8();
-    let isolate = &mut v8::Isolate::new(Default::default());
+    let blob = crate::runner::framework_snapshot();
+    let params = v8::Isolate::create_params().snapshot_blob(v8::StartupData::from(blob.clone()));
+    let isolate = &mut v8::Isolate::new(params);
     v8::scope!(let scope, isolate);
     let context = v8::Context::new(scope, Default::default());
     let scope = &mut v8::ContextScope::new(scope, context);
