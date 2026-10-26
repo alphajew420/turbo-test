@@ -312,6 +312,14 @@ static napi_value f_call(napi_env env, napi_callback_info info) {
     return or_undef(env, out);
 }
 
+/* callNullArgv(fn, argc): call fn with argc arguments but a NULL argv -> the status. */
+static napi_value f_call_null_argv(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value out = NULL;
+    ST(napi_call_function(env, undef(env), arg(env, &a, 0), (size_t)argd(env, &a, 1), NULL, &out));
+    return dbl(env, g_status);
+}
+
 static napi_value f_call_null_recv(napi_env env, napi_callback_info info) {
     Args a = args(env, info);
     size_t n = a.argc > MAXA ? MAXA : a.argc;
@@ -735,6 +743,7 @@ static const struct {
     {"retNull", f_ret_null},
     {"call", f_call},
     {"callNullRecv", f_call_null_recv},
+    {"callNullArgv", f_call_null_argv},
     {"ab", f_ab},
     {"abNoData", f_ab_no_data},
     {"ta", f_ta},

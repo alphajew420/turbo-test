@@ -611,8 +611,9 @@ pub unsafe extern "C" fn napi_call_function(
     out: *mut napi_value,
 ) -> napi_status {
     js_call(env, |s| {
-        // as Node (CHECK_ARG(env, recv)): a receiver is required; an addon passes `undefined`
-        if recv.is_null() {
+        // as Node (CHECK_ARG(env, recv)): a receiver is required; an addon passes `undefined`.
+        // So is argv when argc > 0 (CHECK_ARG(env, argv)): nothing is called.
+        if recv.is_null() || (argc > 0 && argv.is_null()) {
             return Err(napi_invalid_arg);
         }
         let f: v8::Local<v8::Function> = to_local(func).try_into().map_err(|_| napi_invalid_arg)?;

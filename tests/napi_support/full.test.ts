@@ -345,6 +345,15 @@ describe('functions', () => {
     expect(ran).toBe(false);
     expect(a.call(123, null)).toBe(undefined);
     expect(a.status()).toBe(INVALID_ARG);
+    // argc > 0 with a NULL argv is napi_invalid_arg and nothing is called; argc 0 needs no argv
+    let calls = 0;
+    const count = () => {
+      calls++;
+    };
+    expect(a.callNullArgv(count, 2)).toBe(INVALID_ARG);
+    expect(calls).toBe(0);
+    expect(a.callNullArgv(count, 0)).toBe(OK);
+    expect(calls).toBe(1);
     expect(() =>
       a.call(() => {
         throw new RangeError('from js');
