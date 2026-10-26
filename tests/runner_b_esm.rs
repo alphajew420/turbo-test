@@ -60,6 +60,44 @@ describe('g', () => {
     );
 }
 
+/// turbo-test#61: an import() that does not resolve rejects as vitest 4.1.12's does: the
+/// specifier as vite resolved it (a relative one URL-resolved against the importer's
+/// root-relative path), the importer, and Node's code.
+#[test]
+#[ignore = "turbo-test#61: fails until the fix"]
+fn unresolved_dynamic_imports_reject_like_vitest() {
+    let p = Project::new("rb-esm-missing");
+    p.file("package.json", r#"{"name":"rb-esm-missing"}"#);
+    p.file(
+        "sub/e.test.js",
+        r#"const from = ` imported from ${globalThis.__cwd}/sub/e.test.js`;
+const rejects = async (spec, message, code) => {
+  const e = await import(spec).then(() => null, (e) => e);
+  expect([spec, e && e.constructor.name, e && e.message, e && e.code]).toEqual([spec, 'Error', message, code]);
+};
+test('unresolved', async () => {
+  const mod = 'ERR_MODULE_NOT_FOUND';
+  await rejects('./nope.js', `Cannot find module '/sub/nope.js'${from}`, mod);
+  await rejects('./nope', `Cannot find module '/sub/nope'${from}`, mod);
+  await rejects('../nope.js', `Cannot find module '/nope.js'${from}`, mod);
+  await rejects('../../nope.js', `Cannot find module '/nope.js'${from}`, mod);
+  await rejects('/abs/nope.js', `Cannot find module '/abs/nope.js'${from}`, mod);
+  await rejects('nopkg', `Cannot find package 'nopkg'${from}`, mod);
+  await rejects('nopkg/sub', `Cannot find package 'nopkg/sub'${from}`, mod);
+  await rejects('fs/nope', `Cannot find package 'fs/nope'${from}`, mod);
+  await rejects('node:nope', 'No such built-in module: node:nope', 'ERR_UNKNOWN_BUILTIN_MODULE');
+});
+"#,
+    );
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(
+        line_for(&r.stdout, "sub/e.test.js").contains("(1 passed, 0 failed)"),
+        "{}",
+        r.all()
+    );
+}
+
 #[test]
 fn node_fs_shim_is_backed_by_native_fs() {
     let p = Project::new("rb-esm-fs");
