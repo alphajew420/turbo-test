@@ -2954,39 +2954,15 @@ fn register_mock_value<'s>(
     Some(())
 }
 
-/// Register a mock by running its factory source (self-contained `() => (...)`; every caller
-/// passes one — a factory-less mock is registered as an automock by the runtime).
+/// Register a synthetic module for `abs` by running a generated, self-contained factory source
+/// (`() => (...)`): the asset / JSON stubs load_dep serves. (Test-file mock factories are run by
+/// the runtime's vi.mock, which handles factory errors and async factories.)
 fn register_mock<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, factory_src: &str) -> Option<()> {
-    let exports_val = {
-        let code = v8::String::new(scope, &format!("({factory_src})"))?;
-        let script = v8::Script::compile(scope, code, None)?;
-        let f = v8::Local::<v8::Function>::try_from(script.run(scope)?).ok()?;
-        let undef = v8::undefined(scope).into();
-        // A factory that throws registers runtime.js's error stand-in (importing the module then
-        // fails with the vitest-wrapped error) instead of leaving the real module in place.
-        let thrown = {
-            let tc = std::pin::pin!(v8::TryCatch::new(scope));
-            let tc = &mut tc.init();
-            match f.call(tc, undef, &[]) {
-                Some(v) => Ok(v8::Global::new(tc, v)),
-                None => {
-                    let e = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-                    Err(v8::Global::new(tc, e))
-                }
-            }
-        };
-        match thrown {
-            Ok(v) => v8::Local::new(scope, &v),
-            Err(e) => {
-                let e = v8::Local::new(scope, &e);
-                let global = scope.get_current_context().global(scope);
-                let k = v8::String::new(scope, "__ttFactoryErrorMock")?;
-                let mk = v8::Local::<v8::Function>::try_from(global.get(scope, k.into())?).ok()?;
-                let vitest = v8::Boolean::new(scope, true).into();
-                mk.call(scope, undef, &[e, vitest])?
-            }
-        }
-    };
+    let code = v8::String::new(scope, &format!("({factory_src})"))?;
+    let script = v8::Script::compile(scope, code, None)?;
+    let f = v8::Local::<v8::Function>::try_from(script.run(scope)?).ok()?;
+    let undef = v8::undefined(scope).into();
+    let exports_val = f.call(scope, undef, &[])?;
     register_mock_value(scope, abs, exports_val)
 }
 
