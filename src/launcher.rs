@@ -198,15 +198,20 @@ fn find_config(start_dir: &Path, forced: Option<&Path>) -> Option<Config> {
     }
 }
 
-/// Test-level include/exclude globs + their root, from a discovered config. `None` when there's no
-/// `test.include` (→ caller falls back to default discovery). Mirrors cli.js `patternsFromText`:
-/// the FIRST `include`/`exclude` arrays in the file are the test-level ones (they precede any
-/// `coverage.*` block in the config object).
+/// Test-level include/exclude globs + their root, from a discovered config (`None` without a
+/// config). Either list is `None` when the config does not set it: vitest's default applies
+/// ([`DEFAULT_INCLUDE`] / [`DEFAULT_EXCLUDE`]). The FIRST `include`/`exclude` arrays in the file
+/// are the test-level ones (they precede any `coverage.*` block in the config object).
 struct Patterns {
     root: PathBuf,
-    include: Vec<String>,
-    exclude: Vec<String>,
+    include: Option<Vec<String>>,
+    exclude: Option<Vec<String>>,
 }
+
+/// vitest's default `test.include` (what [`is_test_file`] matches) and `test.exclude` (what
+/// [`SKIP_DIR`] skips), as its "No test files found" message prints them.
+const DEFAULT_INCLUDE: &str = "**/*.{test,spec}.?(c|m)[jt]s?(x)";
+const DEFAULT_EXCLUDE: &str = "**/node_modules/**, **/.git/**";
 
 fn vitest_patterns(start_dir: &Path, forced: Option<&Path>) -> Option<Patterns> {
     let cfg = find_config(start_dir, forced)?;
@@ -219,9 +224,13 @@ fn vitest_patterns(start_dir: &Path, forced: Option<&Path>) -> Option<Patterns> 
         Some(ci) => &cfg.text[..ci],
         None => cfg.text.as_str(),
     };
-    let include = scan_string_array(scan_text, "include")?; // no test.include → default discovery
-    let exclude = scan_string_array(scan_text, "exclude").unwrap_or_default();
-    Some(Patterns { root: cfg.dir, include, exclude })
+    let include = scan_string_array(scan_text, "include");
+    let exclude = scan_string_array(scan_text, "exclude");
+    Some(Patterns {
+        root: cfg.dir,
+        include,
+        exclude,
+    })
 }
 
 /// Read `test.environment` (node|jsdom|happy-dom) from config text. Mirrors cli.js
@@ -1012,32 +1021,34 @@ fn filter_matches(root: &Path, proc_cwd: &Path, f: &str, t: &Path) -> bool {
 /// with `test.include` is found. Mirrors cli.js `discover`.
 fn discover(cwd: &Path, forced_config: Option<&Path>) -> Vec<PathBuf> {
     let mut all = Vec::new();
-    let Some(pats) = vitest_patterns(cwd, forced_config) else {
+    let pats = vitest_patterns(cwd, forced_config);
+    let (include, exclude) = match &pats {
+        Some(p) => (p.include.as_deref(), p.exclude.as_deref()),
+        None => (None, None),
+    };
+    match include {
+        // a config include is matched against every file
+        Some(_) => walk(cwd, &mut all, &|_| true),
         // vitest's default include
-        walk(cwd, &mut all, &is_test_file);
-        all.sort();
-        return all;
-    };
-    // a config include is matched against every file
-    walk(cwd, &mut all, &|_| true);
-    let rel = |f: &Path| -> String {
-        // project-root-relative POSIX path (vitest matches globs against this).
-        let r = f.strip_prefix(&pats.root).unwrap_or(f);
-        r.components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/")
-    };
-    let mut kept: Vec<PathBuf> = all
-        .into_iter()
-        .filter(|f| {
+        None => walk(cwd, &mut all, &is_test_file),
+    }
+    if let Some(pats) = &pats {
+        let rel = |f: &Path| -> String {
+            // project-root-relative POSIX path (vitest matches globs against this).
+            let r = f.strip_prefix(&pats.root).unwrap_or(f);
+            r.components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        all.retain(|f| {
             let r = rel(f);
-            pats.include.iter().any(|g| glob_matches(g, &r))
-                && !pats.exclude.iter().any(|g| glob_matches(g, &r))
-        })
-        .collect();
-    kept.sort();
-    kept
+            include.is_none_or(|inc| inc.iter().any(|g| glob_matches(g, &r)))
+                && !exclude.is_some_and(|exc| exc.iter().any(|g| glob_matches(g, &r)))
+        });
+    }
+    all.sort();
+    all
 }
 
 /// `--changed [since]`: absolute paths git reports changed vs `since` (default working-tree vs

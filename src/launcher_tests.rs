@@ -203,6 +203,20 @@ fn discover_matches_a_config_include_against_every_file() {
 }
 
 #[test]
+fn discover_applies_a_config_exclude_without_include() {
+    // turbo-test#60, as vitest 4.1.12: a config exclude applies with the default include
+    let t = Tmp::new("disc-excl");
+    t.file(
+        "vitest.config.ts",
+        "export default { test: { exclude: ['**/skip/**'] } }",
+    );
+    t.file("a.test.ts", T);
+    t.file("skip/b.test.ts", T);
+    t.file("notatest.ts", T);
+    assert_eq!(discover(&t.0, None), vec![t.0.join("a.test.ts")]);
+}
+
+#[test]
 fn discover_ignores_coverage_block_patterns() {
     // no test.include → default discovery; coverage.exclude's test glob must not exclude tests
     let t = Tmp::new("disc-cov");
@@ -445,9 +459,11 @@ fn vitest_patterns_config() {
         "vitest.config.ts",
         "export default { test: { exclude: ['a'] } }",
     );
-    assert!(
-        vitest_patterns(&t.0, None).is_none(),
-        "no include → default discovery"
+    // no include → the default one (None)
+    let p = vitest_patterns(&t.0, None).unwrap();
+    assert_eq!(
+        (p.root, p.include, p.exclude),
+        (t.0.clone(), None, Some(vec!["a".to_string()]))
     );
     t.file(
         "vitest.config.ts",
@@ -456,7 +472,7 @@ fn vitest_patterns_config() {
     let p = vitest_patterns(&t.0, None).unwrap();
     assert_eq!(
         (p.root, p.include, p.exclude),
-        (t.0.clone(), vec!["a/**".to_string()], vec![])
+        (t.0.clone(), Some(vec!["a/**".to_string()]), None)
     );
 }
 
