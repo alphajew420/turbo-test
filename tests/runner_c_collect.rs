@@ -102,7 +102,6 @@ fn ran(r: &Run) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "turbo-test#66: fails until the fix"]
 fn name_pattern_matches_the_space_joined_full_name() {
     // turbo-test#66: -t was matched against `describe > test`. vitest 4.1.12 matches the full
     // name, the names joined with a space (`getTaskFullName`).

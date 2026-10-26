@@ -68,6 +68,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 - `.only` runs what vitest runs (turbo-test#65): a `describe.only` block's tests ran nowhere —
   every test not itself marked `.only` was skipped. Now a test runs when it or an enclosing
   suite is `.only`, except that inside a suite holding `.only` tasks only those run.
+- `-t` / `--testNamePattern` is matched against vitest's full name, the `describe` names and the
+  test's joined with a space (turbo-test#66); it was matched against `describe > test`, so
+  `-t "outer inner"` ran nothing and `-t "outer > inner"` ran what vitest skips.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

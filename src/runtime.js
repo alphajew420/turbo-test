@@ -2779,9 +2779,11 @@ async function runSuite(suite, ancestors, summary) {
   for (const t of suite.tasks) {
     if (t.suite) { await runSuite(t, chain, summary); continue; }
     const label = chain.map((s) => s.name).filter(Boolean).concat(t.name).join(' > ');
-    // -t/--testNamePattern: skip tests whose full `describe > it` name does not match the regex
-    // (vitest: unanchored, case-sensitive, tested against the joined name).
-    if (__tt.namePattern && !__tt.namePattern.test(label)) { summary.skipped++; continue; }
+    // -t/--testNamePattern: skip tests whose full name does not match the regex (vitest: unanchored,
+    // case-sensitive, tested against `getTaskFullName` — the enclosing describe names and the
+    // test's joined with a space, turbo-test#66).
+    const fullName = chain.slice(1).map((s) => s.name).concat(t.name).join(' ');
+    if (__tt.namePattern && !__tt.namePattern.test(fullName)) { summary.skipped++; continue; }
     if (t.skip || t.notOnly) { summary.skipped++; summary.tests.push({ name: label, status: 'skipped', duration_ms: 0 }); continue; }
     // retry: per-test `{ retry }` wins; else the global default (--retry → __TT_DEFAULT_RETRY).
     const retry = (t.retry != null && t.retry > 0)
