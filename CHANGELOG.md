@@ -5,6 +5,16 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-26 — turbo-dom consolidation
+
+The browser binding and the V8 fork moved into the
+[turbo-dom](https://github.com/miaskiewicz/turbo-dom) workspace so turbo-test,
+turbo-surf and turbo-html2pdf share one DOM, one V8 fork and one release train
+instead of three diverging copies. turbo-test jumps from 0.4.8 to 0.6.0 to line up
+with the turbo-dom 0.6.0 crates it now links (turbo-dom-v8 keeps its upstream-V8
+150.4.x numbering). Requires `turbo-dom-browser-env` 0.6.0 and `turbo-dom-v8 ~150.4`
+from crates.io.
+
 ### Changed
 - turbo-dom consolidation: the browser binding and the V8 fork moved to
   [turbo-dom](https://github.com/miaskiewicz/turbo-dom). The rtdom <-> V8 binding
@@ -18,8 +28,13 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   binding used (url, psl, lightningcss, cssparser, turbo-dom, dev sha2) are gone.
   Until the turbo-dom crates are published, `[patch.crates-io]` resolves them from
   git; the section is removed before release (RELEASING.md).
-- Chrome-control scripts in `scripts/` now read and write the binding's probes and
-  controls in turbo-dom-browser-env's `src/` (`$ENV_SRC` in their usage text).
+- The binding's Chrome-control collectors moved with it: the 14
+  `scripts/*-chrome-control.mjs`, `scripts/typed-om-registry.mjs`,
+  `scripts/trusted-types-control/` and `docs/live-css-host.md` now live in
+  turbo-dom-browser-env's `scripts/` and `docs/` (moved verbatim from this repository
+  at 39b5911), next to the probes and controls they read and write. The README's
+  "Native DOM lifecycle controls" section is replaced by a pointer to that crate's
+  README.
 - Results: every remaining Rust test, `npm test` and fixtures/compat are identical per
   test; the 350 binding tests now run (identically) in turbo-dom-browser-env.
 
