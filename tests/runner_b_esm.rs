@@ -45,7 +45,7 @@ describe('g', () => {
     const m = await import('./esm.mjs'); expect(m.E).toBe('esm');
     const p = await import('node:path'); expect(typeof p.join).toBe('function');
     const v = await import('vitest'); expect(typeof v.vi.fn).toBe('function');
-    await expect(import('./missing.mjs')).rejects.toThrow('dynamic import cannot resolve ./missing.mjs');
+    await expect(import('./missing.mjs')).rejects.toThrow("Cannot find module '/missing.mjs' imported from ");
     await expect(import('./bad.mjs')).rejects.toThrow("Unexpected token '='");
   });
 });
@@ -64,7 +64,6 @@ describe('g', () => {
 /// specifier as vite resolved it (a relative one URL-resolved against the importer's
 /// root-relative path), the importer, and Node's code.
 #[test]
-#[ignore = "turbo-test#61: fails until the fix"]
 fn unresolved_dynamic_imports_reject_like_vitest() {
     let p = Project::new("rb-esm-missing");
     p.file("package.json", r#"{"name":"rb-esm-missing"}"#);

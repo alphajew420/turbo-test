@@ -155,7 +155,11 @@ Mostly strong. Notable gaps:
 Tests run in bare V8, so Node's builtins are runtime shims (`src/runtime.js` `__nodeBuiltins`).
 `import x from 'node:x'`, `import { a } from 'x'` and `require('x')` all get the same object on both
 loader paths (ESM graph and module runner); `node:` prefixes are accepted. Every listed builtin
-has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve.
+has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve. An `import()`
+that does not resolve rejects as vitest's does: `Cannot find module '/sub/x.js' imported from
+<importer>` (a relative specifier named root-relative, as vite resolves it), `Cannot find package
+'x' imported from <importer>` (code `ERR_MODULE_NOT_FOUND`), or `No such built-in module: node:x`
+(`ERR_UNKNOWN_BUILTIN_MODULE`).
 
 | builtin | provided |
 |---|---|

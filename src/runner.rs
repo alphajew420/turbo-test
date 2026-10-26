@@ -4435,6 +4435,50 @@ fn import_after_do_mock(
     }
 }
 
+/// The message and code of vitest's error for an import() of `spec` from `importer` that does
+/// not resolve (`root`: the project root): a relative specifier is named as vite resolved it,
+/// URL-resolved against the importer's root-relative path; an absolute one as written; a bare
+/// one is a missing package; an unknown `node:` one is not a built-in.
+fn import_not_found(spec: &str, importer: &str, root: &Path) -> (String, &'static str) {
+    if spec.starts_with("node:") {
+        return (
+            format!("No such built-in module: {spec}"),
+            "ERR_UNKNOWN_BUILTIN_MODULE",
+        );
+    }
+    let module = |id: &str| format!("Cannot find module '{id}' imported from {importer}");
+    if spec.starts_with('/') {
+        return (module(spec), "ERR_MODULE_NOT_FOUND");
+    }
+    if spec.starts_with("./") || spec.starts_with("../") {
+        let importer = Path::new(importer);
+        let dir = importer.strip_prefix(root).unwrap_or(importer).parent();
+        let mut id: Vec<String> = dir
+            .into_iter()
+            .flat_map(|d| d.components())
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        for segment in spec.split('/') {
+            match segment {
+                "" | "." => {}
+                ".." => {
+                    id.pop();
+                }
+                s => id.push(s.to_string()),
+            }
+        }
+        return (
+            module(&format!("/{}", id.join("/"))),
+            "ERR_MODULE_NOT_FOUND",
+        );
+    }
+    (
+        format!("Cannot find package '{spec}' imported from {importer}"),
+        "ERR_MODULE_NOT_FOUND",
+    )
+}
+
 /// import() of `specifier` from the module `resource_name`: a promise for its namespace.
 fn dynamic_import<'s>(
     scope: &mut v8::PinScope<'s, '_>,
@@ -4467,8 +4511,13 @@ fn dynamic_import<'s>(
         (abs.map(|a| query_mock_variant(&spec, a)), false)
     };
     let Some(abs) = abs else {
-        let err = v8::String::new(scope, &format!("dynamic import cannot resolve {spec}"))?;
-        let exc = v8::Exception::error(scope, err);
+        let root = std::env::current_dir().unwrap_or_default();
+        let (message, code) = import_not_found(&spec, &referrer, &root);
+        let message = v8::String::new(scope, &message)?;
+        let exc = v8::Exception::error(scope, message);
+        let key = v8::String::new(scope, "code")?;
+        let code = v8::String::new(scope, code)?;
+        exc.cast::<v8::Object>().set(scope, key.into(), code.into());
         resolver.reject(scope, exc);
         return Some(promise);
     };
