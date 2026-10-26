@@ -130,7 +130,7 @@ test('mocks', () => {
   expect(vi.isMockFunction(c.fn)).toBe(true);
   expect(c.fn()).toBe(undefined);
 });
-// factory-less form last: nothing may follow it (see the extract_mocks note)
+// factory-less form (code may follow it since turbo-test#31 item 4)
 vi.mock('./c.cjs');
 "#,
     );
@@ -191,7 +191,7 @@ test('automock', () => {
   expect(str).toBe('s');
   expect(arr).toEqual([]);
 });
-// factory-less form last: nothing may follow it (see the extract_mocks note)
+// factory-less form (code may follow it since turbo-test#31 item 4)
 vi.mock('./m.js');
 "#,
     );

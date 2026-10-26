@@ -95,7 +95,7 @@ describe('mocks', () => {
     expect((await import('./src/other')).o).toBe('real-o');
   });
 });
-// factory-less (automock) form last: nothing may follow it (see the extract_mocks note)
+// factory-less (automock) form (code may follow it since turbo-test#31 item 4)
 vi.mock('./src/auto');
 "#,
     );

@@ -2749,11 +2749,14 @@ fn extract_mocks(src: &str) -> Vec<(String, String)> {
         let spec = after_q[..end_q].to_string();
         // find factory: from after the spec's closing quote to the balanced ')'
         let mut j = start + lead + 1 + end_q + 1;
-        // skip to comma (factory) or ')' (no factory)
+        // the next token after the specifier decides: ',' -> a factory follows, anything else
+        // (normally ')') -> no factory. A ',' further on belongs to later code (another call's
+        // factory, a test callback), never to this call.
         let tail = src.get(j..).unwrap_or("");
+        let ws = tail.len() - tail.trim_start().len();
         let mut factory = String::new();
-        if let Some(comma_rel) = tail.find(',') {
-            let fstart = j + comma_rel + 1;
+        if tail[ws..].starts_with(',') {
+            let fstart = j + ws + 1;
             // balance parens from fstart until matching close of vi.mock(
             let mut depth = 1i32; // we're inside vi.mock( ... )
             let mut k = fstart;

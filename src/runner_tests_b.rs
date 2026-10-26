@@ -99,6 +99,28 @@ fn extract_mocks_skips_dynamic_specifiers_and_stops_on_truncated_input() {
 }
 
 #[test]
+fn extract_mocks_factory_less_call_does_not_take_a_later_factory() {
+    // turbo-test#31 item 4: the factory search ran to the next ',' anywhere in the source, so a
+    // factory-less mock took the next call's factory and that call was dropped
+    assert_eq!(
+        extract_mocks("vi.mock('./a');\nvi.mock('./b', () => 1);"),
+        pairs(&[("./a", ""), ("./b", "() => 1")])
+    );
+    // a test callback after a factory-less mock is not its factory either
+    assert_eq!(
+        extract_mocks("vi.mock('./m.js'); test('t', () => { expect(1).toBe(1) });"),
+        pairs(&[("./m.js", "")])
+    );
+    // whitespace / a newline between the specifier and the comma still finds the factory
+    assert_eq!(
+        extract_mocks("jest.mock('./c'\n  , () => ({ c: 1 }));"),
+        pairs(&[("./c", "() => ({ c: 1 })")])
+    );
+    // a trailing comma with no factory is factory-less
+    assert_eq!(extract_mocks("vi.mock('./t', );"), pairs(&[("./t", "")]));
+}
+
+#[test]
 fn collect_named_imports_reads_brace_clauses_for_the_path() {
     let text = r#"import { a, b as c, $d, _e } from "/abs/m.js";
 import{x}from"/abs/m.js";

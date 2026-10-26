@@ -1,5 +1,6 @@
 //! Config and mock-graph semantics that follow jest/vitest: a JSON jest config (package.json
-//! `"jest"` block, `jest.config.json`) is read like `jest.config.js`.
+//! `"jest"` block, `jest.config.json`) is read like `jest.config.js`; a factory-less `vi.mock`
+//! stays factory-less whatever code follows it.
 #![cfg(unix)]
 
 mod common;
@@ -52,4 +53,38 @@ fn json_jest_configs_are_read() {
         "test('no setup', () => { expect(globalThis.FROM_SETUP).toBe(undefined); });\n",
     );
     assert_passes(&turbo_test(&r.dir, &["a.test.js"], &[]), 1);
+}
+
+#[test]
+fn a_factory_less_mock_followed_by_more_code_stays_factory_less() {
+    // turbo-test#31 item 4 end to end: `vi.mock('./a')` took the next call's factory (and that
+    // mock was dropped), and in turbo-test#31 item 5's exact one-line repro the test callback
+    // after a factory-less vi.mock became its "factory".
+    let p = Project::new("rc-mock-parse");
+    p.file("package.json", r#"{"name":"r4","type":"module"}"#);
+    p.file("m.js", "export function f() { return 1 }\n");
+    p.file("a.js", "export function a() { return 'real-a' }\n");
+    p.file("b.js", "export const v = 'real-b';\n");
+    p.file(
+        "one.test.js",
+        "import { f } from './m.js'; vi.mock('./m.js'); test('automock', () => { expect(vi.isMockFunction(f)).toBe(true) });\n",
+    );
+    p.file(
+        "two.test.js",
+        r#"import { a } from './a.js';
+import { v } from './b.js';
+vi.mock('./a.js');
+vi.mock('./b.js', () => ({ v: 'mock-b' }));
+test('both mocks', () => {
+  expect(vi.isMockFunction(a)).toBe(true);
+  expect(a()).toBe(undefined);
+  expect(v).toBe('mock-b');
+});
+"#,
+    );
+    let r = turbo_test(&p.dir, &["one.test.js", "two.test.js"], &[]);
+    assert_passes(&r, 2);
+    p.with_esbuild();
+    let r = turbo_test(&p.dir, &["one.test.js", "two.test.js"], &[]);
+    assert_passes(&r, 2);
 }
