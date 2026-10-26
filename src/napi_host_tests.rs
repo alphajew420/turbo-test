@@ -129,7 +129,7 @@ fn trampoline_dispatches_through_the_callback_record() {
                 &mut *env,
                 std::ptr::null(),
                 0,
-                record_call,
+                Some(record_call),
                 std::ptr::null_mut(),
                 &mut f,
             )
