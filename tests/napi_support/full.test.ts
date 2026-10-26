@@ -50,12 +50,12 @@ describe('values', () => {
     expect(a.typeOf(() => 1)).toBe(7);
     expect(a.typeOf(a.basics)).toBe(7);
     expect(a.status()).toBe(OK);
-    // Symbol / BigInt: Node reports 5 / 9; the host has no branch for them (reported
-    // separately), so only assert the call succeeds with a non-primitive-kind code.
-    for (const v of [Symbol('s'), BigInt(10)]) {
-      expect(a.typeOf(v)).toBeGreaterThanOrEqual(5);
-      expect(a.status()).toBe(OK);
-    }
+    // napi_symbol / napi_bigint (js_native_api_types.h); their wrapper objects are objects
+    expect(a.typeOf(Symbol('s'))).toBe(5);
+    expect(a.typeOf(BigInt(10))).toBe(9);
+    expect(a.typeOf(Object(Symbol('s')))).toBe(6);
+    expect(a.typeOf(Object(10n))).toBe(6);
+    expect(a.status()).toBe(OK);
   });
 
   test('napi_get_value_string_utf8: length query, full copy, truncation, NULL result', () => {

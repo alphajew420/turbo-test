@@ -199,10 +199,12 @@ pub unsafe extern "C" fn napi_typeof(
         napi_valuetype::Number
     } else if val.is_string() {
         napi_valuetype::String
+    } else if val.is_symbol() {
+        napi_valuetype::Symbol
+    } else if val.is_big_int() {
+        napi_valuetype::Bigint
     } else if val.is_function() {
         napi_valuetype::Function
-    } else if val.is_object() {
-        napi_valuetype::Object
     } else {
         napi_valuetype::Object
     };
