@@ -14,9 +14,8 @@ fn tmp(name: &str) -> PathBuf {
         .canonicalize()
         .unwrap()
         .join(format!("{name}-{}-{n}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
+    // leftover from an earlier process with the same pid: start empty
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -29,31 +28,17 @@ fn put(dir: &Path, rel: &str, contents: &str) -> PathBuf {
     p
 }
 
-fn alias_pairs(a: &oxc_resolver::Alias) -> Vec<(String, Vec<String>)> {
-    a.iter()
-        .map(|(k, vs)| {
-            let vs = vs
-                .iter()
-                .map(|v| match v {
-                    oxc_resolver::AliasValue::Path(p) => p.clone(),
-                    oxc_resolver::AliasValue::Ignore => "<ignore>".to_string(),
-                })
-                .collect();
-            (k.clone(), vs)
-        })
-        .collect()
-}
-
 // ---- TURBO_ALIAS / resolver options ------------------------------------------------------
 
 #[test]
 fn parse_alias_list_keeps_complete_records_only() {
     let raw = "@\u{1f}/abs/src\u{1e}~utils\u{1f}/abs/utils\u{1e}\u{1f}/no-key\u{1e}no-path\u{1f}\u{1e}no-separator";
+    let path = |p: &str| vec![oxc_resolver::AliasValue::Path(p.to_string())];
     assert_eq!(
-        alias_pairs(&parse_alias_list(raw)),
+        parse_alias_list(raw),
         vec![
-            ("@".to_string(), vec!["/abs/src".to_string()]),
-            ("~utils".to_string(), vec!["/abs/utils".to_string()]),
+            ("@".to_string(), path("/abs/src")),
+            ("~utils".to_string(), path("/abs/utils")),
         ]
     );
     assert!(parse_alias_list("").is_empty());
