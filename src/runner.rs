@@ -2879,9 +2879,7 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
                 let native_exc =
                     tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_default();
                 let fb = esbuild_cjs_fallback(abs, prefer_metadata).and_then(|src| {
-                    let wrapped_fb = format!(
-                        "(function (exports, module, require, __filename, __dirname) {{\n{src}\n}})"
-                    );
+                    let wrapped_fb = format!("(function (exports, module, require, __filename, __dirname) {{\n{src}\n}})");
                     if wrapped_fb == wrapped {
                         return None; // native wasn't the source (output identical) — no point retrying
                     }
@@ -2916,13 +2914,11 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
     let require = mk.call(scope, undef, &[dir_str.into(), esm_flag.into(), filename.into()])?;
     // expose this module's dir so runtime vi.mock() (hoisted above the requires) can resolve a
     // relative spec + register immediately, before the module's consumer requires run.
-    let prev_dir = if let Some(k) = v8::String::new(scope, "__ttDir") {
+    let prev_dir = v8::String::new(scope, "__ttDir").and_then(|k| {
         let prev = global.get(scope, k.into());
         global.set(scope, k.into(), dir_str.into());
         prev
-    } else {
-        None
-    };
+    });
     // mark in-progress (with its module object) so a circular require() returns live exports
     let module_global = v8::Global::new(scope, module_obj);
     REGISTRY.with(|r| r.borrow_mut().loading.insert(abs.to_path_buf(), module_global));
@@ -2936,8 +2932,7 @@ fn load_cjs_inner<'s>(scope: &mut v8::PinScope<'s, '_>, abs: &Path, drain_mocks:
         );
         if r.is_none() && tc.has_caught() && std::env::var("TURBO_CJS_DEBUG").is_ok() {
             let stk = tc.stack_trace().map(|s| s.to_rust_string_lossy(tc)).unwrap_or_default();
-            eprintln!(
-                "  cjs body threw: {} :: {} :: {}",
+            eprintln!("  cjs body threw: {} :: {} :: {}",
                 abs.display(),
                 tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_default(),
                 stk.lines().take(4).collect::<Vec<_>>().join(" | ")
@@ -3054,10 +3049,8 @@ fn synth_eval<'s>(
     let (exports_g, names) = REGISTRY.with(|r| {
         let reg = r.borrow();
         let path = reg.path_by_hash.get(&hash)?.clone();
-        Some((
-            reg.cjs_exports.get(&path)?.clone(),
-            reg.cjs_export_names.get(&path).cloned().unwrap_or_default(),
-        ))
+        let exports = reg.cjs_exports.get(&path)?.clone();
+        Some((exports, reg.cjs_export_names.get(&path).cloned().unwrap_or_default()))
     })?;
     let exports = v8::Local::new(scope, &exports_g);
     let dkey = v8::String::new(scope, "default")?;
@@ -3640,11 +3633,10 @@ fn load_dep<'s>(scope: &mut v8::PinScope<'s, '_>, dep: &Path) -> Option<()> {
         }
         return Some(());
     }
-    // CSS/asset imports -> stub (CSS-module proxy: any class name -> its own string)
+    // CSS/asset imports -> stub (CSS-module proxy: any class name -> its own string). Assets and
+    // JSON are registered via register_mock, i.e. recorded in `mocks`, so an already-loaded one
+    // is served by the mocked branch above; reaching here means it is not loaded yet.
     if is_asset(dep) {
-        if REGISTRY.with(|r| r.borrow().cjs_synth_by_path.contains_key(dep)) {
-            return Some(());
-        }
         return register_mock(
             scope,
             dep,
@@ -3653,9 +3645,6 @@ fn load_dep<'s>(scope: &mut v8::PinScope<'s, '_>, dep: &Path) -> Option<()> {
     }
     // JSON imports -> module with default = parsed value + named keys
     if dep.extension().and_then(|e| e.to_str()) == Some("json") {
-        if REGISTRY.with(|r| r.borrow().cjs_synth_by_path.contains_key(dep)) {
-            return Some(());
-        }
         let txt = std::fs::read_to_string(dep).ok()?;
         return register_mock(scope, dep, &format!("() => ({txt})"));
     }
@@ -3856,22 +3845,9 @@ fn framework_snapshot() -> &'static Vec<u8> {
             // turbo-dom's index.js loader requires the matching prebuilt .node. Without this
             // the runtime reported 'darwin'/'arm64' everywhere and non-mac hosts loaded the
             // macOS .node -> dlopen fails -> "document is not defined".
-            let node_platform = match std::env::consts::OS {
-                "macos" => "darwin",
-                "windows" => "win32",
-                other => other, // "linux", "freebsd", ...
-            };
-            let node_arch = match std::env::consts::ARCH {
-                "x86_64" => "x64",
-                "aarch64" => "arm64",
-                other => other,
-            };
-            let os_type = match std::env::consts::OS {
-                "macos" => "Darwin",
-                "windows" => "Windows_NT",
-                "linux" => "Linux",
-                other => other,
-            };
+            let node_platform = node_platform(std::env::consts::OS);
+            let node_arch = node_arch(std::env::consts::ARCH);
+            let os_type = node_os_type(std::env::consts::OS);
             // isMusl() reads glibcVersionRuntime: truthy => gnu, falsy => musl.
             let glibc_runtime: &str = if cfg!(target_env = "musl") { "" } else { "2.39" };
             let prelude = format!(
@@ -3899,6 +3875,34 @@ fn framework_snapshot() -> &'static Vec<u8> {
             .expect("framework snapshot")
             .to_vec()
     })
+}
+
+/// Node's `process.platform` for a Rust `std::env::consts::OS`.
+fn node_platform(os: &str) -> &str {
+    match os {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other, // "linux", "freebsd", ...
+    }
+}
+
+/// Node's `process.arch` for a Rust `std::env::consts::ARCH`.
+fn node_arch(arch: &str) -> &str {
+    match arch {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
+
+/// Node's `os.type()` for a Rust `std::env::consts::OS`.
+fn node_os_type(os: &str) -> &str {
+    match os {
+        "macos" => "Darwin",
+        "windows" => "Windows_NT",
+        "linux" => "Linux",
+        other => other,
+    }
 }
 
 /// Re-bind native callbacks into a fresh (snapshot-derived) context.
@@ -4223,6 +4227,45 @@ fn coverage_accumulate(json: &str) {
     }
 }
 
+/// The caught exception's text (`fallback` when V8 has none to give), or None if nothing was
+/// caught.
+fn caught_message(
+    tc: &mut v8::PinnedRef<'_, v8::TryCatch<'_, '_, v8::HandleScope<'_>>>,
+    fallback: &str,
+) -> Option<String> {
+    if !tc.has_caught() {
+        return None;
+    }
+    Some(tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_else(|| fallback.to_string()))
+}
+
+/// Load-error text for an entry module whose `instantiate_module` did not succeed.
+fn instantiate_error(caught: Option<String>) -> String {
+    format!("instantiate: {}", caught.unwrap_or_else(|| "instantiate failed".to_string()))
+}
+
+/// Load-error text (if any) for an entry module after `evaluate` + a microtask checkpoint:
+/// a caught exception, an errored module (its exception, fetched lazily), or any other
+/// not-evaluated outcome.
+fn evaluate_error(
+    caught: Option<String>,
+    evaluated: bool,
+    status: v8::ModuleStatus,
+    exception: impl FnOnce() -> String,
+) -> Option<String> {
+    if let Some(e) = caught {
+        return Some(format!("evaluate threw: {e}"));
+    }
+    if evaluated && status == v8::ModuleStatus::Evaluated {
+        return None;
+    }
+    if status == v8::ModuleStatus::Errored {
+        Some(format!("module errored: {}", exception()))
+    } else {
+        Some(format!("evaluate failed: status={status:?}"))
+    }
+}
+
 /// Run a single test file end-to-end and return its pass/fail report.
 pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     // Per-file native-DOM lifecycle: reset the thread-local DOM (fresh document per file) and, when
@@ -4412,11 +4455,7 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
                     let tc = std::pin::pin!(v8::TryCatch::new(scope));
                     let tc = &mut tc.init();
                     if load_cjs(tc, &entry_abs, false).is_none() {
-                        Some(if tc.has_caught() {
-                            tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_else(|| "entry load failed".into())
-                        } else {
-                            "entry load failed".to_string()
-                        })
+                        Some(caught_message(tc, "entry load failed").unwrap_or_else(|| "entry load failed".into()))
                     } else {
                         tc.perform_microtask_checkpoint();
                         None
@@ -4444,14 +4483,7 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
                 let tc = &mut tc.init();
                 let ok = module.instantiate_module(tc, resolve_callback);
                 if ok != Some(true) {
-                    let msg = if tc.has_caught() {
-                        tc.exception()
-                            .map(|e| e.to_rust_string_lossy(tc))
-                            .unwrap_or_else(|| "unknown".into())
-                    } else {
-                        "instantiate failed".to_string()
-                    };
-                    break 'work Err(format!("instantiate: {msg}"));
+                    break 'work Err(instantiate_error(caught_message(tc, "unknown")));
                 }
             }
             let ev_err: Option<String> = {
@@ -4459,25 +4491,10 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
                 let tc = &mut tc.init();
                 let ev = module.evaluate(tc);
                 tc.perform_microtask_checkpoint();
-                if tc.has_caught() {
-                    Some(format!(
-                        "evaluate threw: {}",
-                        tc.exception()
-                            .map(|e| e.to_rust_string_lossy(tc))
-                            .unwrap_or_else(|| "unknown".into())
-                    ))
-                } else if ev.is_none() || module.get_status() != v8::ModuleStatus::Evaluated {
-                    if module.get_status() == v8::ModuleStatus::Errored {
-                        Some(format!(
-                            "module errored: {}",
-                            module.get_exception().to_rust_string_lossy(tc)
-                        ))
-                    } else {
-                        Some(format!("evaluate failed: status={:?}", module.get_status()))
-                    }
-                } else {
-                    None
-                }
+                let caught = caught_message(tc, "unknown");
+                evaluate_error(caught, ev.is_some(), module.get_status(), || {
+                    module.get_exception().to_rust_string_lossy(tc)
+                })
             };
             if let Some(e) = ev_err {
                 break 'work Err(e);
@@ -4628,11 +4645,7 @@ fn run_test_file_reused(
                     let tc = std::pin::pin!(v8::TryCatch::new(scope));
                     let tc = &mut tc.init();
                     if load_cjs(tc, entry_abs, false).is_none() {
-                        Some(if tc.has_caught() {
-                            tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_else(|| "entry load failed".into())
-                        } else {
-                            "entry load failed".to_string()
-                        })
+                        Some(caught_message(tc, "entry load failed").unwrap_or_else(|| "entry load failed".into()))
                     } else {
                         tc.perform_microtask_checkpoint();
                         None
@@ -4659,12 +4672,7 @@ fn run_test_file_reused(
                 let tc = &mut tc.init();
                 let ok = module.instantiate_module(tc, resolve_callback);
                 if ok != Some(true) {
-                    let msg = if tc.has_caught() {
-                        tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_else(|| "unknown".into())
-                    } else {
-                        "instantiate failed".to_string()
-                    };
-                    break 'work Err(format!("instantiate: {msg}"));
+                    break 'work Err(instantiate_error(caught_message(tc, "unknown")));
                 }
             }
             let ev_err: Option<String> = {
@@ -4672,17 +4680,10 @@ fn run_test_file_reused(
                 let tc = &mut tc.init();
                 let ev = module.evaluate(tc);
                 tc.perform_microtask_checkpoint();
-                if tc.has_caught() {
-                    Some(format!("evaluate threw: {}", tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_else(|| "unknown".into())))
-                } else if ev.is_none() || module.get_status() != v8::ModuleStatus::Evaluated {
-                    if module.get_status() == v8::ModuleStatus::Errored {
-                        Some(format!("module errored: {}", module.get_exception().to_rust_string_lossy(tc)))
-                    } else {
-                        Some(format!("evaluate failed: status={:?}", module.get_status()))
-                    }
-                } else {
-                    None
-                }
+                let caught = caught_message(tc, "unknown");
+                evaluate_error(caught, ev.is_some(), module.get_status(), || {
+                    module.get_exception().to_rust_string_lossy(tc)
+                })
             };
             if let Some(e) = ev_err {
                 break 'work Err(e);
@@ -4730,10 +4731,18 @@ pub fn is_reuse_enabled() -> bool {
 /// is swapped out for the duration so the fresh isolate's Globals don't clobber the persistent
 /// reuse module cache (the saved registry's Globals stay valid — the persistent isolate lives on).
 pub fn run_test_file_fresh(entry: &Path) -> Result<TestReport, String> {
+    run_fresh_with(entry, run_test_file)
+}
+
+/// `run_test_file_fresh` with the per-file runner injected (unit tests drive the panic path).
+fn run_fresh_with(
+    entry: &Path,
+    run: impl FnOnce(&Path) -> Result<TestReport, String>,
+) -> Result<TestReport, String> {
     let saved = REGISTRY.with(|r| std::mem::take(&mut *r.borrow_mut()));
     FORCE_FRESH.with(|f| f.set(true));
     // Panic-safe: a V8/loader panic must NOT lose the saved reuse registry or strand FORCE_FRESH.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_test_file(entry)));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(entry)));
     FORCE_FRESH.with(|f| f.set(false));
     // On success the fresh path already cleared its registry; on panic it may hold handles to the
     // now-dead fresh isolate. Either way, swap the saved reuse registry back in and FORGET the
@@ -4752,6 +4761,16 @@ fn drive_tests(
     scope: &mut v8::PinScope,
     global: v8::Local<v8::Object>,
     entry_abs: &Path,
+) -> Result<TestReport, String> {
+    drive_tests_bounded(scope, global, entry_abs, 2_000_000)
+}
+
+/// `drive_tests` with the event-loop turn budget injected (unit tests use a tiny one).
+fn drive_tests_bounded(
+    scope: &mut v8::PinScope,
+    global: v8::Local<v8::Object>,
+    entry_abs: &Path,
+    max_turns: u32,
 ) -> Result<TestReport, String> {
     // Expose the test file's absolute path to the runtime so toMatchSnapshot() can locate the
     // `__snapshots__/<basename>.snap` sibling (mirrors vitest's per-file snapshot resolution).
@@ -4780,7 +4799,7 @@ fn drive_tests(
     let mut guard = 0u32;
     loop {
         guard += 1;
-        if guard > 2_000_000 {
+        if guard > max_turns {
             return Err("event loop did not settle (possible infinite timers)".into());
         }
         loop {
