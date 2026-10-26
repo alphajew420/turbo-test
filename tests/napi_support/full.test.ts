@@ -288,6 +288,15 @@ describe('functions', () => {
     expect(f()[1]).toBe(globalThis);
   });
 
+  test('napi_create_function / napi_define_class name the function', () => {
+    expect(a.makeFn(1).name).toBe('echo');
+    const [auto, sized, unnamed, acc] = a.names();
+    expect([auto.name, sized.name, unnamed.name]).toEqual(['echo', 'echo', '']);
+    expect(acc).toBe(OK);
+    expect(a.basics.name).toBe('basics');
+    expect(a.Cls.name).toBe('Cls');
+  });
+
   test('napi_get_cb_info with NULL argv / NULL argc', () => {
     expect(a.argcOnly(1, 2, 3)).toBe(3);
     expect(a.argcOnly()).toBe(0);

@@ -262,6 +262,18 @@ static napi_value f_make_fn(napi_env env, napi_callback_info info) {
     return or_undef(env, f);
 }
 
+/* names() -> functions created with a NUL-terminated name, an explicit length ("echoXYZ", 4)
+ * and a NULL name, then the OR of the statuses. */
+static napi_value f_names(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value it[4];
+    int acc = napi_create_function(env, "echo", NAPI_AUTO_LENGTH, f_echo, NULL, &it[0]) |
+              napi_create_function(env, "echoXYZ", 4, f_echo, NULL, &it[1]) |
+              napi_create_function(env, NULL, 0, f_echo, NULL, &it[2]);
+    it[3] = dbl(env, acc);
+    return list(env, 4, it);
+}
+
 static napi_value f_argc_only(napi_env env, napi_callback_info info) {
     size_t argc = 0;
     ST(napi_get_cb_info(env, info, &argc, NULL, NULL, NULL));
@@ -554,7 +566,8 @@ static napi_value f_cls_ctor(napi_env env, napi_callback_info info) {
     return a.self;
 }
 
-/* Strings / property keys longer than V8's String::kMaxLength cannot be created. */
+/* Strings / property keys / function names longer than V8's String::kMaxLength cannot be
+ * created. */
 static napi_value f_huge(napi_env env, napi_callback_info info) {
     (void)info;
     const size_t n = (size_t)1 << 29;
@@ -562,16 +575,18 @@ static napi_value f_huge(napi_env env, napi_callback_info info) {
     if (!b) return undef(env);
     memset(b, 'a', n);
     b[n] = 0;
-    napi_value s = NULL, out = NULL, o;
+    napi_value s = NULL, out = NULL, f = NULL, o;
     napi_create_object(env, &o);
-    napi_value it[5];
+    napi_value it[7];
     it[0] = dbl(env, napi_create_string_utf8(env, b, n, &s));
     it[1] = dbl(env, napi_set_named_property(env, o, b, o));
     it[2] = dbl(env, napi_get_named_property(env, o, b, &out));
+    it[5] = dbl(env, napi_create_function(env, b, n, f_status, NULL, &f));
     free(b);
     it[3] = boolv(env, s == NULL);
     it[4] = boolv(env, out == NULL);
-    return list(env, 5, it);
+    it[6] = boolv(env, f == NULL);
+    return list(env, 7, it);
 }
 
 /* throwPending(msg): napi_throw_error, then read and clear the pending exception ->
@@ -707,6 +722,7 @@ static const struct {
     {"arrLen", f_arr_len},
     {"keys", f_keys},
     {"makeFn", f_make_fn},
+    {"names", f_names},
     {"argcOnly", f_argc_only},
     {"padded", f_padded},
     {"thisOnly", f_this_only},

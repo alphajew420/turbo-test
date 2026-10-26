@@ -299,11 +299,7 @@ pub unsafe extern "C" fn napi_create_string_utf8(
     out: *mut napi_value,
 ) -> napi_status {
     let s = scope(env);
-    let bytes = if len == usize::MAX {
-        std::ffi::CStr::from_ptr(str_).to_bytes()
-    } else {
-        std::slice::from_raw_parts(str_ as *const u8, len)
-    };
+    let bytes = utf8_arg(str_, len);
     // V8's String::NewFromUtf8 (what Node uses) replaces invalid sequences with U+FFFD.
     match v8::String::new_from_utf8(s, bytes, v8::NewStringType::Normal) {
         Some(v) => {
@@ -311,6 +307,15 @@ pub unsafe extern "C" fn napi_create_string_utf8(
             napi_ok
         }
         None => napi_generic_failure,
+    }
+}
+
+/// The bytes of a `(const char*, size_t)` string argument; NAPI_AUTO_LENGTH means NUL-terminated.
+unsafe fn utf8_arg<'a>(str_: *const c_char, len: usize) -> &'a [u8] {
+    if len == usize::MAX {
+        std::ffi::CStr::from_ptr(str_).to_bytes()
+    } else {
+        std::slice::from_raw_parts(str_ as *const u8, len)
     }
 }
 
@@ -527,8 +532,8 @@ fn init_outcome(result: std::thread::Result<napi_value>, path: &Path) -> Result<
 #[no_mangle]
 pub unsafe extern "C" fn napi_create_function(
     env: napi_env,
-    _name: *const c_char,
-    _len: usize,
+    name: *const c_char,
+    len: usize,
     cb: napi_callback,
     data: *mut c_void,
     out: *mut napi_value,
@@ -541,6 +546,14 @@ pub unsafe extern "C" fn napi_create_function(
             .data(data_val.into())
             .build(s);
         let f = tmpl.get_function(s).unwrap();
+        // as Node: a non-NULL name becomes the function's `name` (a name V8 cannot hold is
+        // napi_generic_failure)
+        if !name.is_null() {
+            let name = utf8_arg(name, len);
+            let name = v8::String::new_from_utf8(s, name, v8::NewStringType::Internalized)
+                .ok_or(napi_generic_failure)?;
+            f.set_name(name);
+        }
         put(out, f.into());
         Ok(())
     })
