@@ -869,7 +869,7 @@ fn is_ident_byte(b: u8) -> bool {
 
 /// Build a double-quoted JS string literal for `s` (escapes the metacharacters that appear in
 /// filesystem paths). Used to embed `__dirname`/`__filename` path constants in injected source.
-fn js_string_literal(s: &str) -> String {
+pub(crate) fn js_string_literal(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -1685,8 +1685,30 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
                  globalThis.__hoistedCache = []; globalThis.__hoistedIdx = 0;"
             ),
         );
-        if !run_js_ok(scope, &format!("(() => {{\n{hoisted}\n{calls}}})();")) {
-            run_js_ok(scope, &format!("(() => {{\n{calls}}})();"));
+        // the factories see the file's top-level bindings through its scope (mock_scope.rs)
+        let bindings = factory_bindings(entry, &src, false);
+        // a TypeScript file's factories (and hoisted declarations) carry types: strip them
+        let ts = matches!(
+            entry.extension().and_then(|e| e.to_str()),
+            Some("ts" | "mts" | "cts")
+        );
+        let scoped = |code: String| {
+            let code = if ts {
+                crate::transform::transform(Path::new("prepass.ts"), &code).unwrap_or(code)
+            } else {
+                code
+            };
+            if bindings.is_empty() {
+                code
+            } else {
+                crate::mock_scope::with_scope(&code, &bindings)
+            }
+        };
+        if !run_js_ok(
+            scope,
+            &scoped(format!("(() => {{\n{hoisted}\n{calls}}})();")),
+        ) {
+            run_js_ok(scope, &scoped(format!("(() => {{\n{calls}}})();")));
         }
         run_js(scope, "globalThis.__ttDir = globalThis.__ttPrevDir;");
         resolve_pending_mocks(scope);
@@ -1753,6 +1775,13 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
         let prev_resolving = RESOLVING_MOCKS.with(|f| f.replace(true));
         set_mock_prepass(scope, true);
         if let Some(raw) = esbuild_transform_cjs(&p, false) {
+            // the factories see the file's top-level bindings through its scope (mock_scope.rs)
+            let bindings = factory_bindings(entry, &src, true);
+            let raw = if bindings.is_empty() {
+                raw
+            } else {
+                crate::mock_scope::with_scope(&raw, &bindings)
+            };
             let wrapped = format!(
                 "(function (exports, module, require, __filename, __dirname) {{\n{raw}\n}})"
             );
@@ -2087,7 +2116,7 @@ fn file_has_decorator(src: &str) -> bool {
 /// falls back to esbuild.
 fn native_transform_cjs(file: &Path) -> Option<String> {
     use std::hash::{Hash, Hasher};
-    let raw = std::fs::read_to_string(file).ok()?;
+    let raw = with_binder(file, std::fs::read_to_string(file).ok()?, true);
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
     file.extension()
@@ -2118,6 +2147,28 @@ fn native_transform_cjs(file: &Path) -> Option<String> {
         code = rewrite_shared_lets(&code, &shared);
     }
     write_atomic(&cache, &code);
+    Some(code)
+}
+
+/// `native_transform_cjs` for the test file under test locations (location.rs): the same code,
+/// built uncached with the emitter's source map, whose lines follow the mock hoisting and the
+/// shared-`let` prelude so the map stays aligned with the code that runs.
+fn native_transform_cjs_located(file: &Path) -> Option<String> {
+    let raw = with_binder(file, std::fs::read_to_string(file).ok()?, true);
+    let legacy_decorators = decorator_metadata_enabled(file) && file_has_decorator(&raw);
+    let emitted = crate::esm_cjs::emit_mapped(file, &raw, legacy_decorators)?;
+    let map = crate::coverage::inline_segments(&emitted)?;
+    let (mut code, mut origins) = hoist_mock_setup_tracked(&await_do_mocks_on_import(emitted));
+    let shared = shared_mock_lets(&raw);
+    if !shared.is_empty() {
+        code = rewrite_shared_lets(&code, &shared);
+        origins.insert(0, None);
+    }
+    let segs = origins
+        .iter()
+        .map(|o| o.and_then(|i| map.get(i).cloned()).unwrap_or_default())
+        .collect();
+    crate::location::set_map(file, segs, &raw);
     Some(code)
 }
 
@@ -2307,14 +2358,26 @@ fn fill_import_meta(code: String) -> String {
 /// "consumers" — incl. the modules being mocked) to AFTER that region. The setup's own decls run
 /// in-module-scope, so the factory shares the test's bindings (push, mockUseAuthInfo, etc.).
 fn hoist_mock_setup(code: &str) -> String {
+    hoist_mock_setup_tracked(code).0
+}
+
+/// `hoist_mock_setup`, also returning for each output line the input line it came from (`None` for
+/// a line it wrote: a mocked require's re-bind).
+fn hoist_mock_setup_tracked(code: &str) -> (String, Vec<Option<usize>>) {
+    let unchanged = || {
+        (
+            code.to_string(),
+            (0..code.split('\n').count()).map(Some).collect(),
+        )
+    };
     if !code.contains(".mock(") {
-        return code.to_string();
+        return unchanged();
     }
     let lines: Vec<&str> = code.lines().collect();
     let is_req = |l: &str| l.starts_with("var import_") && l.contains("require(");
     // contiguous require block
     let Some(req_start) = lines.iter().position(|l| is_req(l)) else {
-        return code.to_string();
+        return unchanged();
     };
     let mut req_end = req_start;
     while req_end + 1 < lines.len() && is_req(lines[req_end + 1]) {
@@ -2328,7 +2391,7 @@ fn hoist_mock_setup(code: &str) -> String {
         .rposition(|l| l.contains(".mock("))
         .unwrap_or(0);
     if last_mock <= req_end {
-        return code.to_string();
+        return unchanged();
     }
     let mut depth = 0i32;
     let mut started = false;
@@ -2454,7 +2517,17 @@ fn hoist_mock_setup(code: &str) -> String {
     if region_end + 1 < lines.len() {
         out.extend_from_slice(&lines[region_end + 1..]);
     }
-    out.join("\n")
+    // an output line that is one of the input's slices came from that line
+    let index: HashMap<usize, usize> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (l.as_ptr() as usize, i))
+        .collect();
+    let origins = out
+        .iter()
+        .map(|l| index.get(&(l.as_ptr() as usize)).copied())
+        .collect();
+    (out.join("\n"), origins)
 }
 
 /// The value of the first string literal (`"..."`, `'...'` or `` `...` ``) in `s`, escape
@@ -3071,6 +3144,11 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
             // (fewer per-token mappings), so coverage.rs under-attributes inner functions/lines —
             // not yet parity.
             if crate::esm_cjs::enabled() && !crate::coverage::enabled() && !prefer_metadata {
+                if crate::location::is_entry(abs) {
+                    if let Some(code) = native_transform_cjs_located(abs) {
+                        return Some(code);
+                    }
+                }
                 if let Some(code) = native_transform_cjs(abs) {
                     return Some(code);
                 }
@@ -3085,8 +3163,11 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
             }
         }
     }
-    let raw = std::fs::read_to_string(abs).ok()?;
+    let raw = with_binder(abs, std::fs::read_to_string(abs).ok()?, false);
     if !crate::transform::needs_transform(abs) {
+        if crate::location::is_entry(abs) {
+            crate::location::set_identity(abs);
+        }
         return Some(raw);
     }
     // App `.ts`/`.tsx` files load through this path as ESM (load_graph → maybe_transform), NOT the
@@ -3099,6 +3180,13 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
     let legacy_decorators = !abs.components().any(|c| c.as_os_str() == "node_modules")
         && decorator_metadata_enabled(abs)
         && file_has_decorator(&raw);
+    // The test file under test locations: transform with a source map (no cache).
+    if !legacy_decorators && crate::location::is_entry(abs) {
+        if let Ok((code, mappings)) = crate::transform::transform_mapped(abs, &raw) {
+            crate::location::set_map(abs, crate::coverage::mappings_segments(&mappings), &raw);
+            return Some(code);
+        }
+    }
     // content-addressed disk cache, shared across runs and workers. Key on the legacy-decorator
     // decision so a config/file change can't serve stale (un-lowered) output. The tag changes
     // with the decorator transform (v2: tsc reads type-only imports through a namespace import),
@@ -3581,7 +3669,12 @@ fn load_cjs_inner<'s>(
     let (script, compile_exc) = {
         let tc = std::pin::pin!(v8::TryCatch::new(scope));
         let tc = &mut tc.init();
-        let origin = if crate::coverage::enabled() {
+        // Test locations (location.rs) find the test file's frames by this name too.
+        let located = crate::location::is_entry(abs);
+        if located {
+            crate::location::set_offset(abs, 1);
+        }
+        let origin = if crate::coverage::enabled() || located {
             v8::String::new(tc, &abs.to_string_lossy()).map(|name| script_origin(tc, name))
         } else {
             None
@@ -4017,6 +4110,44 @@ thread_local! {
     /// behavior — stubbing there would mask bugs AND turn a transient turbo-dom parser failure
     /// into a permanent DOM-less stub (mass "document is not defined").
     static ENTRY_LENIENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The test file this thread runs (its mock factories see its scope, mock_scope.rs).
+    static TEST_FILE: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
+}
+
+/// The test file's top-level bindings its `vi.mock` factories name (mock_scope.rs); the shared
+/// `let`s the module runner already routes through `globalThis.__ms` (`mr`) are left out.
+fn factory_bindings(entry: &Path, src: &str, mr: bool) -> Vec<crate::mock_scope::Binding> {
+    let mocks = extract_mocks(src);
+    if mocks.is_empty() {
+        return Vec::new();
+    }
+    let factories: String = mocks
+        .iter()
+        .map(|(_, f)| f.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let shared = if mr {
+        shared_mock_lets(src)
+    } else {
+        Vec::new()
+    };
+    crate::mock_scope::bindings(entry, src, &factories)
+        .into_iter()
+        .filter(|(n, _)| !shared.contains(n))
+        .collect()
+}
+
+/// `src` of the file `abs` as it loads: the test file gets the binder statement that hands its
+/// factories' bindings to the runtime, on a line of its own at the end (so no position moves).
+fn with_binder(abs: &Path, src: String, mr: bool) -> String {
+    if !TEST_FILE.with(|f| *f.borrow() == abs) {
+        return src;
+    }
+    let bindings = factory_bindings(abs, &src, mr);
+    if bindings.is_empty() {
+        return src;
+    }
+    format!("{src}\n{}", crate::mock_scope::binder(&bindings))
 }
 
 /// Whether to stub a failed node_modules load for the CURRENT file. e2e entries only;
@@ -5103,6 +5234,77 @@ fn native_log(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
     }
 }
 
+/// native `__ttWrite(fd, text)`: `process.stdout.write` / `process.stderr.write` (runtime.js) —
+/// the text as is, to stdout for fd 1 (stderr while [`CONSOLE_TO_STDERR`] is set, as console
+/// output) and to stderr otherwise (turbo-test#70).
+fn native_write(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    use std::io::Write;
+    let fd = args.get(0).int32_value(scope).unwrap_or(1);
+    let text = args.get(1).to_rust_string_lossy(scope);
+    if fd == 1 && !CONSOLE_TO_STDERR.load(Ordering::Relaxed) {
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(text.as_bytes());
+        let _ = out.flush();
+    } else {
+        let _ = std::io::stderr().lock().write_all(text.as_bytes());
+    }
+}
+
+/// native `__ttCallSite()`: the original `[line, column]` of the innermost stack frame in the test
+/// file (location.rs), or `undefined` — where the runtime's `test(...)` was called from.
+fn native_call_site(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let site = v8::StackTrace::current_stack_trace(scope, 64).and_then(|trace| {
+        (0..trace.get_frame_count()).find_map(|i| {
+            let frame = trace.get_frame(scope, i)?;
+            let name = frame
+                .get_script_name(scope)
+                .map(|n| n.to_rust_string_lossy(scope))
+                .unwrap_or_default();
+            crate::location::resolve(&name, frame.get_line_number(), frame.get_column())
+        })
+    });
+    if let Some((line, col)) = site {
+        let items = [
+            v8::Integer::new(scope, line as i32).into(),
+            v8::Integer::new(scope, col as i32).into(),
+        ];
+        rv.set(v8::Array::new_with_elements(scope, &items).into());
+    }
+}
+
+/// Whether the run is on CI, as std-env's `isCI` (vitest's snapshot `update: 'none'` default there):
+/// `CI` set to anything but `false` / `0`, or a known CI provider's variable.
+fn is_ci(var: impl Fn(&str) -> Option<String>) -> bool {
+    if let Some(v) = var("CI") {
+        return !matches!(v.as_str(), "" | "false" | "0");
+    }
+    [
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "BUILDKITE",
+        "JENKINS_URL",
+        "TF_BUILD",
+        "TEAMCITY_VERSION",
+        "BITBUCKET_BUILD_NUMBER",
+        "CODEBUILD_BUILD_ARN",
+        "APPVEYOR",
+        "DRONE",
+        "SEMAPHORE",
+    ]
+    .iter()
+    .any(|k| var(k).is_some())
+}
+
 /// Re-bind native callbacks into a fresh (snapshot-derived) context.
 /// os.tmpdir() as Node's: TMPDIR, else TMP, else TEMP, else /tmp, without a trailing slash.
 fn node_tmpdir(var: impl Fn(&str) -> Option<String>) -> String {
@@ -5118,6 +5320,8 @@ fn node_tmpdir(var: impl Fn(&str) -> Option<String>) -> String {
 
 fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "log", native_log);
+    bind_fn(scope, global, "__ttWrite", native_write);
+    bind_fn(scope, global, "__ttCallSite", native_call_site);
     bind_fn(scope, global, "__nativeRequire", native_require);
     bind_fn(scope, global, "__ttRegisterMock", native_register_mock);
     bind_fn(scope, global, "__ttImportActual", native_import_actual);
@@ -5165,6 +5369,10 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     // `-u/--update` → write/overwrite obsolete-or-missing snapshots instead of failing the
     // comparison (vitest's --update semantics). Plumbed via TURBO_UPDATE_SNAPSHOTS env (set by
     // the CLI) → globalThis.__TT_UPDATE_SNAPSHOTS, read by toMatchSnapshot in the runtime.
+    // On CI (vitest: std-env's isCI) a missing snapshot is not written: it fails (turbo-test#73).
+    if is_ci(|k| std::env::var(k).ok()) {
+        run_js(scope, "globalThis.__TT_CI=true;");
+    }
     if std::env::var("TURBO_UPDATE_SNAPSHOTS").is_ok() {
         if let Some(code) = v8::String::new(scope, "globalThis.__TT_UPDATE_SNAPSHOTS=true") {
             if let Some(s) = v8::Script::compile(scope, code, None) {
@@ -5203,6 +5411,10 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     }
     if std::env::var("TURBO_TEST_FORBID_ONLY").is_ok() {
         prelude.push_str("globalThis.__TT_FORBID_ONLY=true;");
+    }
+    // --includeTaskLocation / test.includeTaskLocation → record each test's call site
+    if crate::location::enabled() {
+        prelude.push_str("globalThis.__TT_TASK_LOCATION=true;");
     }
     // --passWithNoTests (launcher) → a file with no tests at all passes instead of failing
     if std::env::var("TURBO_PASS_WITH_NO_TESTS").is_ok() {
@@ -5450,18 +5662,47 @@ pub struct TestReport {
     /// Per-test list (full `describe > it` name, status, duration ms) — drives the
     /// per-testcase reporters (junit/tap/verbose). Empty only if the file failed to load.
     pub tests: Vec<TestCase>,
+    /// One state per `describe` block: "pass" | "fail" | "skip" | "todo".
+    pub suites: Vec<String>,
+    /// The file's snapshot counts (`None`: it used no snapshot and has no snapshot file).
+    pub snapshot: Option<SnapshotResult>,
     /// Per-file environment setup time (isolate+context-from-snapshot+natives), µs.
     pub setup_us: f64,
 }
 
-#[derive(Debug, Clone)]
+/// A test file's snapshot outcome, as @vitest/snapshot's `SnapshotResult` (turbo-test#73).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SnapshotResult {
+    pub added: u32,
+    pub matched: u32,
+    pub unmatched: u32,
+    pub updated: u32,
+    /// Obsolete snapshots (0 when the emptied file was deleted) and their keys.
+    pub unchecked: u32,
+    pub unchecked_keys: Vec<String>,
+    /// The snapshot file was emptied (and, under -u, deleted).
+    pub file_deleted: bool,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct TestCase {
+    /// The `describe > test` label (junit/tap/verbose).
     pub name: String,
-    /// "passed" | "failed" | "skipped".
+    /// The test's own title and its enclosing `describe` names (vitest's `title` /
+    /// `ancestorTitles`).
+    pub title: String,
+    pub ancestors: Vec<String>,
+    /// "passed" | "failed" | "skipped" | "todo".
     pub status: String,
     pub duration_ms: f64,
+    /// Real start time (epoch ms) of a test that ran; 0 otherwise.
+    pub start_ms: f64,
     /// Failure message (empty unless status == "failed").
     pub message: String,
+    /// The failure's error `stack` (else its `message`), as vitest's JSON `failureMessages`.
+    pub failure_messages: Vec<String>,
+    /// Where the test was registered (`includeTaskLocation`): 1-based line and column.
+    pub location: Option<(u32, u32)>,
 }
 
 impl TestReport {
@@ -5645,6 +5886,11 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     let _dom_guard = DomGuard;
 
     let entry_abs = std::fs::canonicalize(entry).map_err(|e| format!("{e}"))?;
+    crate::location::begin(
+        &entry_abs,
+        &std::fs::read_to_string(&entry_abs).unwrap_or_default(),
+    );
+    TEST_FILE.with(|f| *f.borrow_mut() = entry_abs.clone());
     // e2e helper tests may import heavy Node-only deps they don't exercise — allow stubbing a
     // failed node_modules load for these files only (see stub_failed_deps).
     ENTRY_LENIENT.with(|c| c.set(entry_abs.components().any(|p| p.as_os_str() == "e2e")));
@@ -6268,59 +6514,131 @@ fn drive_tests_bounded(
     let passed = get_num(scope, "passed");
     let failed = get_num(scope, "failed");
 
-    let mut failures = Vec::new();
-    let fkey = v8::String::new(scope, "failures").unwrap();
-    if let Some(arr) = summary
-        .get(scope, fkey.into())
-        .and_then(|v| v8::Local::<v8::Array>::try_from(v).ok())
-    {
-        for i in 0..arr.length() {
-            if let Some(v) = arr.get_index(scope, i) {
-                failures.push(v.to_rust_string_lossy(scope));
-            }
-        }
-    }
-    // Per-test list (name/status/duration_ms/message) for the per-testcase reporters.
+    let failures = string_array(scope, summary, "failures");
+    // One state per describe block ('pass' / 'fail' / 'skip' / 'todo').
+    let suites = string_array(scope, summary, "suites");
+    // Per-test records (runtime.js `__testRecord`) for the per-testcase reporters.
     let mut tests = Vec::new();
     let tkey = v8::String::new(scope, "tests").unwrap();
     if let Some(arr) = summary
         .get(scope, tkey.into())
         .and_then(|v| v8::Local::<v8::Array>::try_from(v).ok())
     {
-        let get_str = |scope: &mut v8::PinScope, o: v8::Local<v8::Object>, key: &str| -> String {
-            let k = v8::String::new(scope, key).unwrap();
-            o.get(scope, k.into())
-                .filter(|v| !v.is_undefined() && !v.is_null())
-                .map(|v| v.to_rust_string_lossy(scope))
-                .unwrap_or_default()
-        };
-        let get_f64 = |scope: &mut v8::PinScope, o: v8::Local<v8::Object>, key: &str| -> f64 {
-            let k = v8::String::new(scope, key).unwrap();
-            o.get(scope, k.into())
-                .and_then(|v| v.number_value(scope))
-                .unwrap_or(0.0)
-        };
         for i in 0..arr.length() {
             if let Some(o) = arr
                 .get_index(scope, i)
                 .and_then(|v| v8::Local::<v8::Object>::try_from(v).ok())
             {
+                let text = |scope: &mut v8::PinScope, key: &str| -> String {
+                    let k = v8::String::new(scope, key).unwrap();
+                    o.get(scope, k.into())
+                        .filter(|v| !v.is_undefined() && !v.is_null())
+                        .map(|v| v.to_rust_string_lossy(scope))
+                        .unwrap_or_default()
+                };
+                let num = |scope: &mut v8::PinScope, key: &str| -> f64 {
+                    let k = v8::String::new(scope, key).unwrap();
+                    o.get(scope, k.into())
+                        .filter(|v| !v.is_undefined())
+                        .and_then(|v| v.number_value(scope))
+                        .unwrap_or(0.0)
+                };
                 tests.push(TestCase {
-                    name: get_str(scope, o, "name"),
-                    status: get_str(scope, o, "status"),
-                    duration_ms: get_f64(scope, o, "duration_ms"),
-                    message: get_str(scope, o, "message"),
+                    name: text(scope, "name"),
+                    title: text(scope, "title"),
+                    ancestors: string_array(scope, o, "ancestors"),
+                    status: text(scope, "status"),
+                    duration_ms: num(scope, "duration_ms"),
+                    start_ms: num(scope, "start_ms"),
+                    message: text(scope, "message"),
+                    failure_messages: string_array(scope, o, "failure_messages"),
+                    location: location_of(scope, o),
                 });
             }
         }
     }
+    let snapshot = snapshot_of(scope, summary);
     Ok(TestReport {
         passed,
         failed,
         failures,
         tests,
+        suites,
+        snapshot,
         setup_us: 0.0,
     })
+}
+
+/// The run summary's `snapshot` counts (runtime.js `__snapFinish`), when the file has any.
+fn snapshot_of<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    summary: v8::Local<'s, v8::Object>,
+) -> Option<SnapshotResult> {
+    let k = v8::String::new(scope, "snapshot").unwrap();
+    let o = summary
+        .get(scope, k.into())
+        .and_then(|v| v8::Local::<v8::Object>::try_from(v).ok())?;
+    let num = |key: &str| {
+        let k = v8::String::new(scope, key).unwrap();
+        o.get(scope, k.into())
+            .and_then(|v| v.uint32_value(scope))
+            .unwrap_or(0)
+    };
+    let (added, matched, unmatched, updated, unchecked) = (
+        num("added"),
+        num("matched"),
+        num("unmatched"),
+        num("updated"),
+        num("unchecked"),
+    );
+    let k = v8::String::new(scope, "file_deleted").unwrap();
+    let file_deleted = o
+        .get(scope, k.into())
+        .is_some_and(|v| v.boolean_value(scope));
+    Some(SnapshotResult {
+        added,
+        matched,
+        unmatched,
+        updated,
+        unchecked,
+        unchecked_keys: string_array(scope, o, "unchecked_keys"),
+        file_deleted,
+    })
+}
+
+/// A test record's `location` (`[line, column]`), when it has one.
+fn location_of<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    obj: v8::Local<'s, v8::Object>,
+) -> Option<(u32, u32)> {
+    let k = v8::String::new(scope, "location").unwrap();
+    let arr = obj
+        .get(scope, k.into())
+        .and_then(|v| v8::Local::<v8::Array>::try_from(v).ok())?;
+    let at = |i: u32| {
+        arr.get_index(scope, i)
+            .and_then(|v| v.uint32_value(scope))
+            .unwrap_or(0)
+    };
+    Some((at(0), at(1)))
+}
+
+/// The array `obj[key]` as strings (empty when it is not an array).
+fn string_array<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    obj: v8::Local<'s, v8::Object>,
+    key: &str,
+) -> Vec<String> {
+    let k = v8::String::new(scope, key).unwrap();
+    obj.get(scope, k.into())
+        .and_then(|v| v8::Local::<v8::Array>::try_from(v).ok())
+        .map(|arr| {
+            (0..arr.length())
+                .filter_map(|i| arr.get_index(scope, i))
+                .map(|v| v.to_rust_string_lossy(scope))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Call a no-arg global JS function and coerce its result to bool.

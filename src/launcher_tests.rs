@@ -112,14 +112,22 @@ fn walk_skips_only_node_modules_and_git() {
     for d in ["dist", "build", "coverage", ".next", ".turbo", "target"] {
         t.file(&format!("{d}/e.test.ts"), T);
     }
-    for d in SKIP_DIR {
+    for d in ["node_modules", ".git"] {
         t.file(&format!("{d}/e.test.ts"), T);
         t.file(&format!("src/{d}/f.test.ts"), T);
     }
     // a directory whose name looks like a test file is descended, not collected
     t.file("g.test.ts/inner.test.ts", T);
+    // pruned by vitest's default exclude
+    let def: Vec<String> = DEFAULT_EXCLUDE_GLOBS
+        .iter()
+        .map(|g| g.to_string())
+        .collect();
+    let root = t.0.clone();
+    let prune =
+        move |d: &Path| excludes_dir(&def, &d.strip_prefix(&root).unwrap().to_string_lossy());
     let mut out = Vec::new();
-    walk(&t.0, &mut out, &is_test_file);
+    walk(&t.0, &mut out, &is_test_file, &prune);
     out.sort();
     let want: Vec<PathBuf> = [
         ".hidden/c.test.ts",
@@ -138,10 +146,14 @@ fn walk_skips_only_node_modules_and_git() {
     .map(|f| t.0.join(f))
     .collect();
     assert_eq!(out, want);
-    assert_eq!(SKIP_DIR, ["node_modules", ".git"]);
+    assert_eq!(DEFAULT_EXCLUDE_GLOBS, ["**/node_modules/**", "**/.git/**"]);
+    // nothing pruned: those directories are searched too
+    let mut all = Vec::new();
+    walk(&t.0, &mut all, &is_test_file, &|_| false);
+    assert_eq!(all.len(), want.len() + 4);
     // unreadable dir → nothing, no panic
     let mut none = Vec::new();
-    walk(&t.0.join("missing"), &mut none, &is_test_file);
+    walk(&t.0.join("missing"), &mut none, &is_test_file, &|_| false);
     assert!(none.is_empty());
 }
 
@@ -153,8 +165,22 @@ fn walk_ignores_symlinks_and_specials() {
     std::os::unix::fs::symlink(&real, t.0.join("link.test.ts")).unwrap();
     std::os::unix::fs::symlink(t.0.join("real"), t.0.join("linkdir")).unwrap();
     let mut out = Vec::new();
-    walk(&t.0, &mut out, &is_test_file);
+    walk(&t.0, &mut out, &is_test_file, &|_| false);
     assert_eq!(out, vec![real]);
+}
+
+#[test]
+fn excludes_dir_needs_a_glob_covering_the_whole_directory() {
+    // turbo-test#63 item 3: discovery prunes a directory only when an exclude `<prefix>/**`
+    // covers everything under it
+    let ex = |g: &[&str]| -> Vec<String> { g.iter().map(|s| s.to_string()).collect() };
+    let def = ex(&DEFAULT_EXCLUDE_GLOBS);
+    assert!(excludes_dir(&def, "node_modules") && excludes_dir(&def, "a/b/.git"));
+    assert!(!excludes_dir(&def, "src") && !excludes_dir(&def, "node_modules_x"));
+    assert!(excludes_dir(&ex(&["e2e/**"]), "e2e") && !excludes_dir(&ex(&["e2e/**"]), "a/e2e"));
+    // a file glob never prunes
+    assert!(!excludes_dir(&ex(&["**/*.e2e.ts"]), "x"));
+    assert!(!excludes_dir(&[], "node_modules"));
 }
 
 #[test]
@@ -1172,9 +1198,11 @@ fn plan_isolate_environment_and_root_flags() {
     );
     let a = "proj/a.test.ts";
     let p = run_plan(&t, &["--no-isolate", "--root", "proj"]);
+    // --root (not --dir) is the base the reports name files from (turbo-test#63 item 2)
     assert_eq!(
         p.env,
         vec![
+            ("TURBO_ROOT", t.p("proj")),
             ("TURBO_REUSE_ISOLATE", "1".to_string()),
             ("TURBO_ENV", "jsdom".to_string())
         ]
@@ -1212,10 +1240,10 @@ fn plan_isolate_environment_and_root_flags() {
     // an absolute --root; last of --root/--dir wins
     let p = run_plan(&t, &["--root", "nowhere", "--dir", &t.p("proj")]);
     assert_eq!(argv(&p), args(&["--testTimeout", "1234", a]));
-    // a --root without a config: no env, no timeout injection
+    // a --root without a config: only the naming root, no timeout injection
     t.file("plain/b.test.ts", T);
     let p = run_plan(&t, &["--root", "plain"]);
-    assert!(p.env.is_empty());
+    assert_eq!(p.env, vec![("TURBO_ROOT", t.p("plain"))]);
     assert_eq!(argv(&p), vec!["plain/b.test.ts"]);
     // `--root ""` is an empty discovery root (nothing found), like the original
     assert_eq!(run_plan(&t, &["--root="]).outcome, Err(1));
@@ -1366,4 +1394,23 @@ fn prepare_returns_argv_for_runnable_input() {
         prepare(args(&["run", "--reporter", "dot", "--root", &root, &f])),
         args(&["--reporter", "dot", &f])
     );
+}
+
+#[test]
+fn config_true_reads_a_boolean_key() {
+    // test.includeTaskLocation (turbo-test#63 item 1)
+    assert!(config_true(
+        "{ test: { includeTaskLocation : true } }",
+        "includeTaskLocation"
+    ));
+    assert!(!config_true(
+        "{ test: { includeTaskLocation: false } }",
+        "includeTaskLocation"
+    ));
+    // a mention that is not a key is skipped; no key at all is false
+    assert!(config_true(
+        "// includeTaskLocation\n{ includeTaskLocation: true }",
+        "includeTaskLocation"
+    ));
+    assert!(!config_true("{ test: {} }", "includeTaskLocation"));
 }

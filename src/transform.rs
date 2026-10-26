@@ -50,6 +50,22 @@ pub fn transform(path: &Path, src: &str) -> Result<String, String> {
 /// valid, runnable output with no esbuild/tsc dependency. The caller decides `legacy_decorators`
 /// (project has `experimentalDecorators` AND the file uses a decorator).
 pub fn transform_with(path: &Path, src: &str, legacy_decorators: bool) -> Result<String, String> {
+    emit(path, src, legacy_decorators, false).map(|(code, _)| code)
+}
+
+/// `transform` with a source map: the code and the map's `mappings` (test locations,
+/// location.rs).
+pub fn transform_mapped(path: &Path, src: &str) -> Result<(String, String), String> {
+    emit(path, src, false, true).map(|(code, map)| (code, map.unwrap_or_default()))
+}
+
+/// The `transform_with` pipeline; `with_map` also returns the codegen source map's `mappings`.
+fn emit(
+    path: &Path,
+    src: &str,
+    legacy_decorators: bool,
+    with_map: bool,
+) -> Result<(String, Option<String>), String> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).map_err(|e| format!("source type: {e:?}"))?;
 
@@ -77,7 +93,12 @@ pub fn transform_with(path: &Path, src: &str, legacy_decorators: bool) -> Result
         return Err(format!("transform errors: {:?}", ret.errors));
     }
 
-    Ok(Codegen::new().build(&program).code)
+    let options = oxc_codegen::CodegenOptions {
+        source_map_path: with_map.then(|| path.to_path_buf()),
+        ..Default::default()
+    };
+    let out = Codegen::new().with_options(options).build(&program);
+    Ok((out.code, out.map.map(|m| m.to_json().mappings)))
 }
 
 /// Transform a TS file lowering legacy decorators + `emitDecoratorMetadata` in-process via oxc

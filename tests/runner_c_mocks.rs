@@ -420,3 +420,50 @@ test('jest.mock keeps jest semantics: a missing name reads undefined', () => {{
         assert_passes(&turbo_test(&p.dir, &[], env), 4);
     }
 }
+
+/// A test file whose `vi.mock` factory reads (and assigns) its own top-level bindings: a `let`,
+/// a `const` arrow, a function and a class declaration and an import (vitest 4.1.12 passes it).
+const SCOPED_FACTORY: &str = r#"import { test, expect, vi } from 'vitest'
+import { v, w } from './dep.js'
+import { n } from './other.js'
+let captured: string = ''
+const helper = (): number => 3
+function fnDecl(): number { return 4 }
+class K { static k = 6 }
+test('factory sees the file scope', () => {
+  expect(v()).toBe(3 + 4 + 5 + 6)
+  w('hi')
+  expect(captured).toBe('hi')
+})
+vi.mock('./dep.js', () => ({
+  v: () => helper() + fnDecl() + n + K.k,
+  w: (s: string) => { captured = s },
+}))
+"#;
+
+#[test]
+fn a_mock_factory_sees_the_files_top_level_bindings() {
+    // turbo-test#72: the hoisted factory ran in the prepass, outside the file's scope: without
+    // esbuild every binding was missing, with esbuild all but a shared `let`.
+    for esbuild in [false, true] {
+        let p = if esbuild {
+            esbuild_project("rc-mock-scope-mr")
+        } else {
+            Project::new("rc-mock-scope-esm")
+        };
+        p.file(
+            "dep.js",
+            "export const v = () => 1; export const w = () => {}\n",
+        );
+        p.file("other.js", "export const n = 5\n");
+        p.file("s.test.ts", SCOPED_FACTORY);
+        p.file(
+            "l.test.js",
+            "import { test, expect, vi } from 'vitest'\nimport { v } from './dep.js'\nlet shared = 2\n\
+             test('let', () => { expect(v()).toBe(2) })\nvi.mock('./dep.js', () => ({ v: () => shared }))\n",
+        );
+        let r = turbo_test(&p.dir, &["s.test.ts", "l.test.js"], &[]);
+        assert_eq!(r.code, Some(0), "esbuild={esbuild}\n{}", r.all());
+        assert!(r.stdout.contains("Tests  2 passed (2)"), "{}", r.all());
+    }
+}

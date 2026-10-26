@@ -62,6 +62,77 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   is keyed by absolute path) and nothing to run prints vitest's `No test files found, exiting
   with code N` with its filter / include / exclude lines (turbo-test#59). A missing file
   argument is no longer dropped with a warning: like any filter, it matches nothing.
+- Tests and `describe` blocks run, and are reported, in declaration order (turbo-test#64): a
+  block's own tests ran before its nested `describe`s, so a test declared after a `describe` ran
+  before that block's tests.
+- `.only` runs what vitest runs (turbo-test#65): a `describe.only` block's tests ran nowhere —
+  every test not itself marked `.only` was skipped. Now a test runs when it or an enclosing
+  suite is `.only`, except that inside a suite holding `.only` tasks only those run.
+- `-t` / `--testNamePattern` is matched against vitest's full name, the `describe` names and the
+  test's joined with a space (turbo-test#66); it was matched against `describe > test`, so
+  `-t "outer inner"` ran nothing and `-t "outer > inner"` ran what vitest skips.
+- `test.each` / `it.each` / `describe.each` titles are formatted as vitest formats them
+  (turbo-test#67): printf placeholders (`%s %d %i %f %j %o %O %c %%`), `%#` / `%$`, `$key` /
+  `$a.b` attributes and the tagged-template table, values rendered like vitest's `inspect`. They
+  were the template plus ` [i]` (`describe.each` kept the bare template), and a tagged table was
+  read as one row per cell.
+- `test.for` / `it.for` / `describe.for` (turbo-test#68): a file using one failed to load
+  (`TypeError: test.for is not a function`). Each row is one argument (not spread), followed for
+  a test by its context; titles are formatted like `.each`. Typed in the `.d.ts` shim.
+- Suite-level outcomes follow vitest (turbo-test#69): a throwing `beforeAll` skips its suite's
+  tests and nested suites (its `afterAll` still runs) instead of running them, and neither a
+  throwing `beforeAll` nor `afterAll` counts as a failed test any more — it fails the suite and
+  file. An empty `describe` fails its file with `No test found in suite <name>` (it passed). A
+  file that reports such an error with no failed test fails the run (FAIL line, dot `x`, the
+  `Test Files` count, JSON `status` / `success`, exit code 1).
+- `process.stdout.write` / `process.stderr.write` write to stdout / stderr (turbo-test#70); they
+  dropped their text. Stdout text goes to stderr while a json/junit/tap report owns stdout, as
+  console output does, and `--silent` drops it; a trailing callback runs.
+- `--reporter json` writes vitest 4.1.12's JSON report (turbo-test#63 item 1): per-test
+  `assertionResults` (`ancestorTitles`, `fullName`, `status`, `title`, `duration`,
+  `failureMessages`, `meta`, `tags`), the suite / pending / todo counts (the files and their
+  `describe` blocks are the suites), the `snapshot` summary, `startTime`, and per file
+  `startTime` / `endTime` / `message`, in vitest's key order. A file that fails to load is
+  `failed` with its error's `message` (it was `error`); the per-file `numPassingTests` /
+  `numFailingTests` (not vitest keys) are gone. Tests that do not run are reported as vitest
+  reports them, in every per-test reporter: `-t`-filtered tests and the tests of a
+  `describe.skip` block (whose callback is now collected, as in vitest) are skipped, `it.todo` /
+  `describe.todo` ones are todo, and a `describe` none of whose tests runs runs no hooks.
+- `--includeTaskLocation` / `test.includeTaskLocation: true` (turbo-test#63 item 1): the JSON
+  report's `assertionResults` carry vitest's `location` (`{ line, column }` of the call that
+  registered the test, in the original source: 1-based, UTF-16 columns). The flag was an
+  unsupported flag. The call site's V8 position is mapped back through the transform's source
+  map (the native emitter's, following the `vi.mock` hoisting; oxc's on the ESM path).
+- `--root` names files relative to the root (turbo-test#63 item 2), as vitest does, in the
+  default / verbose / dot output, JUnit and TAP (the JSON report keeps absolute names): they were
+  relative to the working directory (absolute for a root above it). `--dir` keeps
+  working-directory names.
+- `node_modules` and `.git` are skipped only by the effective exclude (turbo-test#63 item 3): a
+  config `test.exclude` replaces vitest's default exclude, so test files there are discovered
+  unless the config lists them; they were never searched. Discovery still prunes any directory a
+  `<prefix>/**` exclude covers.
+- A hoisted `vi.mock` factory sees the test file's top-level bindings (turbo-test#72): the
+  prepass ran it outside the file's scope, so without esbuild any binding it read was
+  `not defined`, and with esbuild only a shared `let` reached it (a `const`, function, class or
+  import did not, and the mock was dropped). The prepass now runs in a scope proxy the file fills
+  when it runs; without esbuild a TypeScript file's factories are type-stripped first (their
+  types made the prepass a syntax error, so the mock was dropped).
+- Failed matchers throw what vitest 4.1.12 throws (turbo-test#71): chai's `AssertionError` with
+  vitest's message for every built-in matcher, positive and negated (`expected 1 to be 2 //
+  Object.is equality`, `expected [ 1 ] to include 2`, the spy matchers' call / return listings with
+  vitest's diff), instead of a plain `Error` with turbo-test's wording; a snapshot mismatch is
+  ``Snapshot `<name> <n>` mismatched`` (inline snapshots now share the test's snapshot counter),
+  a custom matcher's `message` must be a function, as in vitest. Spies record a throwing call in
+  `mock.results` (`type: 'throw'`) and a `vi.spyOn` spy is named after its method.
+- Snapshots follow vitest 4.1.12 (turbo-test#73): snapshot files are written byte for byte as
+  vitest writes them (header, natural key order, vitest's snapshot serializer — `[Function]`,
+  `[MockFunction name] { calls, results }`, `10n`, `-0`, raw strings, escaped regexes —, single-line
+  values without line breaks, `<name> > <hint> <n>` keys, property matchers) and files vitest wrote
+  pass (they mismatched); thrown values are snapshotted (`[TypeError: boom]`, not the message);
+  `toMatchFileSnapshot` is added; inline snapshots are compared as vitest compares them and new /
+  `-u`-updated ones are written back into the test file; obsolete snapshots are reported and
+  removed by `-u` (an emptied snapshot file deleted); on CI a missing snapshot fails instead of
+  being written; the JSON report's `snapshot` summary has vitest's counts.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain

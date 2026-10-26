@@ -13,8 +13,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'cli.js');
 const FIX = path.join(ROOT, 'fixtures', 'compat');
 
+// CI variables put snapshots in vitest's CI mode (a missing snapshot fails, nothing is written);
+// these tests write snapshots, so they run without them.
+const CI_VARS = ['CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'CIRCLECI', 'TRAVIS', 'BUILDKITE', 'JENKINS_URL', 'TF_BUILD',
+  'TEAMCITY_VERSION', 'BITBUCKET_BUILD_NUMBER', 'CODEBUILD_BUILD_ARN', 'APPVEYOR', 'DRONE', 'SEMAPHORE'];
+const ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !CI_VARS.includes(k)));
 function run(args) {
-  const res = spawnSync('node', [CLI, ...args], { cwd: ROOT, encoding: 'utf8' });
+  const res = spawnSync('node', [CLI, ...args], { cwd: ROOT, encoding: 'utf8', env: ENV });
   return { code: res.status, out: res.stdout || '', err: res.stderr || '' };
 }
 function parseJson(out) {
@@ -26,7 +31,7 @@ const file = (name) => path.join(FIX, name);
 // Some fixtures need their OWN cwd so the launcher discovers their vitest.config.ts (resolve.alias,
 // test.alias) walking up from there — run them with cwd set to the fixture directory.
 function runIn(cwd, args, opts = {}) {
-  const res = spawnSync('node', [CLI, ...args], { cwd, encoding: 'utf8', ...opts });
+  const res = spawnSync('node', [CLI, ...args], { cwd, encoding: 'utf8', env: ENV, ...opts });
   return { code: res.status, out: res.stdout || '', err: res.stderr || '' };
 }
 
@@ -51,14 +56,15 @@ test('toMatchSnapshot: a changed value fails; -u/--update rewrites and re-passes
   // ensure a baseline exists
   run(['--reporter', 'json', file('snapshot.test.ts')]);
   // corrupt the primitive snapshot so the next compare mismatches
-  fs.writeFileSync(snap, fs.readFileSync(snap, 'utf8').replace(/\n42\n/, '\n999\n'));
+  fs.writeFileSync(snap, fs.readFileSync(snap, 'utf8').replace('= `42`;', '= `999`;'));
 
   const bad = parseJson(run(['--reporter', 'json', file('snapshot.test.ts')]).out);
   assert.equal(bad.numFailedTests, 1, 'mismatched snapshot fails');
 
   const upd = parseJson(run(['-u', '--reporter', 'json', file('snapshot.test.ts')]).out);
   assert.equal(upd.numFailedTests, 0, '-u rewrites the snapshot');
-  assert.match(fs.readFileSync(snap, 'utf8'), /matches a primitive snapshot 1`\] = `\n42\n/, 'snapshot rewritten to 42');
+  // vitest's format: a single-line value has no surrounding line breaks
+  assert.match(fs.readFileSync(snap, 'utf8'), /matches a primitive snapshot 1`\] = `42`;/, 'snapshot rewritten to 42');
 
   const after = parseJson(run(['--reporter', 'json', file('snapshot.test.ts')]).out);
   assert.equal(after.numFailedTests, 0, 're-compares cleanly after update');
@@ -79,10 +85,14 @@ test('it.fails passes only when the test body throws', () => {
 
 test('describe.skipIf / runIf / concurrent / todo', () => {
   const j = parseJson(run(['--reporter', 'json', file('describe-variants.test.ts')]).out);
-  // only the 3 included blocks run (2 skipped blocks contribute nothing); todo registers nothing
-  assert.equal(j.numTotalTests, 3, 'skipped describe blocks register no tests');
+  // only the 3 included blocks run; the 2 skipped blocks' tests are reported skipped and the todo
+  // block is a pending suite (vitest 4.1.12's numbers for this file)
+  assert.equal(j.numTotalTests, 5);
   assert.equal(j.numPassedTests, 3);
+  assert.equal(j.numPendingTests, 2);
   assert.equal(j.numFailedTests, 0);
+  assert.equal(j.numTotalTestSuites, 7);
+  assert.equal(j.numPendingTestSuites, 1);
 });
 
 test('it.extend provides test-context fixtures', () => {

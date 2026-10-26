@@ -580,3 +580,43 @@ fn require_cache_deletion_loads_the_module_again() {
     let r = turbo_test(&p.dir, &[], &[]);
     assert_passes(&r, 2);
 }
+
+#[test]
+fn process_stdout_and_stderr_write_reach_the_streams() {
+    // turbo-test#70: process.stdout.write / process.stderr.write were no-ops. As in Node, the text
+    // reaches stdout / stderr unprefixed; `write` returns true and calls a trailing callback.
+    // stdout text moves to stderr while a JSON report owns stdout (like console output).
+    let p = Project::new("rc-stdio");
+    p.file(
+        "w.test.js",
+        "test('w', async () => {\n\
+           let called = 0\n\
+           expect(process.stdout.write('OUT1\\n')).toBe(true)\n\
+           expect(process.stderr.write(new TextEncoder().encode('ERR1\\n'), () => { called++ })).toBe(true)\n\
+           process.stdout.write('OUT2', 'utf8', () => { called++ })\n\
+           process.stdout.write('\\n')\n\
+           await new Promise((r) => setTimeout(r, 0))\n\
+           expect(called).toBe(2)\n\
+         })\n",
+    );
+    let r = turbo_test(&p.dir, &["w.test.js"], &[]);
+    assert_passes(&r, 1);
+    assert!(r.stdout.starts_with("OUT1\nOUT2\n"), "{}", r.all());
+    assert!(
+        r.stderr.contains("ERR1\n") && !r.stdout.contains("ERR1"),
+        "{}",
+        r.all()
+    );
+    let r = turbo_test(&p.dir, &["--reporter", "json", "w.test.js"], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(r.stdout.starts_with('{'), "{}", r.all());
+    // one stream now: the writes in order
+    assert!(r.stderr.starts_with("OUT1\nERR1\nOUT2\n"), "{}", r.all());
+    let r = turbo_test(&p.dir, &["--silent", "w.test.js"], &[]);
+    assert_passes(&r, 1);
+    assert!(
+        !r.stdout.contains("OUT1") && !r.stderr.contains("ERR1"),
+        "{}",
+        r.all()
+    );
+}

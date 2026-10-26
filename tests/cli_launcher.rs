@@ -452,7 +452,7 @@ fn a_directory_argument_runs_the_test_files_under_it() {
                 // the JSON report names files by absolute path, as vitest's
                 let name = t["name"].as_str().unwrap();
                 let rel = name.strip_prefix(&root).unwrap_or(name);
-                (rel.to_string(), t["status"].as_str().unwrap().to_string())
+                (rel.to_string(), common::file_status(t))
             })
             .collect();
         files.sort();
@@ -494,4 +494,148 @@ fn a_directory_argument_runs_the_test_files_under_it() {
         "{}",
         r.all()
     );
+}
+
+#[test]
+fn root_names_files_relative_to_the_root() {
+    // turbo-test#63 item 2: with --root, files were named relative to the working directory
+    // (`sub/inner/a.test.js`, or absolute for a root above it). vitest 4.1.12 names them
+    // relative to the root in every reporter; `--dir` (scan directory only) keeps the
+    // working-directory-relative names.
+    let p = Project::new("launch-root-names");
+    p.file(
+        "sub/inner/a.test.js",
+        "test('ok', () => {}); test('bad', () => { expect(1).toBe(2) })\n",
+    );
+    p.file("sub/b.test.js", "test('ok2', () => {})\n");
+    let lines = |r: &Run| -> Vec<String> {
+        r.stdout
+            .lines()
+            .filter(|l| l.starts_with("PASS") || l.starts_with("FAIL"))
+            .map(str::to_string)
+            .collect()
+    };
+    let r = tt(&p, &["--root", "sub"]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert_eq!(
+        lines(&r),
+        [
+            "PASS  b.test.js  (1 passed, 0 failed)",
+            "FAIL  inner/a.test.js  (1 passed, 1 failed)"
+        ],
+        "{}",
+        r.all()
+    );
+    // a positional filter is root-relative too
+    let r = tt(&p, &["--root", "sub", "inner"]);
+    assert_eq!(
+        lines(&r),
+        ["FAIL  inner/a.test.js  (1 passed, 1 failed)"],
+        "{}",
+        r.all()
+    );
+    let r = tt(&p, &["--root=sub", "--reporter", "junit"]);
+    assert!(
+        r.stdout.contains("<testsuite name=\"b.test.js\"")
+            && r.stdout
+                .contains("<testcase name=\"bad\" classname=\"inner/a.test.js\""),
+        "{}",
+        r.all()
+    );
+    // the JSON report keeps absolute names
+    let r = tt(&p, &["--root", "sub", "--reporter", "json"]);
+    assert_eq!(
+        json_report(&r)["testResults"][0]["name"],
+        p.path("sub/b.test.js").display().to_string()
+    );
+    // a root above the working directory, and --dir (the root stays the working directory)
+    let r = turbo_test(&p.path("sub"), &["--root", ".."], &[]);
+    assert_eq!(
+        lines(&r),
+        [
+            "PASS  sub/b.test.js  (1 passed, 0 failed)",
+            "FAIL  sub/inner/a.test.js  (1 passed, 1 failed)"
+        ],
+        "{}",
+        r.all()
+    );
+    let r = tt(&p, &["--dir", "sub"]);
+    assert_eq!(
+        lines(&r),
+        [
+            "PASS  sub/b.test.js  (1 passed, 0 failed)",
+            "FAIL  sub/inner/a.test.js  (1 passed, 1 failed)"
+        ],
+        "{}",
+        r.all()
+    );
+}
+
+#[test]
+fn node_modules_and_git_are_skipped_only_by_the_effective_exclude() {
+    // turbo-test#63 item 3: node_modules and .git were never searched, even when a config
+    // `test.exclude` replaces vitest's default exclude. vitest 4.1.12 skips only what the
+    // effective exclude lists (the files below are what it runs for each config).
+    let p = Project::new("launch-exclude");
+    for f in [
+        "node_modules/foo/x.test.js",
+        ".git/hooks/g.test.js",
+        "src/s.test.js",
+        "skip/k.test.js",
+    ] {
+        p.file(f, PASS);
+    }
+    let cases: [(Option<&str>, &[&str]); 5] = [
+        (None, &["skip/k.test.js", "src/s.test.js"]),
+        (
+            Some("export default { test: { exclude: ['**/skip/**'] } }"),
+            &[
+                ".git/hooks/g.test.js",
+                "node_modules/foo/x.test.js",
+                "src/s.test.js",
+            ],
+        ),
+        (
+            Some("export default { test: { exclude: [] } }"),
+            &[
+                ".git/hooks/g.test.js",
+                "node_modules/foo/x.test.js",
+                "skip/k.test.js",
+                "src/s.test.js",
+            ],
+        ),
+        (
+            Some("export default { test: { include: ['**/*.test.js'], exclude: ['**/skip/**'] } }"),
+            &[
+                ".git/hooks/g.test.js",
+                "node_modules/foo/x.test.js",
+                "src/s.test.js",
+            ],
+        ),
+        (
+            Some("export default { test: { include: ['**/*.test.js'] } }"),
+            &["skip/k.test.js", "src/s.test.js"],
+        ),
+    ];
+    let root = format!("{}/", p.dir.display());
+    for (config, want) in cases {
+        match config {
+            Some(c) => {
+                p.file("vitest.config.js", &format!("{c}\n"));
+            }
+            None => {
+                let _ = std::fs::remove_file(p.path("vitest.config.js"));
+            }
+        }
+        let r = tt(&p, &["--reporter", "json"]);
+        assert_eq!(r.code, Some(0), "{config:?}: {}", r.all());
+        let mut got: Vec<String> = json_report(&r)["testResults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().replace(&root, ""))
+            .collect();
+        got.sort();
+        assert_eq!(got, want, "{config:?}: {}", r.all());
+    }
 }

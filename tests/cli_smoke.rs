@@ -36,7 +36,7 @@ fn passing_and_failing_files_report_and_exit_nonzero() {
                     .next()
                     .unwrap()
                     .to_string(),
-                t["status"].as_str().unwrap().to_string(),
+                common::file_status(t),
             )
         })
         .collect();

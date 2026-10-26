@@ -38,10 +38,17 @@ pub struct FileResult {
     pub passed: u32,
     pub failed: u32,
     pub load_error: bool,
+    /// The file failed: it failed to load, a test failed, or a suite / file-level error was
+    /// reported (a throwing `beforeAll` / `afterAll`, an empty `describe`) with no failed test.
+    pub failed_file: bool,
     /// Load-error message (for the synthetic JUnit/TAP failing case); empty otherwise.
     pub error_msg: String,
     /// Per-test cases (name/status/duration/message) for the per-testcase reporters.
     pub tests: Vec<TestCase>,
+    /// One state per `describe` block ("pass" / "fail" / "skip" / "todo"), for the JSON counts.
+    pub suites: Vec<String>,
+    /// The file's snapshot counts, for the JSON report's `snapshot` summary.
+    pub snapshot: Option<runner::SnapshotResult>,
     pub setup_us: f64,
     pub dur_ms: f64,
 }
@@ -236,6 +243,8 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
                     o.env.push(("TURBO_TEST_NAME_PATTERN", v));
                 }
             }
+            // `--includeTaskLocation`: record each test's location (`location` in the JSON report).
+            "--includeTaskLocation" => o.env.push(("TURBO_TASK_LOCATION", "1".to_string())),
             // `-u` / `--update` — write missing/changed snapshots instead of failing (vitest
             // `--update`). Plumbed to the runtime via env → globalThis.__TT_UPDATE_SNAPSHOTS.
             "-u" | "--update" => o.env.push(("TURBO_UPDATE_SNAPSHOTS", "1".to_string())),
@@ -315,6 +324,25 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I, default_jobs: usize) 
         }
     }
     o
+}
+
+/// How the reports name each file: relative to `root` (`--root`, the launcher's `TURBO_ROOT`), as
+/// vitest names files relative to its root; without one, or for a file outside it, as given (the
+/// launcher names discovered files relative to the working directory).
+pub fn display_names(files: &[PathBuf], root: Option<&Path>) -> Vec<PathBuf> {
+    files
+        .iter()
+        .map(|f| {
+            root.and_then(|r| {
+                std::path::absolute(f)
+                    .ok()?
+                    .strip_prefix(std::path::absolute(r).ok()?)
+                    .ok()
+                    .map(Path::to_path_buf)
+            })
+            .unwrap_or_else(|| f.clone())
+        })
+        .collect()
 }
 
 /// Sharding: deterministic partition by index (spec §M6). An out-of-range `i/n` keeps every file.
@@ -550,8 +578,11 @@ pub fn file_result(idx: usize, file: &Path, r: FileOutcome, dur_ms: f64) -> File
                 passed: rep.passed,
                 failed: rep.failed,
                 load_error: false,
+                failed_file: !rep.ok(),
                 error_msg: String::new(),
                 tests: rep.tests,
+                suites: rep.suites,
+                snapshot: rep.snapshot,
                 setup_us: rep.setup_us,
                 dur_ms,
             }
@@ -562,8 +593,11 @@ pub fn file_result(idx: usize, file: &Path, r: FileOutcome, dur_ms: f64) -> File
             passed: 0,
             failed: 0,
             load_error: true,
+            failed_file: true,
             error_msg: e,
             tests: Vec::new(),
+            suites: Vec::new(),
+            snapshot: None,
             setup_us: 0.0,
             dur_ms,
         },
@@ -573,9 +607,11 @@ pub fn file_result(idx: usize, file: &Path, r: FileOutcome, dur_ms: f64) -> File
 /// The worker pool: `jobs` threads pull files in `order` from a shared cursor. Under `bail > 0`,
 /// workers stop pulling NEW files once the cumulative failed-test count reaches `bail` (a worker
 /// mid-file finishes that file — file-granular, see vitest.compat.md). Results sorted by index.
+/// `names[i]` is how the reports name `files[i]` ([`display_names`]).
 pub fn run_files(
     engine: &Engine,
     files: &[PathBuf],
+    names: &[PathBuf],
     order: &[usize],
     jobs: usize,
     bail: usize,
@@ -599,7 +635,8 @@ pub fn run_files(
                         let file = &files[idx];
                         let t = Instant::now();
                         let r = execute_file(engine, file);
-                        let fr = file_result(idx, file, r, t.elapsed().as_secs_f64() * 1000.0);
+                        let fr =
+                            file_result(idx, &names[idx], r, t.elapsed().as_secs_f64() * 1000.0);
                         if bail > 0 {
                             failed_total.fetch_add(fr.failed as usize, Ordering::Relaxed);
                         }
@@ -626,6 +663,8 @@ pub struct Totals {
     pub failed: u32,
     /// Files that failed to load.
     pub errors: u32,
+    /// Files that failed (to load, a test, or a suite / file-level error).
+    pub failed_files: u32,
     /// Sum / count of env-setup µs over the files that loaded.
     pub setup_sum: f64,
     pub setup_n: u32,
@@ -636,6 +675,7 @@ pub fn tally(res: &[FileResult]) -> Totals {
     for r in res {
         t.passed += r.passed;
         t.failed += r.failed;
+        t.failed_files += u32::from(r.failed_file);
         if r.load_error {
             t.errors += 1;
         } else {
@@ -658,7 +698,7 @@ pub fn render_human(reporter: Reporter, res: &[FileResult]) -> String {
             }
             Reporter::Dot => out.push_str(if r.load_error {
                 "!"
-            } else if r.failed == 0 {
+            } else if !r.failed_file {
                 "."
             } else {
                 "x"
@@ -700,33 +740,185 @@ pub fn xml_esc(s: &str) -> String {
     o
 }
 
-/// Vitest-compatible-ish JSON summary (numTotalTests/numPassedTests/...), per-file results named
-/// by absolute path, as vitest's.
-pub fn render_json(files: &[PathBuf], res: &[FileResult], t: &Totals) -> String {
-    let total: u32 = res.iter().map(|r| r.passed + r.failed).sum();
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+/// A number as JavaScript's `JSON.stringify` writes it (integers without a fraction).
+fn js_num(x: f64) -> String {
+    if x.fract() == 0.0 && x.abs() < 1e21 {
+        format!("{}", x as i64)
+    } else {
+        format!("{x}")
+    }
+}
+
+/// A JSON string literal.
+fn json_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap()
+}
+
+/// A JSON array of strings.
+fn json_strs(items: &[String]) -> String {
+    let items: Vec<String> = items.iter().map(|s| json_str(s)).collect();
+    format!("[{}]", items.join(","))
+}
+
+/// A load error's message as vitest's JSON `message` shows it: the error's own message, without
+/// turbo-test's load-phase prefix (`module errored: `, …) and the error's `<Name>: ` prefix.
+fn file_message(error_msg: &str) -> String {
+    let mut m = error_msg;
+    for p in ["module errored: ", "evaluate threw: ", "instantiate: "] {
+        if let Some(rest) = m.strip_prefix(p) {
+            m = rest;
+            break;
+        }
+    }
+    if let Some((name, rest)) = m.split_once(": ") {
+        if name.ends_with("Error") && name.chars().all(|c| c.is_ascii_alphanumeric()) {
+            m = rest;
+        }
+    }
+    m.to_string()
+}
+
+/// vitest's `snapshot` summary block: the files' snapshot results added up as @vitest/snapshot's
+/// `addSnapshotResult` does; `didUpdate` is whether `-u` / `--update` was given.
+fn snapshot_summary(files: &[PathBuf], res: &[FileResult], did_update: bool) -> String {
+    let (mut added, mut matched, mut unmatched, mut updated, mut unchecked) = (0, 0, 0, 0, 0);
+    let (mut f_added, mut f_removed, mut f_unmatched, mut f_updated) = (0, 0, 0, 0);
+    let mut by_file = Vec::new();
+    for r in res {
+        let Some(s) = &r.snapshot else { continue };
+        f_added += u32::from(s.added > 0);
+        f_removed += u32::from(s.file_deleted);
+        f_unmatched += u32::from(s.unmatched > 0);
+        f_updated += u32::from(s.updated > 0);
+        added += s.added;
+        matched += s.matched;
+        unmatched += s.unmatched;
+        updated += s.updated;
+        unchecked += s.unchecked;
+        if !s.unchecked_keys.is_empty() {
+            by_file.push(format!(
+                "{{\"filePath\":{},\"keys\":{}}}",
+                json_str(&history_key(&files[r.idx])),
+                json_strs(&s.unchecked_keys)
+            ));
+        }
+    }
+    let total = added + matched + unmatched + updated;
+    format!(
+        "{{\"added\":{added},\"failure\":false,\"filesAdded\":{f_added},\"filesRemoved\":{f_removed},\
+         \"filesRemovedList\":[],\"filesUnmatched\":{f_unmatched},\"filesUpdated\":{f_updated},\
+         \"matched\":{matched},\"total\":{total},\"unchecked\":{unchecked},\
+         \"uncheckedKeysByFile\":[{}],\"unmatched\":{unmatched},\"updated\":{updated},\
+         \"didUpdate\":{did_update}}}",
+        by_file.join(",")
+    )
+}
+
+/// One `assertionResults` entry, in vitest 4.1.12's key order (`duration` only for a test that
+/// ran, `location` only under `includeTaskLocation`).
+fn assertion_result(t: &TestCase) -> String {
+    let mut full = t.ancestors.clone();
+    if !t.title.is_empty() {
+        full.push(t.title.clone());
+    }
+    let ran = t.status == "passed" || t.status == "failed";
+    let location = t.location.map_or(String::new(), |(line, column)| {
+        format!(",\"location\":{{\"line\":{line},\"column\":{column}}}")
+    });
+    let duration = if ran {
+        format!("\"duration\":{},", js_num(t.duration_ms))
+    } else {
+        String::new()
+    };
+    format!(
+        "{{\"ancestorTitles\":{},\"fullName\":{},\"status\":{},\"title\":{},{duration}\"failureMessages\":{}{location},\"meta\":{{}},\"tags\":[]}}",
+        json_strs(&t.ancestors),
+        json_str(&full.join(" ")),
+        json_str(&t.status),
+        json_str(&t.title),
+        json_strs(&t.failure_messages),
+    )
+}
+
+/// `--reporter json`: vitest 4.1.12's JSON report — run-wide test-suite and test counts (the
+/// files and their `describe` blocks are the suites), the snapshot summary, `startTime`
+/// (`start_ms`, the run's start in epoch ms), `success`, and per file its `assertionResults`
+/// (one per test, skipped / todo ones included), start / end time, status, load-error message
+/// and absolute `name`. `did_update`: `-u` was given.
+pub fn render_json(
+    files: &[PathBuf],
+    res: &[FileResult],
+    start_ms: f64,
+    did_update: bool,
+) -> String {
+    let count = |st: &str| -> usize {
+        res.iter()
+            .map(|r| r.tests.iter().filter(|t| t.status == st).count())
+            .sum()
+    };
+    let total_tests: usize = res.iter().map(|r| r.tests.len()).sum();
+    let (failed_tests, passed_tests) = (count("failed"), count("passed"));
+    let suites = |st: &str| -> usize {
+        res.iter()
+            .map(|r| r.suites.iter().filter(|s| *s == st).count())
+            .sum()
+    };
+    let total_suites = res.len() + res.iter().map(|r| r.suites.len()).sum::<usize>();
+    let failed_suites = res.iter().filter(|r| r.failed_file).count() + suites("fail");
+    let pending_suites = suites("todo");
     let mut out = String::from("{");
-    out.push_str(&format!("\"numTotalTestSuites\":{},", files.len()));
-    out.push_str(&format!("\"numTotalTests\":{total},"));
-    out.push_str(&format!("\"numPassedTests\":{},", t.passed));
-    out.push_str(&format!("\"numFailedTests\":{},", t.failed));
-    out.push_str(&format!("\"success\":{},", t.failed == 0 && t.errors == 0));
+    out.push_str(&format!("\"numTotalTestSuites\":{total_suites},"));
+    out.push_str(&format!(
+        "\"numPassedTestSuites\":{},",
+        total_suites - failed_suites - pending_suites
+    ));
+    out.push_str(&format!("\"numFailedTestSuites\":{failed_suites},"));
+    out.push_str(&format!("\"numPendingTestSuites\":{pending_suites},"));
+    out.push_str(&format!("\"numTotalTests\":{total_tests},"));
+    out.push_str(&format!("\"numPassedTests\":{passed_tests},"));
+    out.push_str(&format!("\"numFailedTests\":{failed_tests},"));
+    out.push_str(&format!("\"numPendingTests\":{},", count("skipped")));
+    out.push_str(&format!("\"numTodoTests\":{},", count("todo")));
+    out.push_str(&format!(
+        "\"snapshot\":{},",
+        snapshot_summary(files, res, did_update)
+    ));
+    out.push_str(&format!("\"startTime\":{},", js_num(start_ms)));
+    out.push_str(&format!(
+        "\"success\":{},",
+        !files.is_empty() && failed_suites == 0 && failed_tests == 0
+    ));
     out.push_str("\"testResults\":[");
     let items: Vec<String> = res
         .iter()
         .map(|r| {
+            let ran: Vec<&TestCase> = r
+                .tests
+                .iter()
+                .filter(|t| t.status == "passed" || t.status == "failed")
+                .collect();
+            let start = ran
+                .iter()
+                .map(|t| t.start_ms)
+                .reduce(f64::min)
+                .unwrap_or(start_ms);
+            let end = ran
+                .iter()
+                .map(|t| t.start_ms + t.duration_ms)
+                .fold(start, f64::max);
+            let results: Vec<String> = r.tests.iter().map(assertion_result).collect();
             format!(
-                "{{\"name\":\"{}\",\"status\":\"{}\",\"numPassingTests\":{},\"numFailingTests\":{}}}",
-                esc(&history_key(&files[r.idx])),
-                if r.load_error {
-                    "error"
-                } else if r.failed == 0 {
-                    "passed"
+                "{{\"assertionResults\":[{}],\"startTime\":{},\"endTime\":{},\"status\":\"{}\",\"message\":{},\"name\":{}}}",
+                results.join(","),
+                js_num(start),
+                js_num(end),
+                if r.failed_file { "failed" } else { "passed" },
+                json_str(&if r.load_error {
+                    file_message(&r.error_msg)
                 } else {
-                    "failed"
-                },
-                r.passed,
-                r.failed
+                    String::new()
+                }),
+                json_str(&history_key(&files[r.idx])),
             )
         })
         .collect();
@@ -832,16 +1024,21 @@ pub fn render_tap(files: &[PathBuf], res: &[FileResult]) -> String {
 }
 
 /// The active artifact reporter's output (json/junit/tap); `None` for the human reporters.
+/// JUnit / TAP name the files by `names`, the JSON report by their absolute `files` path;
+/// `start_ms` (the run's start, epoch ms) and `did_update` (`-u`) feed the JSON report.
 pub fn render_artifact(
     reporter: Reporter,
     files: &[PathBuf],
+    names: &[PathBuf],
     res: &[FileResult],
     t: &Totals,
+    start_ms: f64,
+    did_update: bool,
 ) -> Option<String> {
     match reporter {
-        Reporter::Json => Some(render_json(files, res, t)),
-        Reporter::Junit => Some(render_junit(files, res, t)),
-        Reporter::Tap => Some(render_tap(files, res)),
+        Reporter::Json => Some(render_json(files, res, start_ms, did_update)),
+        Reporter::Junit => Some(render_junit(names, res, t)),
+        Reporter::Tap => Some(render_tap(names, res)),
         _ => None,
     }
 }
@@ -904,11 +1101,8 @@ pub fn count_line(failed: usize, passed: usize, total: usize) -> String {
 /// `--bail` some files never run, and those must NOT be reported as passed; the total stays the
 /// discovered file count.
 pub fn footer(file_count: usize, res: &[FileResult], t: &Totals, wall_ms: f64) -> String {
-    let failed_files = res.iter().filter(|r| r.load_error || r.failed > 0).count();
-    let passed_files = res
-        .iter()
-        .filter(|r| !r.load_error && r.failed == 0)
-        .count();
+    let failed_files = res.iter().filter(|r| r.failed_file).count();
+    let passed_files = res.len() - failed_files;
     format!(
         "\n Test Files  {}\n      Tests  {}\n   Duration  {}",
         count_line(failed_files, passed_files, file_count),
@@ -953,10 +1147,11 @@ pub fn summary(
     )
 }
 
-/// 0 when nothing failed, nothing failed to load and the run's other gates passed (`gates_ok`:
-/// the coverage gate, if any, and the `--outputFile` write); else 1.
+/// 0 when nothing failed (no failed test, no file that failed to load or reported a suite /
+/// file-level error) and the run's other gates passed (`gates_ok`: the coverage gate, if any, and
+/// the `--outputFile` write); else 1.
 pub fn exit_code(t: &Totals, gates_ok: bool) -> i32 {
-    if t.failed == 0 && t.errors == 0 && gates_ok {
+    if t.failed == 0 && t.errors == 0 && t.failed_files == 0 && gates_ok {
         0
     } else {
         1
@@ -1003,15 +1198,31 @@ pub fn run(opts: Options) -> i32 {
     let order = schedule_order(&files, &hist);
     let jobs = opts.jobs.min(files.len()).max(1);
 
+    let start_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_millis() as f64);
     let wall = Instant::now();
-    let res = run_files(&Engine::v8(), &files, &order, jobs, opts.bail);
+    let names = display_names(
+        &files,
+        std::env::var_os("TURBO_ROOT").map(PathBuf::from).as_deref(),
+    );
+    let res = run_files(&Engine::v8(), &files, &names, &order, jobs, opts.bail);
     let wall_ms = wall.elapsed().as_secs_f64() * 1000.0;
 
     let t = tally(&res);
     print!("{}", render_human(opts.reporter, &res));
     save_durations(&hist_path, &update_history(hist, &files, &res));
 
-    let artifact = render_artifact(opts.reporter, &files, &res, &t);
+    let did_update = opts.env.iter().any(|(k, _)| *k == "TURBO_UPDATE_SNAPSHOTS");
+    let artifact = render_artifact(
+        opts.reporter,
+        &files,
+        &names,
+        &res,
+        &t,
+        start_ms,
+        did_update,
+    );
     let (out, err) = emit_output(
         artifact.as_deref(),
         opts.reporter,

@@ -40,7 +40,7 @@ const FOOTER: &str =
 fn default_text_reporter_and_unknown_fallback() {
     let p = fixture("rep-default");
     let lines = format!(
-        "FAIL  {}  (1 passed, 1 failed)\n        ✗ breaks: expected \"x\" to be \"y\"\nPASS  {}  (1 passed, 0 failed)\nERROR {}  (module errored: Error: top <boom>)\n",
+        "FAIL  {}  (1 passed, 1 failed)\n        ✗ breaks: expected 'x' to be 'y' // Object.is equality\nPASS  {}  (1 passed, 0 failed)\nERROR {}  (module errored: Error: top <boom>)\n",
         String::from("a.test.ts"),
         String::from("b.test.ts"),
         String::from("c.test.ts")
@@ -98,9 +98,10 @@ fn json_reporter_keeps_stdout_clean() {
     let r = run(&p, &["--reporter", "json"]);
     let j = json_report(&r);
     assert_eq!(j["numTotalTestSuites"], 3);
-    assert_eq!(j["numTotalTests"], 3);
+    assert_eq!(j["numTotalTests"], 4);
     assert_eq!(j["numPassedTests"], 2);
     assert_eq!(j["numFailedTests"], 1);
+    assert_eq!(j["numPendingTests"], 1);
     assert_eq!(j["success"], false);
     let st: Vec<_> = j["testResults"]
         .as_array()
@@ -108,7 +109,9 @@ fn json_reporter_keeps_stdout_clean() {
         .iter()
         .map(|t| t["status"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(st, ["failed", "passed", "error"]);
+    // a load error is a failed file with the error's message (vitest's shape)
+    assert_eq!(st, ["failed", "passed", "failed"]);
+    assert_eq!(j["testResults"][2]["message"], "top <boom>");
     assert_eq!(j["testResults"][2]["name"], path(&p, "c.test.ts"));
     assert!(r.stderr.contains(SUMMARY), "{}", r.all());
     assert!(!r.stdout.contains("Test Files"), "{}", r.all());
@@ -190,7 +193,7 @@ fn file_without_tests_fails_the_run() {
     assert_eq!(j["success"], false);
     // the files run in discovery order (positional arguments are filters, turbo-test#58)
     assert_eq!(j["testResults"][0]["status"], "passed");
-    assert_eq!(j["testResults"][1]["status"], "error");
+    assert_eq!(common::file_status(&j["testResults"][1]), "error");
     let r = turbo_test(&p.dir, &["--reporter", "junit", &e], &[]);
     assert_eq!(r.code, Some(1), "{}", r.all());
     assert!(
@@ -315,7 +318,7 @@ fn junit_reporter() {
         )),
         "{x}"
     );
-    assert!(x.contains("\">\n      <failure message=\"expected &quot;x&quot; to be &quot;y&quot;\"/>\n    </testcase>\n"), "{x}");
+    assert!(x.contains("\">\n      <failure message=\"expected &apos;x&apos; to be &apos;y&apos; // Object.is equality\"/>\n    </testcase>\n"), "{x}");
     assert!(!x.contains("later"), "skipped tests are omitted: {x}");
     assert!(
         x.contains(&format!(
@@ -343,7 +346,7 @@ fn tap_reporter() {
     assert_eq!(
         r.stdout,
         format!(
-            "TAP version 13\n1..5\nok 1 - adds <&>\nok 2 - later # SKIP\nnot ok 3 - breaks\n  ---\n  message: expected \"x\" to be \"y\"\n  ...\nok 4 - ok\nnot ok 5 - {}\n  ---\n  message: module errored: Error: top <boom>\n  ...\n\n",
+            "TAP version 13\n1..5\nok 1 - adds <&>\nok 2 - later # SKIP\nnot ok 3 - breaks\n  ---\n  message: expected 'x' to be 'y' // Object.is equality\n  ...\nok 4 - ok\nnot ok 5 - {}\n  ---\n  message: module errored: Error: top <boom>\n  ...\n\n",
             String::from("c.test.ts")
         ),
         "{}",

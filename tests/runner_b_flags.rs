@@ -82,7 +82,9 @@ fn name_pattern_timeout_retry_silent_and_only() {
     assert_eq!(r.code, Some(0), "{}", r.all());
     assert!(r.stdout.contains("(1 passed, 0 failed)"), "{}", r.all());
     assert!(r.stdout.contains("grp > alpha [x]"), "{}", r.all());
-    assert!(!r.stdout.contains("grp > beta"), "{}", r.all());
+    // the filtered-out test is reported skipped, as vitest's (`↓ grp > beta`)
+    assert!(r.stdout.contains("   - grp > beta (0ms)"), "{}", r.all());
+    assert!(!r.stdout.contains("✓ grp > beta"), "{}", r.all());
 
     // console output is printed by default and suppressed by --silent
     let loud = turbo_test(&p.dir, &["knobs.test.js"], &[]);

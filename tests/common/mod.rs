@@ -146,6 +146,26 @@ pub fn run_exe(exe: &str, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Ru
             cmd.env_remove(k);
         }
     }
+    // CI variables switch snapshots to vitest's CI mode (a missing snapshot fails); the tests set
+    // `CI` themselves where they check that.
+    for k in [
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "BUILDKITE",
+        "JENKINS_URL",
+        "TF_BUILD",
+        "TEAMCITY_VERSION",
+        "BITBUCKET_BUILD_NUMBER",
+        "CODEBUILD_BUILD_ARN",
+        "APPVEYOR",
+        "DRONE",
+        "SEMAPHORE",
+    ] {
+        cmd.env_remove(k);
+    }
     cmd.env("TMPDIR", &tmp)
         .env("TURBO_CACHE_DIR", cwd.join(".tt-cache"))
         .env("TURBO_JOBS", "2");
@@ -163,6 +183,30 @@ pub fn run_exe(exe: &str, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Ru
 /// Run the `turbo-test` CLI (see `run_exe`).
 pub fn turbo_test(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Run {
     run_exe(env!("CARGO_BIN_EXE_turbo-test"), cwd, args, env)
+}
+
+/// A `--reporter json` file entry's outcome: vitest's `passed` / `failed`, or `error` for a file
+/// that failed to load (failed with no test and a load-error `message`).
+pub fn file_status(t: &serde_json::Value) -> String {
+    let tests = t["assertionResults"].as_array().map_or(0, Vec::len);
+    if t["status"] == "failed" && tests == 0 && t["message"].as_str().is_some_and(|m| !m.is_empty())
+    {
+        return "error".to_string();
+    }
+    t["status"].as_str().unwrap().to_string()
+}
+
+/// A `--reporter json` file entry's (passed, failed) test counts.
+pub fn file_counts(t: &serde_json::Value) -> (u64, u64) {
+    let count = |st: &str| {
+        t["assertionResults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| a["status"] == st)
+            .count() as u64
+    };
+    (count("passed"), count("failed"))
 }
 
 /// Parse the `--reporter json` artifact from stdout.

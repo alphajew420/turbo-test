@@ -23,9 +23,9 @@ fn files(r: &common::Run) -> Vec<(String, String, u64, u64)> {
                     .next()
                     .unwrap()
                     .to_string(),
-                t["status"].as_str().unwrap().to_string(),
-                t["numPassingTests"].as_u64().unwrap(),
-                t["numFailingTests"].as_u64().unwrap(),
+                common::file_status(t),
+                common::file_counts(t).0,
+                common::file_counts(t).1,
             )
         })
         .collect()
