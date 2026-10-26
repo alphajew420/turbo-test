@@ -211,6 +211,28 @@ fn config_precedence_and_upward_search() {
     assert_eq!(find_config(&t2.0, None).unwrap().text, "E");
 }
 
+/// turbo-test#49: every config file vitest 4 resolves, in its order (`vitest.config` then
+/// `vite.config`, each `.ts .mts .cts .js .mjs .cjs`), as vitest 4.1.12.
+#[test]
+fn find_config_resolves_every_vitest_config_name() {
+    for name in crate::launcher::VITEST_CONFIG_FILES {
+        let t = Tmp::new(&format!("cfg-name-{name}"));
+        t.file(name, name);
+        assert_eq!(find_config(&t.0, None).unwrap().text, name);
+    }
+    assert_eq!(crate::launcher::VITEST_CONFIG_FILES.len(), 12);
+    for (first, second) in [
+        ("vitest.config.cjs", "vite.config.ts"),
+        ("vitest.config.cts", "vitest.config.js"),
+        ("vite.config.cts", "vite.config.js"),
+    ] {
+        let t = Tmp::new(&format!("cfg-prec-{first}"));
+        t.file(first, "first");
+        t.file(second, "second");
+        assert_eq!(find_config(&t.0, None).unwrap().text, "first", "{first}");
+    }
+}
+
 #[test]
 fn unreadable_config_stops_the_search() {
     let t = Tmp::new("cfg-bad");

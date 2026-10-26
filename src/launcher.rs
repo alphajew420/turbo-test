@@ -28,16 +28,22 @@ use crate::coverage::glob_matches;
 const SKIP_DIR: [&str; 8] =
     ["node_modules", ".git", "dist", "build", "coverage", ".next", ".turbo", "target"];
 
-/// vitest/vite config filenames, in cli.js precedence order.
-const CONFIG_NAMES: [&str; 8] = [
+/// The config files vitest 4 resolves, in its order (`configFiles` in vitest's constants:
+/// `vitest.config` then `vite.config`, each with `.ts .mts .cts .js .mjs .cjs`). Every config
+/// lookup (discovery, setupFiles, isolate, the project kind) uses this list.
+pub const VITEST_CONFIG_FILES: [&str; 12] = [
     "vitest.config.ts",
     "vitest.config.mts",
+    "vitest.config.cts",
     "vitest.config.js",
     "vitest.config.mjs",
+    "vitest.config.cjs",
     "vite.config.ts",
     "vite.config.mts",
+    "vite.config.cts",
     "vite.config.js",
     "vite.config.mjs",
+    "vite.config.cjs",
 ];
 
 /// Runner flags that take a following value (so a file arg isn't mistaken for the value, and the
@@ -181,7 +187,7 @@ fn find_config(start_dir: &Path, forced: Option<&Path>) -> Option<Config> {
     }
     let mut dir = start_dir.to_path_buf();
     loop {
-        for n in CONFIG_NAMES {
+        for n in VITEST_CONFIG_FILES {
             let p = dir.join(n);
             if p.is_file() {
                 if let Ok(text) = std::fs::read_to_string(&p) {

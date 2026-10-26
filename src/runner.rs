@@ -420,7 +420,7 @@ fn cjs_first_project(entry: &Path) -> bool {
 fn cjs_first_project_uncached(entry: &Path) -> bool {
     let mut dir = entry.parent();
     while let Some(d) = dir {
-        for v in ["vitest.config.ts", "vitest.config.mts", "vitest.config.js", "vitest.config.mjs", "vite.config.ts", "vite.config.js"] {
+        for v in VITEST_CONFIG_FILES {
             if d.join(v).is_file() {
                 return false; // vitest project → ESM-first
             }
@@ -1113,10 +1113,8 @@ fn vitest_isolate_false(entry: &Path) -> bool {
     let mut dir = entry.parent();
     while let Some(d) = dir {
         // any vitest config variant the project uses (dev/ci/coverage/shard commonly set isolate)
-        for cfg in [
-            "vitest.config.ts", "vitest.config.mts", "vitest.config.js",
-            "vitest.config.dev.ts", "vitest.config.ci.ts", "vite.config.ts",
-        ] {
+        let variants = ["vitest.config.dev.ts", "vitest.config.ci.ts"];
+        for cfg in VITEST_CONFIG_FILES.iter().chain(&variants) {
             if let Ok(s) = std::fs::read_to_string(d.join(cfg)) {
                 // strip `//` line comments first — a doc comment mentioning "isolate: false"
                 // must not be mistaken for the real setting.
@@ -1209,22 +1207,7 @@ fn vitest_setup_files(entry: &Path) -> Vec<PathBuf> {
     vitest_setup_files_uncached(entry)
 }
 
-/// The config files vitest 4 resolves, in its order (`configFiles` in vitest's constants:
-/// `vitest.config` then `vite.config`, each with `.ts .mts .cts .js .mjs .cjs`).
-const VITEST_CONFIG_FILES: [&str; 12] = [
-    "vitest.config.ts",
-    "vitest.config.mts",
-    "vitest.config.cts",
-    "vitest.config.js",
-    "vitest.config.mjs",
-    "vitest.config.cjs",
-    "vite.config.ts",
-    "vite.config.mts",
-    "vite.config.cts",
-    "vite.config.js",
-    "vite.config.mjs",
-    "vite.config.cjs",
-];
+use crate::launcher::VITEST_CONFIG_FILES;
 
 fn vitest_setup_files_uncached(entry: &Path) -> Vec<PathBuf> {
     let mut dir = entry.parent();

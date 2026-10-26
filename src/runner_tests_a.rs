@@ -842,6 +842,21 @@ fn vitest_setup_files_follow_vitest_config_resolution_order() {
     }
 }
 
+/// turbo-test#49: a project with any vitest config name is a vitest project (ESM-first), and
+/// `isolate: false` is read from each of them.
+#[test]
+fn every_vitest_config_name_marks_a_vitest_project() {
+    for name in ["vitest.config.cjs", "vitest.config.cts", "vite.config.mts", "vite.config.cjs"] {
+        let d = tmp(&format!("cfg-esm-{name}"));
+        put(&d, "package.json", "{}");
+        // (a jest config with the node environment would make it CJS-first)
+        put(&d, "jest.config.js", "module.exports = { testEnvironment: 'node' }");
+        put(&d, name, "module.exports = { test: { isolate: false } }");
+        assert!(!cjs_first_project_uncached(&d.join("a.test.ts")), "{name}");
+        assert!(vitest_isolate_false(&d.join("a.test.ts")), "{name}");
+    }
+}
+
 #[test]
 fn vitest_setup_files_falls_back_to_jest_config_up_the_tree() {
     let d = tmp("setup-jest-walk");
