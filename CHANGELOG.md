@@ -207,6 +207,34 @@ Node-API host (turbo-test#41):
   two workers loading the same `.node` no longer run its init concurrently; a nested
   `require()` of a `.node` during init still works (item 5).
 
+Node-API host, runner and mocks (turbo-test#42):
+- `napi_define_class` builds the class from its property descriptors, as Node: instance
+  methods (with the class as receiver signature: another receiver is "Illegal invocation"),
+  accessors and values on the prototype, `napi_static` members on the constructor, with
+  Node's attributes. node-addon-api `ObjectWrap` classes (`InstanceMethod` /
+  `InstanceAccessor` / `InstanceValue` / `StaticMethod` / `StaticAccessor` / `StaticValue`)
+  get their members. `napi_define_properties` and `napi_get_new_target` (which ObjectWrap's
+  constructor calls) are new exports. Descriptors Node aborts on (an object or NULL value in
+  a class template, no name) are refused with `napi_invalid_arg` / `napi_name_expected`
+  (item 1).
+- `napi_type_tag_object`, `napi_check_object_type_tag` and `napi_add_finalizer` are exported
+  with Node semantics (one type tag per object; any number of finalizers per object, run on
+  collection and at env teardown). An addon importing them crashed the run (item 2).
+- Finalizers still pending at env teardown run in a handle scope, as Node: value calls
+  (`napi_get_reference_value`, `napi_create_object`, ...) work, while calls that would run JS
+  stay `napi_pending_exception`. A finalizer's own result reference has no value any more
+  when it runs (as Node). Before, such a value call aborted the run (item 3).
+- Mock hoisting reads specifiers with JS string escapes (and esbuild's template-literal
+  form), so `vi.mock("./a\"b.js", ...)` mocks `./a"b.js` instead of a truncated id
+  (item 4).
+- Under `TURBO_NO_MR`, a setup file's `?query` mock (`vi.mock('./x.js?raw', ...)`) is
+  externalized like an entry file's, so imports of `./x.js?raw` reach it (item 5).
+- `vi.doMock` / `jest.doMock` with an async factory, then `import()`, waits for the factory
+  as vitest does, on the module-runner, the ESM graph and `TURBO_NO_MR`: the import returns
+  the mock (it returned the real module, or timed out on the module-runner), a rejecting
+  factory rejects the import with vitest's mocking error, and a later `doMock` / `doUnmock`
+  of the module wins over a factory still pending (item 6).
+
 ### Removed
 - runner.rs dead code listed in turbo-test#31 (`kind_of`, `mock_specifiers`,
   `is_react_family`), and the "mocked but no exports" fallbacks of `native_require` /
@@ -240,6 +268,9 @@ Node-API host (turbo-test#41):
   `tests/runner_c_config.rs`, `tests/runner_c_mocks.rs`, `tests/runner_c_node.rs`.
   After the turbo-test#37-#41 fixes: 6578/6579 lines (99.98%), 476 Rust tests, new files
   `tests/runner_c_runtime.rs` and `tests/runner_c_mockres.rs`.
+  After the turbo-test#42 fixes: 6835/6836 lines (99.99%), 484 Rust tests; new C Node-API
+  fixtures `tests/napi_support/objectwrap.c` (a node-addon-api-style ObjectWrap class) and
+  `typetag.c`.
 - Testability refactors, output byte-identical: `src/bin/turbo_test.rs` is now a thin
   wrapper over the new `cli` module (argument parsing, the retry/fresh-isolate policy,
   the worker pool and pure reporter renderers); `launcher::prepare` wraps a side-effect-free
