@@ -645,7 +645,7 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
 fn module_namespace_expr(ctx: &LowerCtx, src: &str, _seq: usize, toesm: bool) -> (Vec<String>, String) {
     match ctx.source_ref(src) {
         SourceRef::External => {
-            let r = format!("require(\"{src}\")");
+            let r = require_js(src);
             (vec![], if toesm { format!("__toESM({r})") } else { r })
         }
         // `(init_<id>(), <id>_exports)` — ensure the bundled ESM module is initialized, then read it.
@@ -698,7 +698,7 @@ fn collect_import(
         match &sref {
             SourceRef::External => {
                 let var = import_var(src, seq);
-                requires.push(format!("var {var} = require(\"{src}\");"));
+                requires.push(format!("var {var} = {};", require_js(src)));
             }
             SourceRef::BundledEsm { id } => requires.push(format!("init_{id}();")),
             SourceRef::BundledCjs { id } => requires.push(format!("require_{id}();")),
@@ -749,7 +749,11 @@ fn collect_import(
         // external (bare, or app mode): runtime `require("spec")`.
         SourceRef::External => {
             let var = ns_local.unwrap_or_else(|| import_var(src, seq));
-            let expr = if has_default_or_ns { format!("__toESM(require(\"{src}\"))") } else { format!("require(\"{src}\")") };
+            let expr = if has_default_or_ns {
+                format!("__toESM({})", require_js(src))
+            } else {
+                require_js(src)
+            };
             requires.push(format!("var {var} = {expr};"));
             map_var_specs(specifiers, &var, imports);
         }
@@ -978,6 +982,12 @@ pub(crate) fn quote_key(name: &str) -> String {
     } else {
         json_string(name)
     }
+}
+
+/// `require("<spec>")` source text, the specifier as an escaped string literal (a JSON string is
+/// one; a raw `"` or `\` in the specifier would otherwise end the literal or start an escape).
+fn require_js(spec: &str) -> String {
+    format!("require({})", json_string(spec))
 }
 
 /// Source text reading property `prop` of `obj`: `obj.prop`, or `obj["a-b"]` for a string export

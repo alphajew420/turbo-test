@@ -190,6 +190,33 @@ test('doMock before import() is seen', async () => {
     assert_eq!(r.code, Some(0), "{}", r.all());
 }
 
+#[test]
+fn specifiers_with_quotes_and_backslashes_compile_natively() {
+    // turbo-test#37 item 3: `require("{src}")` interpolated the specifier raw, so `./q"x.js`
+    // emitted `require("./q"x.js")` (and `\\x` a bad hex escape). The module still loaded only
+    // because the runner silently retried the compile failure through esbuild.
+    let p = mr_project("xform-specesc");
+    p.file(
+        "q\"x.js",
+        "export const q = 'Q';\nglobalThis.__sideEffect = 'S';\n",
+    );
+    p.file("b\\x.js", "export default 'B';\nexport const n = 'N';\n");
+    p.file(
+        "lib.js",
+        "import './q\"x.js';\nimport { q } from './q\"x.js';\nimport B, * as ns from './b\\\\x.js';\n\
+         export { n as reN } from './b\\\\x.js';\nexport * from './q\"x.js';\nexport * as all from './b\\\\x.js';\n\
+         export const got = [q, B, ns.n];\n",
+    );
+    p.file(
+        "a.test.js",
+        "import { got, reN, q, all } from './lib.js';\n\
+         test('escaped specifiers', () => {\n\
+         expect(got).toEqual(['Q', 'B', 'N']); expect(reN).toBe('N'); expect(q).toBe('Q');\n\
+         expect(all.n).toBe('N'); expect(globalThis.__sideEffect).toBe('S');\n});\n",
+    );
+    native_and_esbuild_agree(&p, &[], 1);
+}
+
 /// App file + dep package the native path can't lower (JSX namespace names) but esbuild can.
 fn namespace_jsx_project() -> Project {
     let p = mr_project("xform-strict");

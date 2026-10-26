@@ -104,6 +104,53 @@ fn json_string_escapes_specials_and_controls() {
     assert_eq!(back, s);
 }
 
+/// Parse emitted CJS back (a syntax error fails the test) and return every `require("…")`
+/// argument's decoded value.
+fn required_specs(cjs: &str) -> Vec<String> {
+    use oxc_ast_visit::{walk, Visit};
+    struct Requires(Vec<String>);
+    impl<'a> Visit<'a> for Requires {
+        fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+            if let (Expression::Identifier(f), Some(Argument::StringLiteral(s))) =
+                (&it.callee, it.arguments.first())
+            {
+                if f.name == "require" {
+                    self.0.push(s.value.to_string());
+                }
+            }
+            walk::walk_call_expression(self, it);
+        }
+    }
+    let alloc = Allocator::default();
+    let parsed = Parser::new(&alloc, cjs, SourceType::cjs()).parse();
+    assert!(parsed.errors.is_empty(), "{:?}\n{cjs}", parsed.errors);
+    let mut v = Requires(Vec::new());
+    v.visit_program(&parsed.program);
+    v.0
+}
+
+#[test]
+fn module_specifiers_are_emitted_as_escaped_string_literals() {
+    // turbo-test#37 item 3: specifiers were interpolated raw into `require("…")`, so a `"` or
+    // `\` in one emitted invalid JS (`require("./q"x.js")`, or `\x` read as a hex escape).
+    let spec = "./q\"x\\y.js";
+    let lit = json_string(spec);
+    assert_eq!(lit, "\"./q\\\"x\\\\y.js\"");
+    for src in [
+        "import \"./q\\\"x\\\\y.js\";",
+        "import { a } from './q\"x\\\\y.js'; a();",
+        "import D, * as ns from './q\"x\\\\y.js'; D(ns);",
+        "export * from './q\"x\\\\y.js';",
+        "export * as ns from './q\"x\\\\y.js';",
+        "export { a as b } from './q\"x\\\\y.js';",
+        "export const p = import('./q\"x\\\\y.js');",
+    ] {
+        let o = e(src);
+        assert!(o.contains(&format!("require({lit})")), "{src}: {o}");
+        assert_eq!(required_specs(&o), vec![spec], "{src}: {o}");
+    }
+}
+
 #[test]
 fn assemble_module_without_exports_has_no_export_block() {
     let out = assemble_module(
