@@ -24,6 +24,7 @@ pub const napi_object_expected: napi_status = 2;
 pub const napi_string_expected: napi_status = 3;
 pub const napi_number_expected: napi_status = 6;
 pub const napi_boolean_expected: napi_status = 7;
+pub const napi_array_expected: napi_status = 8;
 pub const napi_generic_failure: napi_status = 9;
 pub const napi_pending_exception: napi_status = 10;
 
@@ -891,7 +892,7 @@ pub unsafe extern "C" fn napi_get_array_length(
     out: *mut u32,
 ) -> napi_status {
     js_call(env, |_| {
-        let arr: v8::Local<v8::Array> = to_local(v).try_into().map_err(|_| napi_invalid_arg)?;
+        let arr: v8::Local<v8::Array> = to_local(v).try_into().map_err(|_| napi_array_expected)?;
         if !out.is_null() {
             *out = arr.length();
         }
@@ -1006,7 +1007,7 @@ pub unsafe extern "C" fn napi_create_error(
     let s = scope(env);
     let ms: v8::Local<v8::String> = match to_local(msg).try_into() {
         Ok(m) => m,
-        Err(_) => return napi_invalid_arg,
+        Err(_) => return napi_string_expected,
     };
     let exc = v8::Exception::error(s, ms);
     put(out, exc);

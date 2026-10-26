@@ -10,6 +10,7 @@ const OBJECT_EXPECTED = 2;
 const STRING_EXPECTED = 3;
 const NUMBER_EXPECTED = 6;
 const BOOLEAN_EXPECTED = 7;
+const ARRAY_EXPECTED = 8;
 const GENERIC_FAILURE = 9;
 const PENDING_EXCEPTION = 10;
 
@@ -230,7 +231,9 @@ describe('objects and arrays', () => {
     expect(a.arrLen([1, 2, 3])).toBe(3);
     expect(a.arrLen([])).toBe(0);
     expect(a.arrLen({ length: 2 })).toBe(undefined);
-    expect(a.status()).toBe(INVALID_ARG);
+    expect(a.status()).toBe(ARRAY_EXPECTED);
+    expect(a.arrLen('ab')).toBe(undefined);
+    expect(a.status()).toBe(ARRAY_EXPECTED);
   });
 
   test('napi_get_property_names', () => {
@@ -467,7 +470,9 @@ describe('errors and exceptions', () => {
     expect(e).toBeInstanceOf(Error);
     expect(e.message).toBe('made');
     expect(a.createErr(5)).toBe(undefined);
-    expect(a.status()).toBe(INVALID_ARG);
+    expect(a.status()).toBe(STRING_EXPECTED);
+    expect(a.createErr(new String('boxed'))).toBe(undefined);
+    expect(a.status()).toBe(STRING_EXPECTED);
     expect(a.isError(new Error('x'))).toBe(true);
     expect(a.isError(new RangeError('x'))).toBe(true);
     expect(a.isError(e)).toBe(true);
