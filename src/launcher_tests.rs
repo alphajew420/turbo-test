@@ -515,6 +515,20 @@ fn strip_regex_literals_but_not_division() {
     assert_eq!(strip_comments("/re/ x"), "     x");
     // punctuation after a space clears the keyword memory: `in . / 2` is division
     assert_eq!(strip_comments("in . / 2"), "in . / 2");
+    // turbo-test#32 item 8c: a keyword reached by `.` property access is a member NAME, so a
+    // `/` after it is division — it blanked the rest of the line as a "regex"
+    for src in [
+        "x = obj.in / 2, y = 'k'",
+        "x = obj?.return / 2",
+        "x = a.b.typeof/2",
+        "x = obj. in / 2",
+        "x = obj.\n  of / 2",
+    ] {
+        assert_eq!(strip_comments(src), src, "{src}");
+    }
+    // ... while the same keyword as an operator still opens a regex, even right after a member
+    assert_eq!(strip_comments("a.b in /x/"), "a.b in    ");
+    assert_eq!(strip_comments("o.in\nreturn /'/"), "o.in\nreturn    ");
 }
 
 #[test]
@@ -654,6 +668,21 @@ fn alias_inner_forms() {
             ("/@z".to_string(), "/r/z".to_string()),
             ("/x".into(), "/r/x".into())
         ]
+    );
+}
+
+#[test]
+fn alias_on_a_line_with_member_keyword_division() {
+    // turbo-test#32 item 8c: `obj.in / 2` read as a regex start and blanked the rest of the line
+    let t = Tmp::new("alias-in");
+    t.file(
+        "vitest.config.ts",
+        "const obj = { in: 4 }\n\
+         export default { half: obj.in / 2, resolve: { alias: { '@h': './half' } } }\n",
+    );
+    assert_eq!(
+        config_aliases(&t.0, None),
+        vec![("@h".to_string(), format!("{}/half", t.0.display()))]
     );
 }
 

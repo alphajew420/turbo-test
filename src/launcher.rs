@@ -476,6 +476,10 @@ fn strip_comments(s: &str) -> String {
     let mut prev_sig = '\0';
     let mut cur_word = String::new();
     let mut last_word = String::new();
+    // Whether `cur_word` / `last_word` was reached by `.` property access (`obj.in`): a member NAME
+    // is never a keyword, so a `/` after it is division.
+    let mut cur_member = false;
+    let mut last_member = false;
     while let Some(c) = chars.next() {
         if let Some(q) = quote {
             out.push(c);
@@ -522,9 +526,7 @@ fn strip_comments(s: &str) -> String {
             // the regex out of their way entirely. Character classes `[...]` may hold an unescaped
             // `/`, so track them to find the true closing `/`.
             '/' if is_regex_context(prev_sig)
-                || REGEX_KEYWORDS.contains(
-                    &(if cur_word.is_empty() { last_word.as_str() } else { cur_word.as_str() }),
-                ) =>
+                || keyword_before_slash(&cur_word, cur_member, &last_word, last_member) =>
             {
                 out.push(' ');
                 let mut in_class = false;
@@ -568,6 +570,9 @@ fn strip_comments(s: &str) -> String {
                 if c.is_alphanumeric() || c == '_' || c == '$' {
                     // Identifier/number char: it IS significant (a `/` after it is division), and it
                     // extends the current word.
+                    if cur_word.is_empty() {
+                        cur_member = prev_sig == '.';
+                    }
                     cur_word.push(c);
                     prev_sig = c;
                 } else if c.is_whitespace() {
@@ -575,11 +580,13 @@ fn strip_comments(s: &str) -> String {
                     // `return /re/` still sees the keyword. prev_sig (last non-ws char) is unchanged.
                     if !cur_word.is_empty() {
                         last_word = std::mem::take(&mut cur_word);
+                        last_member = cur_member;
                     }
                 } else {
                     // Punctuation: significant, and it ends any pending word.
                     if !cur_word.is_empty() {
                         last_word = std::mem::take(&mut cur_word);
+                        last_member = cur_member;
                     } else {
                         last_word.clear();
                     }
@@ -596,6 +603,18 @@ const REGEX_KEYWORDS: [&str; 12] = [
     "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "do", "else", "yield",
     "await",
 ];
+
+/// Whether the word right before a `/` is a keyword after which it opens a regex (`return /re/`):
+/// the word being read wins over the one completed before the last space, and a word reached by
+/// `.` property access (`obj.in / 2`) is a member name, never a keyword.
+fn keyword_before_slash(cur: &str, cur_member: bool, last: &str, last_member: bool) -> bool {
+    let (word, member) = if cur.is_empty() {
+        (last, last_member)
+    } else {
+        (cur, cur_member)
+    };
+    !member && REGEX_KEYWORDS.contains(&word)
+}
 
 /// A `/` following one of these (or the start of input) opens a regex literal, not division.
 fn is_regex_context(prev: char) -> bool {
