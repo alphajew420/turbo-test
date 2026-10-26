@@ -1842,7 +1842,8 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
     file.extension().and_then(|e| e.to_str()).unwrap_or("").hash(&mut h);
-    "mr-cjs-v1".hash(&mut h);
+    // v2: `import.meta` is filled in (fill_import_meta) instead of esbuild's empty object
+    "mr-cjs-v2".hash(&mut h);
     // esbuild can't emit decorator metadata. By default we DON'T pay that cost — only when a
     // decorator file actually threw at load (Mongoose @Prop / Sequelize @Column read design:type
     // at class-definition) does the loader retry with `prefer_metadata`, routing it through the
@@ -1880,7 +1881,7 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
             .and_then(|r| r.ok())
         });
         if let Some(cjs) = meta_esm.and_then(|esm| esbuild_format_cjs(&root, &esm)) {
-            let mut code = postprocess_mr_cjs(cjs);
+            let mut code = fill_import_meta(postprocess_mr_cjs(cjs));
             code = hoist_mock_setup(&code);
             let shared = shared_mock_lets(&raw);
             if !shared.is_empty() {
@@ -1923,7 +1924,7 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let mut code = postprocess_mr_cjs(String::from_utf8(out.stdout).ok()?);
+    let mut code = fill_import_meta(postprocess_mr_cjs(String::from_utf8(out.stdout).ok()?));
     // vitest-style vi.mock hoisting: move consumer requires below the vi.mock setup so the mock
     // is registered (immediately, in this module's scope) before the mocked module loads.
     code = hoist_mock_setup(&code);
@@ -1937,6 +1938,40 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
     }
     write_atomic(&cache, &code);
     Some(code)
+}
+
+/// esbuild's `--format=cjs` turns `import.meta` into an empty object (`const import_meta = {};`,
+/// one per source module), so `import.meta.url` read as undefined. Give it the module's own
+/// location instead, as vitest/Node do: `url` (`file://` + path, the form the ESM-graph
+/// import.meta callback and the `url` shim use), `filename` and `dirname`. They come from the CJS
+/// wrapper's `__filename`/`__dirname` at run time — the transform cache is content-keyed, so the
+/// same source in two places shares one output. Replaced on the same line, so the inline source
+/// map (coverage) keeps its line mapping.
+fn fill_import_meta(code: String) -> String {
+    if !code.contains("import_meta") {
+        return code;
+    }
+    let mut out = String::with_capacity(code.len() + 96);
+    for line in code.split_inclusive('\n') {
+        let body = line.trim_end_matches('\n');
+        let decl = body
+            .strip_prefix("const ")
+            .and_then(|r| r.strip_suffix(" = {};"))
+            .filter(|n| {
+                n.strip_prefix("import_meta")
+                    .is_some_and(|d| d.bytes().all(|b| b.is_ascii_digit()))
+            });
+        match decl {
+            Some(name) => {
+                out.push_str(&format!(
+                    "const {name} = {{ url: \"file://\" + __filename, filename: __filename, dirname: __dirname }};"
+                ));
+                out.push_str(&line[body.len()..]);
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
 }
 
 /// vitest-style vi.mock hoisting on esbuild CJS output: esbuild emits all `require(...)` at the
@@ -3796,10 +3831,21 @@ fn load_dep<'s>(scope: &mut v8::PinScope<'s, '_>, dep: &Path) -> Option<()> {
     // JSON are registered via register_mock, i.e. recorded in `mocks`, so an already-loaded one
     // is served by the mocked branch above; reaching here means it is not loaded yet.
     if is_asset(dep) {
+        // Stylesheets: the proxy is also its own `default` and is not `__esModule`, so the
+        // module-runner's CJS interop (`__toESM(require(..)).default`) reaches it too and
+        // `import s from './s.module.css'` gives `s.foo === 'foo'` on both paths.
+        let style = matches!(
+            dep.extension().and_then(|e| e.to_str()),
+            Some("css" | "scss" | "sass" | "less" | "styl")
+        );
         return register_mock(
             scope,
             dep,
-            "() => new Proxy({}, { get: (t, p) => typeof p === 'string' ? p : undefined })",
+            if style {
+                "() => { const s = new Proxy({}, { get: (t, p) => p === 'default' ? s : typeof p === 'string' && p !== '__esModule' ? p : undefined }); return s; }"
+            } else {
+                "() => new Proxy({}, { get: (t, p) => typeof p === 'string' ? p : undefined })"
+            },
         );
     }
     // JSON imports -> module with default = parsed value + named keys
@@ -3882,11 +3928,21 @@ extern "C" fn import_meta_callback(
     let hash = module.get_identity_hash().get();
     let path = REGISTRY.with(|r| r.borrow().path_by_hash.get(&hash).cloned());
     let url = path
+        .as_ref()
         .map(|p| format!("file://{}", p.display()))
         .unwrap_or_else(|| "file:///<unknown>".to_string());
     let k = v8::String::new(scope, "url").unwrap();
     let v = v8::String::new(scope, &url).unwrap();
     meta.create_data_property(scope, k.into(), v.into());
+    // Node 20.11+/vitest also expose the file's path and directory
+    if let Some(p) = &path {
+        let dir = p.parent().unwrap_or(p);
+        for (name, val) in [("filename", p.as_path()), ("dirname", dir)] {
+            let k = v8::String::new(scope, name).unwrap();
+            let v = v8::String::new(scope, &val.to_string_lossy()).unwrap();
+            meta.create_data_property(scope, k.into(), v.into());
+        }
+    }
 }
 
 fn dynamic_import_callback<'s>(
