@@ -15,6 +15,8 @@ const GENERIC_FAILURE = 9;
 const PENDING_EXCEPTION = 10;
 const BIGINT_EXPECTED = 17;
 const DATE_EXPECTED = 18;
+const ARRAYBUFFER_EXPECTED = 19;
+const DETACHABLE_ARRAYBUFFER_EXPECTED = 20;
 
 // what `f` throws
 function thrown(f: () => unknown): any {
@@ -426,6 +428,111 @@ describe('comparisons and type checks', () => {
     (detached as any).transfer();
     expect(api.kinds(detached)).toEqual([true, false, false, false, true, OK]);
     expect(api.compareChecks()).toEqual(Array(12).fill(INVALID_ARG));
+  });
+});
+
+describe('arraybuffers, typed arrays, dataviews, buffers', () => {
+  test('napi_get_arraybuffer_info (ArrayBuffer and SharedArrayBuffer)', () => {
+    const ab = new Uint8Array([5, 6]).buffer;
+    expect(api.abInfo(ab)).toEqual([OK, 2, 5]);
+    expect(new Uint8Array(ab)[0]).toBe(6); // the data pointer is the buffer's memory
+    const sab = new SharedArrayBuffer(3);
+    expect(api.abInfo(sab)).toEqual([OK, 3, 0]);
+    expect(new Uint8Array(sab)[0]).toBe(1);
+    expect(api.abInfo(new ArrayBuffer(0))).toEqual([OK, 0, -1]);
+    expect(api.abInfo(new Uint8Array(2))).toEqual([INVALID_ARG, 999, -1]);
+  });
+
+  test('napi_get_typedarray_info: type, length, offset, buffer, data', () => {
+    const ab = new ArrayBuffer(16);
+    const kinds: [any, number][] = [
+      [Int8Array, 0], [Uint8Array, 1], [Uint8ClampedArray, 2], [Int16Array, 3],
+      [Uint16Array, 4], [Int32Array, 5], [Uint32Array, 6], [Float32Array, 7],
+      [Float64Array, 8], [BigInt64Array, 9], [BigUint64Array, 10], [Float16Array, 11],
+    ];
+    for (const [Ctor, type] of kinds) {
+      const [st, t, len, off, buf] = api.taInfo(new Ctor(ab, 8, 1));
+      expect([st, t, len, off, buf === ab]).toEqual([OK, type, 1, 8, true]);
+    }
+    const u = new Uint8Array([1, 2, 3, 4]);
+    expect(api.taInfo(u.subarray(2)).filter((_: unknown, i: number) => i !== 4)).toEqual([OK, 1, 2, 2, 3]);
+    expect(u[2]).toBe(4);
+    expect(api.taInfo(new DataView(ab))[0]).toBe(INVALID_ARG);
+  });
+
+  test('napi_create_dataview / napi_get_dataview_info', () => {
+    const ab = new Uint8Array([1, 2, 3, 4]).buffer;
+    const [st, dv, exc] = api.dataView(ab, 2, 1);
+    expect([st, exc]).toEqual([OK, undefined]);
+    expect(dv).toBeInstanceOf(DataView);
+    expect([dv.byteLength, dv.byteOffset, dv.buffer === ab]).toEqual([2, 1, true]);
+    const [ist, len, off, buf, first] = api.dvInfo(dv);
+    expect([ist, len, off, buf === ab, first]).toEqual([OK, 2, 1, true, 2]);
+    expect(new Uint8Array(ab)[1]).toBe(3);
+    // over the end: a RangeError and napi_pending_exception
+    const [st2, dv2, exc2] = api.dataView(ab, 4, 1);
+    expect([st2, dv2]).toEqual([PENDING_EXCEPTION, undefined]);
+    expect(exc2).toBeInstanceOf(RangeError);
+    expect(exc2.code).toBe('ERR_NAPI_INVALID_DATAVIEW_ARGS');
+    expect(exc2.message).toBe(
+      'byte_offset + byte_length should be less than or equal to the size in bytes of the array passed in',
+    );
+    const sab = new SharedArrayBuffer(4);
+    const [st3, dv3] = api.dataView(sab, 4, 0);
+    expect([st3, dv3.buffer === sab]).toEqual([OK, true]);
+    expect(api.dvInfo(new Uint8Array(1))[0]).toBe(INVALID_ARG);
+  });
+
+  test('napi_detach_arraybuffer', () => {
+    const ab = new ArrayBuffer(8);
+    expect(api.detach(ab)).toBe(OK);
+    expect(ab.byteLength).toBe(0);
+    expect(api.kinds(ab)[4]).toBe(true);
+    expect(api.detach(new Uint8Array(1))).toBe(ARRAYBUFFER_EXPECTED);
+    expect(api.detach(new SharedArrayBuffer(1))).toBe(ARRAYBUFFER_EXPECTED);
+    // WebAssembly.Memory's buffer cannot be detached
+    const mem = new WebAssembly.Memory({ initial: 1 });
+    expect(api.detach(mem.buffer)).toBe(DETACHABLE_ARRAYBUFFER_EXPECTED);
+  });
+
+  test('node_api_create_buffer_from_arraybuffer', () => {
+    const ab = new Uint8Array([1, 2, 3, 4]).buffer;
+    const [st, b, exc] = api.bufferFromAb(ab, 1, 2);
+    expect([st, exc]).toEqual([OK, undefined]);
+    expect(b).toBeInstanceOf(Uint8Array);
+    expect([b.buffer === ab, b.byteOffset, [...b]]).toEqual([true, 1, [2, 3]]);
+    // out of range: the RangeError is thrown, the status is napi_throw_range_error's (napi_ok)
+    const [st2, b2, exc2] = api.bufferFromAb(ab, 3, 2);
+    expect([st2, b2]).toEqual([OK, undefined]);
+    expect(exc2).toBeInstanceOf(RangeError);
+    expect([exc2.code, exc2.message]).toEqual(['ERR_OUT_OF_RANGE', 'The byte offset + length is out of range']);
+    expect(api.viewChecks()).toEqual([INVALID_ARG, INVALID_ARG, OK, INVALID_ARG, INVALID_ARG,
+      INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG,
+      INVALID_ARG, INVALID_ARG]);
+  });
+
+  test('external ArrayBuffers and Buffers alias the addon memory; the finalizer runs on collection', async () => {
+    const before = api.extAbFinalized();
+    for (const buffer of [false, true]) {
+      (() => {
+        const ext = api.externalAb(buffer);
+        const bytes = buffer ? ext : new Uint8Array(ext);
+        expect(buffer ? ext instanceof Uint8Array : ext instanceof ArrayBuffer).toBe(true);
+        expect([...bytes]).toEqual([7, 0, 0, 0]);
+        // writes on either side are seen by the other
+        api.extAbPoke(9);
+        expect(bytes[0]).toBe(9);
+        bytes[1] = 5;
+        expect(api.abInfo(buffer ? ext.buffer : ext)).toEqual([OK, 4, 9]);
+        expect(bytes[0]).toBe(10);
+      })();
+      for (let i = 0; i < 3; i++) {
+        (globalThis as any).gc();
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+    expect(api.extAbFinalized()).toBe(before + 2);
+    expect(api.externalAbNoResult()).toBe(OK);
   });
 });
 

@@ -454,7 +454,7 @@ describe('arraybuffers, typed arrays, buffers', () => {
     expect(a.status()).toBe(GENERIC_FAILURE);
   });
 
-  test('napi_create_external_arraybuffer copies the external bytes', () => {
+  test('napi_create_external_arraybuffer is over the external bytes', () => {
     expect([...new Uint8Array(a.extAb(3))]).toEqual([120, 121, 122]);
     expect(a.extAb(0).byteLength).toBe(0);
     expect(a.status()).toBe(OK);

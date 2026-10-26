@@ -1856,17 +1856,234 @@ pub unsafe extern "C" fn napi_create_external_arraybuffer(
     env: napi_env,
     data: *mut c_void,
     len: usize,
-    _finalize: Option<napi_finalize>,
-    _hint: *mut c_void,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
     out: *mut napi_value,
 ) -> napi_status {
     js_call(env, |s| {
-        // copy into a managed ArrayBuffer (we don't track external lifetime here)
-        let ab = v8::ArrayBuffer::new(s, len);
-        if let Some(store) = ab.get_backing_store().data() {
-            std::ptr::copy_nonoverlapping(data as *const u8, store.as_ptr() as *mut u8, len);
-        }
+        // as Node (napi_create_external_buffer, then its ArrayBuffer): a NULL result is
+        // allowed, the buffer is made all the same
+        let ab = external_arraybuffer(s, env, data, len, finalize, hint);
         put(out, ab.into());
+        Ok(())
+    })
+}
+
+/// The backing-store deleter of an external ArrayBuffer: the memory is the addon's, released by
+/// its finalizer.
+unsafe extern "C" fn keep_external(_data: *mut c_void, _len: usize, _deleter_data: *mut c_void) {}
+
+/// An ArrayBuffer over the addon's `data`, not copied (as Node without the V8 sandbox): writes
+/// on either side are seen by the other, and the finalizer runs once the ArrayBuffer is
+/// collected (or at env teardown), as Node's BufferFinalizer. NULL data (Node would hand out a
+/// buffer over address 0) gets zero-filled memory of its own.
+unsafe fn external_arraybuffer(
+    s: &mut v8::PinScope<'static, 'static>,
+    env: napi_env,
+    data: *mut c_void,
+    len: usize,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+) -> v8::Local<'static, v8::ArrayBuffer> {
+    if data.is_null() {
+        return v8::ArrayBuffer::new(s, len);
+    }
+    let store =
+        v8::ArrayBuffer::new_backing_store_from_ptr(data, len, keep_external, std::ptr::null_mut());
+    let ab = v8::ArrayBuffer::with_backing_store(s, &store.make_shared());
+    if finalize.is_some() {
+        track_finalizer(s, env, ab.into(), data, finalize, hint);
+    }
+    ab
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_arraybuffer_info(
+    env: napi_env,
+    v: napi_value,
+    data: *mut *mut c_void,
+    len: *mut usize,
+) -> napi_status {
+    basic(env, || {
+        let value = val_arg(v)?;
+        // as Node: an ArrayBuffer or a SharedArrayBuffer; data and length are optional
+        let store = if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(value) {
+            ab.get_backing_store()
+        } else {
+            let sab: v8::Local<v8::SharedArrayBuffer> =
+                value.try_into().map_err(|_| napi_invalid_arg)?;
+            sab.get_backing_store()
+        };
+        if !data.is_null() {
+            *data = store.data().map_or(std::ptr::null_mut(), |p| p.as_ptr());
+        }
+        if !len.is_null() {
+            *len = store.byte_length();
+        }
+        Ok(())
+    })
+}
+
+/// The napi_typedarray_type of a typed array, in Node's test order.
+fn typedarray_type(v: v8::Local<v8::Value>) -> i32 {
+    let tests: [fn(&v8::Value) -> bool; 11] = [
+        v8::Value::is_int8_array,
+        v8::Value::is_uint8_array,
+        v8::Value::is_uint8_clamped_array,
+        v8::Value::is_int16_array,
+        v8::Value::is_uint16_array,
+        v8::Value::is_int32_array,
+        v8::Value::is_uint32_array,
+        v8::Value::is_float16_array,
+        v8::Value::is_float32_array,
+        v8::Value::is_float64_array,
+        v8::Value::is_big_int64_array,
+    ];
+    const CODES: [i32; 11] = [0, 1, 2, 3, 4, 5, 6, 11, 7, 8, 9];
+    tests
+        .iter()
+        .position(|test| test(&v))
+        .map_or(10, |i| CODES[i]) // napi_biguint64_array
+}
+
+/// The data pointer, buffer and offset a typed array or DataView reports (Node's
+/// napi_get_typedarray_info / napi_get_dataview_info: each out-parameter optional).
+unsafe fn view_info(
+    s: &mut v8::PinScope<'static, 'static>,
+    view: v8::Local<v8::ArrayBufferView>,
+    data: *mut *mut c_void,
+    arraybuffer: *mut napi_value,
+    byte_offset: *mut usize,
+) {
+    if !data.is_null() || !arraybuffer.is_null() {
+        let buffer = view.buffer(s).unwrap();
+        if !data.is_null() {
+            let base = buffer.data().map_or(std::ptr::null_mut(), |p| p.as_ptr());
+            *data = base.cast::<u8>().wrapping_add(view.byte_offset()).cast();
+        }
+        put(arraybuffer, buffer.into());
+    }
+    if !byte_offset.is_null() {
+        *byte_offset = view.byte_offset();
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_typedarray_info(
+    env: napi_env,
+    v: napi_value,
+    type_: *mut i32,
+    length: *mut usize,
+    data: *mut *mut c_void,
+    arraybuffer: *mut napi_value,
+    byte_offset: *mut usize,
+) -> napi_status {
+    basic(env, || {
+        let value = val_arg(v)?;
+        let ta: v8::Local<v8::TypedArray> = value.try_into().map_err(|_| napi_invalid_arg)?;
+        if !type_.is_null() {
+            *type_ = typedarray_type(value);
+        }
+        if !length.is_null() {
+            *length = ta.length();
+        }
+        view_info(scope(env), ta.into(), data, arraybuffer, byte_offset);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_dataview(
+    env: napi_env,
+    byte_length: usize,
+    arraybuffer: napi_value,
+    byte_offset: usize,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let value = val_arg(arraybuffer)?;
+        let out = out_arg(out)?;
+        // as Node: an ArrayBuffer or a SharedArrayBuffer (one JSArrayBuffer in V8, so a
+        // SharedArrayBuffer handle serves where V8's DataView::New takes an ArrayBuffer)
+        let ab: v8::Local<v8::ArrayBuffer> =
+            if value.is_array_buffer() || value.is_shared_array_buffer() {
+                v8::Local::cast_unchecked(value)
+            } else {
+                return Err(napi_invalid_arg);
+            };
+        let end = byte_length.checked_add(byte_offset);
+        if end.is_none_or(|end| end > ab.byte_length()) {
+            let msg = "byte_offset + byte_length should be less than or equal to the size in \
+                       bytes of the array passed in";
+            // as Node: the RangeError is pending and the call napi_pending_exception
+            let _ = throw_range_error(s, "ERR_NAPI_INVALID_DATAVIEW_ARGS", msg);
+            return Err(napi_pending_exception);
+        }
+        *out = to_napi(v8::DataView::new(s, ab, byte_offset, byte_length).into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_dataview_info(
+    env: napi_env,
+    v: napi_value,
+    byte_length: *mut usize,
+    data: *mut *mut c_void,
+    arraybuffer: *mut napi_value,
+    byte_offset: *mut usize,
+) -> napi_status {
+    basic(env, || {
+        let value = val_arg(v)?;
+        let dv: v8::Local<v8::DataView> = value.try_into().map_err(|_| napi_invalid_arg)?;
+        if !byte_length.is_null() {
+            *byte_length = dv.byte_length();
+        }
+        view_info(scope(env), dv.into(), data, arraybuffer, byte_offset);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_detach_arraybuffer(env: napi_env, v: napi_value) -> napi_status {
+    basic(env, || {
+        let ab: v8::Local<v8::ArrayBuffer> = val_arg(v)?
+            .try_into()
+            .map_err(|_| napi_arraybuffer_expected)?;
+        if !ab.is_detachable() {
+            return Err(napi_detachable_arraybuffer_expected);
+        }
+        ab.detach(None);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn node_api_create_buffer_from_arraybuffer(
+    env: napi_env,
+    arraybuffer: napi_value,
+    byte_offset: usize,
+    byte_length: usize,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let value = val_arg(arraybuffer)?;
+        let out = out_arg(out)?;
+        let ab: v8::Local<v8::ArrayBuffer> = value.try_into().map_err(|_| napi_invalid_arg)?;
+        let end = byte_offset.checked_add(byte_length);
+        if end.is_none_or(|end| end > ab.byte_length()) {
+            // as Node: the RangeError is thrown and the call returns napi_throw_range_error's
+            // status, napi_ok
+            let msg = v8::String::new(s, "The byte offset + length is out of range").unwrap();
+            let err = new_error(s, ErrorKind::Range, msg);
+            let code = v8::String::new(s, "ERR_OUT_OF_RANGE").unwrap();
+            set_error_code(s, err, code)?;
+            s.throw_exception(err);
+            return Ok(());
+        }
+        // a Buffer (here a Uint8Array) over the same memory
+        let buf = v8::Uint8Array::new(s, ab, byte_offset, byte_length).unwrap();
+        *out = to_napi(buf.into());
         Ok(())
     })
 }
@@ -1936,18 +2153,12 @@ pub unsafe extern "C" fn napi_create_external_buffer(
     env: napi_env,
     len: usize,
     data: *mut c_void,
-    _finalize: Option<napi_finalize>,
-    _hint: *mut c_void,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
     out: *mut napi_value,
 ) -> napi_status {
     js_call(env, |s| {
-        // We don't track the external lifetime; copy into a managed buffer.
-        let ab = v8::ArrayBuffer::new(s, len);
-        if let Some(store) = ab.get_backing_store().data() {
-            if !data.is_null() && len > 0 {
-                std::ptr::copy_nonoverlapping(data as *const u8, store.as_ptr() as *mut u8, len);
-            }
-        }
+        let ab = external_arraybuffer(s, env, data, len, finalize, hint);
         let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
             .map(|t| t.into())
             .unwrap_or_else(|| ab.into());

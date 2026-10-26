@@ -93,6 +93,15 @@ extern napi_status napi_create_buffer_copy(napi_env, size_t, const void *, void 
 extern napi_status napi_create_external_buffer(napi_env, size_t, void *, napi_finalize, void *,
                                                napi_value *);
 extern napi_status napi_get_buffer_info(napi_env, napi_value, void **, size_t *);
+extern napi_status napi_get_arraybuffer_info(napi_env, napi_value, void **, size_t *);
+extern napi_status napi_get_typedarray_info(napi_env, napi_value, int *, size_t *, void **,
+                                            napi_value *, size_t *);
+extern napi_status napi_create_dataview(napi_env, size_t, napi_value, size_t, napi_value *);
+extern napi_status napi_get_dataview_info(napi_env, napi_value, size_t *, void **, napi_value *,
+                                          size_t *);
+extern napi_status napi_detach_arraybuffer(napi_env, napi_value);
+extern napi_status node_api_create_buffer_from_arraybuffer(napi_env, napi_value, size_t, size_t,
+                                                           napi_value *);
 extern napi_status napi_get_value_bool(napi_env, napi_value, bool *);
 extern napi_status napi_get_value_double(napi_env, napi_value, double *);
 extern napi_status napi_get_value_int64(napi_env, napi_value, int64_t *);

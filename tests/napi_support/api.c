@@ -703,6 +703,143 @@ static napi_value f_compare_checks(napi_env env, napi_callback_info info) {
     return nums(env, sizeof st / sizeof st[0], st);
 }
 
+/* ---- arraybuffers, typed arrays, dataviews, buffers ------------------------------------- */
+
+/* abInfo(ab) -> [status, byteLength, first byte (bumped in place)] */
+static napi_value f_ab_info(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    void *data = NULL;
+    size_t len = 999;
+    napi_status st = napi_get_arraybuffer_info(env, arg(env, &a, 0), &data, &len);
+    double first = -1;
+    if (st == napi_ok && len > 0) first = ((uint8_t *)data)[0]++;
+    double r[3] = {st, (double)len, first};
+    return nums(env, 3, r);
+}
+
+/* taInfo(view) -> [status, type, length, byte offset, the buffer, first byte (bumped)] */
+static napi_value f_ta_info(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    int type = -1;
+    size_t len = 999, off = 999;
+    void *data = NULL;
+    napi_value ab = NULL;
+    napi_status st = napi_get_typedarray_info(env, arg(env, &a, 0), &type, &len, &data, &ab, &off);
+    double first = -1;
+    if (st == napi_ok && len > 0) first = ((uint8_t *)data)[0]++;
+    napi_value it[6] = {num(env, st),        num(env, type), num(env, (double)len),
+                        num(env, (double)off), or_undef(env, ab), num(env, first)};
+    return list(env, 6, it);
+}
+
+/* dataView(ab, byteLength, byteOffset) -> [status, the view, exception];
+ * dvInfo(view) -> [status, byteLength, byte offset, the buffer, first byte (bumped)] */
+static napi_value f_data_view(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value dv = NULL;
+    napi_status st = napi_create_dataview(env, (size_t)argd(env, &a, 1), arg(env, &a, 0),
+                                          (size_t)argd(env, &a, 2), &dv);
+    napi_value exc = take_exception(env);
+    napi_value it[3] = {num(env, st), or_undef(env, dv), exc};
+    return list(env, 3, it);
+}
+static napi_value f_dv_info(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    size_t len = 999, off = 999;
+    void *data = NULL;
+    napi_value ab = NULL;
+    napi_status st = napi_get_dataview_info(env, arg(env, &a, 0), &len, &data, &ab, &off);
+    double first = -1;
+    if (st == napi_ok && len > 0) first = ((uint8_t *)data)[0]++;
+    napi_value it[5] = {num(env, st), num(env, (double)len), num(env, (double)off),
+                        or_undef(env, ab), num(env, first)};
+    return list(env, 5, it);
+}
+
+/* detach(v) -> status */
+static napi_value f_detach(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    return num(env, napi_detach_arraybuffer(env, arg(env, &a, 0)));
+}
+
+/* bufferFromAb(ab, offset, length) -> [status, the buffer, exception] */
+static napi_value f_buffer_from_ab(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value b = NULL;
+    napi_status st = node_api_create_buffer_from_arraybuffer(
+        env, arg(env, &a, 0), (size_t)argd(env, &a, 1), (size_t)argd(env, &a, 2), &b);
+    napi_value exc = take_exception(env);
+    napi_value it[3] = {num(env, st), or_undef(env, b), exc};
+    return list(env, 3, it);
+}
+
+/* viewChecks() -> statuses: NULL / wrong arguments of the info and creation calls */
+static napi_value f_view_checks(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value ab, obj, out;
+    napi_create_arraybuffer(env, 8, NULL, &ab);
+    napi_create_object(env, &obj);
+    double st[] = {
+        napi_get_arraybuffer_info(env, NULL, NULL, NULL),
+        napi_get_arraybuffer_info(env, obj, NULL, NULL),
+        napi_get_arraybuffer_info(env, ab, NULL, NULL),
+        napi_get_typedarray_info(env, NULL, NULL, NULL, NULL, NULL, NULL),
+        napi_get_typedarray_info(env, ab, NULL, NULL, NULL, NULL, NULL),
+        napi_create_dataview(env, 1, NULL, 0, &out),
+        napi_create_dataview(env, 1, ab, 0, NULL),
+        napi_create_dataview(env, 1, obj, 0, &out),
+        napi_get_dataview_info(env, NULL, NULL, NULL, NULL, NULL),
+        napi_get_dataview_info(env, ab, NULL, NULL, NULL, NULL),
+        napi_detach_arraybuffer(env, NULL),
+        node_api_create_buffer_from_arraybuffer(env, NULL, 0, 0, &out),
+        node_api_create_buffer_from_arraybuffer(env, ab, 0, 0, NULL),
+        node_api_create_buffer_from_arraybuffer(env, obj, 0, 0, &out),
+    };
+    return nums(env, sizeof st / sizeof st[0], st);
+}
+
+static int g_ext_ab_finalized;
+static uint8_t *g_ext_ab_mem;
+static void ext_ab_finalize(napi_env env, void *data, void *hint) {
+    (void)env;
+    if (data == g_ext_ab_mem && hint == (void *)&g_ext_ab_finalized) g_ext_ab_finalized++;
+    free(data);
+}
+
+/* externalAb(buffer) -> an external ArrayBuffer (buffer false) or Buffer (buffer true) over 4
+ * bytes of the addon's memory; extAbPeek() -> [the memory's first byte (0 once finalized),
+ * finalized count]; extAbPoke(v) writes the first byte from native code */
+static napi_value f_external_ab(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    bool buffer = false;
+    napi_get_value_bool(env, arg(env, &a, 0), &buffer);
+    g_ext_ab_mem = calloc(4, 1);
+    g_ext_ab_mem[0] = 7;
+    napi_value out = NULL;
+    if (buffer)
+        napi_create_external_buffer(env, 4, g_ext_ab_mem, ext_ab_finalize, &g_ext_ab_finalized,
+                                    &out);
+    else
+        napi_create_external_arraybuffer(env, g_ext_ab_mem, 4, ext_ab_finalize,
+                                         &g_ext_ab_finalized, &out);
+    return out;
+}
+static napi_value f_ext_ab_poke(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    g_ext_ab_mem[0] = (uint8_t)argd(env, &a, 0);
+    return NULL;
+}
+static napi_value f_ext_ab_finalized(napi_env env, napi_callback_info info) {
+    (void)info;
+    return num(env, g_ext_ab_finalized);
+}
+/* an external ArrayBuffer with a NULL result: created, napi_ok */
+static napi_value f_external_ab_no_result(napi_env env, napi_callback_info info) {
+    (void)info;
+    static char mem[2];
+    return num(env, napi_create_external_arraybuffer(env, mem, 2, NULL, NULL, NULL));
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -732,6 +869,9 @@ static napi_value f_null_env(napi_env env, napi_callback_info info) {
         napi_object_freeze(NULL, v),
         napi_strict_equals(NULL, v, v, NULL),
         napi_is_buffer(NULL, v, NULL),
+        napi_get_arraybuffer_info(NULL, v, NULL, NULL),
+        napi_detach_arraybuffer(NULL, v),
+        napi_create_dataview(NULL, 0, v, 0, &out),
     };
     return nums(env, sizeof st / sizeof st[0], st);
 }
@@ -775,6 +915,17 @@ static const struct {
     {"instanceOf", f_instance_of},
     {"kinds", f_kinds},
     {"compareChecks", f_compare_checks},
+    {"abInfo", f_ab_info},
+    {"taInfo", f_ta_info},
+    {"dataView", f_data_view},
+    {"dvInfo", f_dv_info},
+    {"detach", f_detach},
+    {"bufferFromAb", f_buffer_from_ab},
+    {"viewChecks", f_view_checks},
+    {"externalAb", f_external_ab},
+    {"extAbPoke", f_ext_ab_poke},
+    {"extAbFinalized", f_ext_ab_finalized},
+    {"externalAbNoResult", f_external_ab_no_result},
     {"nullEnv", f_null_env},
 };
 
