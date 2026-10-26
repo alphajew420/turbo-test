@@ -254,3 +254,99 @@ fn drive_loop_rejects_a_broken_runtime_contract() {
     assert!(r.stdout.contains("✗ a: b"), "{}", r.all());
     assert!(r.stdout.contains("✓ n (1500ms)"), "{}", r.all());
 }
+
+#[test]
+fn synthetic_modules_for_shared_assets_defaults_and_unshimmed_builtins() {
+    let p = Project::new("rb-esm-synth");
+    p.file("package.json", r#"{"name":"rb-esm-synth"}"#);
+    p.file("shared.json", r#"{"n": 1}"#);
+    p.file("shared.css", ".a{}\n");
+    p.file(
+        "withdefault.cjs",
+        "exports.default = 'dflt'; exports.named = 'n';\n",
+    );
+    p.file(
+        "a.mjs",
+        "import j from './shared.json'; import c from './shared.css'; export const fromA = j.n + ':' + c.k;\n",
+    );
+    p.file(
+        "s.test.js",
+        r#"import j from './shared.json';
+import c from './shared.css';
+import { fromA } from './a.mjs';
+import def, { named } from './withdefault.cjs';
+import vm from 'node:vm';
+test('synthetic modules', () => {
+  expect(j.n).toBe(1);
+  expect(c.k).toBe('k');
+  expect(fromA).toBe('1:k');
+  expect(def.default).toBe('dflt');
+  expect(named).toBe('n');
+  expect(typeof vm).toBe('object');
+});
+"#,
+    );
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+}
+
+#[test]
+fn a_dependency_evicted_during_graph_load_is_reloaded_at_link_time() {
+    // y.cjs runs vi.resetModules() while the entry's graph is loading, dropping the already
+    // loaded x.cjs; linking the entry then loads x.cjs again (it runs twice).
+    let p = Project::new("rb-esm-evict");
+    p.file("package.json", r#"{"name":"rb-esm-evict"}"#);
+    p.file(
+        "x.cjs",
+        "globalThis.__xRuns = (globalThis.__xRuns || 0) + 1; exports.n = globalThis.__xRuns;\n",
+    );
+    p.file("y.cjs", "vi.resetModules(); exports.y = 1;\n");
+    p.file(
+        "e.test.js",
+        "import { n } from './x.cjs';\nimport { y } from './y.cjs';\n\
+         test('reloaded', () => { expect(y).toBe(1); expect(n).toBe(2); });\n",
+    );
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+
+    // Same on an esbuild project: an entry esbuild cannot emit as CJS (top-level await) takes
+    // the graph path, the evicted dep is reloaded through the module-runner CJS loader, and a
+    // dynamic import goes through it too.
+    let q = Project::new("rb-esm-evict-mr");
+    q.with_esbuild();
+    q.file("package.json", r#"{"name":"rb-esm-evict-mr"}"#);
+    q.file(
+        "x.cjs",
+        "globalThis.__xRuns = (globalThis.__xRuns || 0) + 1; exports.n = globalThis.__xRuns;\n",
+    );
+    q.file("y.cjs", "vi.resetModules(); exports.y = 1;\n");
+    q.file("lib.ts", "export const L: string = 'lib';\n");
+    q.file(
+        "e.test.js",
+        "import { n } from './x.cjs';\nimport { y } from './y.cjs';\nconst lib = await import('./lib.ts');\n\
+         test('reloaded', () => { expect(y).toBe(1); expect(n).toBe(2); expect(lib.L).toBe('lib'); });\n",
+    );
+    let r = turbo_test(&q.dir, &[], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+}
+
+#[test]
+fn dynamic_import_of_a_lazy_stub_barrel_without_react_loads_the_real_package() {
+    // The stub factory needs `react`; without it the configured barrel loads for real.
+    let p = Project::new("rb-esm-lazy");
+    p.file("package.json", r#"{"name":"rb-esm-lazy"}"#);
+    p.file(
+        "node_modules/fake-icons/package.json",
+        r#"{"name":"fake-icons","main":"index.mjs"}"#,
+    );
+    p.file(
+        "node_modules/fake-icons/index.mjs",
+        "export const Real = 'real-export';\n",
+    );
+    p.file(
+        "l.test.js",
+        "test('lazy', async () => { expect((await import('fake-icons')).Real).toBe('real-export'); });\n",
+    );
+    let r = turbo_test(&p.dir, &[], &[("TURBO_LAZY_STUBS", "fake-icons")]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+}

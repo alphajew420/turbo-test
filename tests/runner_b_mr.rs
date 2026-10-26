@@ -218,14 +218,27 @@ fn cjs_loader_diagnostics_for_unreadable_unparsable_and_throwing_modules() {
     std::fs::write(p.path("badutf.cjs"), b"exports.x = \"\xff\xfe\";\n").unwrap();
     p.file("syntax.cjs", "exports.a = ;\n");
     p.file("throws.cjs", "throw new Error('body boom');\n");
+    // valid to the transforms, rejected by V8: the native output fails to compile and so does
+    // the esbuild retry
+    p.file("rx.ts", "export const r = /(?<a>x)(?<a>y)/;\n");
     p.file(
         "diag.test.ts",
         r#"test('load failures', () => {
   expect(() => require('./badutf.cjs')).toThrow('failed to load ./badutf.cjs');
   expect(() => require('./syntax.cjs')).toThrow('failed to load ./syntax.cjs');
   expect(() => require('./throws.cjs')).toThrow('failed to load ./throws.cjs');
+  expect(() => require('./rx')).toThrow('failed to load ./rx');
 });
 "#,
+    );
+    // esbuild-only transform: the retry would produce the same code, so it is skipped
+    let esb = turbo_test(&p.dir, &[], &[("TURBO_NATIVE_CJS", "0")]);
+    assert_passes(&esb, 1);
+    assert!(
+        esb.stderr
+            .contains("rx.ts :: SyntaxError: Invalid regular expression"),
+        "{}",
+        esb.all()
     );
     let quiet = turbo_test(&p.dir, &[], &[]);
     assert_passes(&quiet, 1);
@@ -239,6 +252,10 @@ fn cjs_loader_diagnostics_for_unreadable_unparsable_and_throwing_modules() {
         "{e}"
     );
     assert!(!e.contains("cjs body threw"), "{e}");
+    assert!(
+        e.contains("rx.ts :: SyntaxError: Invalid regular expression"),
+        "{e}"
+    );
     let dbg = turbo_test(&p.dir, &[], &[("TURBO_CJS_DEBUG", "1")]);
     assert_passes(&dbg, 1);
     let line = dbg
@@ -511,4 +528,52 @@ test('cjs requiring esm', () => {
     );
     let r = turbo_test(&p.dir, &[], &[("TURBO_NO_MR", "1")]);
     assert_passes(&r, 2);
+}
+
+#[test]
+fn an_exception_escaping_the_entry_load_is_the_load_error() {
+    let p = esbuild_project("rb-mr-entry-exc");
+    p.file(
+        "g.test.ts",
+        "test('t', () => {});\n\
+         Object.defineProperty(module, 'exports', { get() { throw new Error('exports getter boom'); } });\n",
+    );
+    for env in [&[][..], &[("TURBO_REUSE_ISOLATE", "1")][..]] {
+        let r = turbo_test(&p.dir, &[], env);
+        assert_eq!(r.code, Some(1), "{}", r.all());
+        assert!(
+            r.stdout.lines().any(|l| l.starts_with("ERROR")
+                && l.ends_with("g.test.ts  (Error: exports getter boom)")),
+            "{env:?}\n{}",
+            r.all()
+        );
+    }
+}
+
+#[test]
+fn setup_file_mocks_are_externalized_and_lenient() {
+    let p = esbuild_project("rb-mr-setup-mocks");
+    p.file(
+        "vitest.config.ts",
+        "export default { test: { setupFiles: ['./setup.ts'] } };\n",
+    );
+    p.file(
+        "src/svc.ts",
+        "export const a = 'real-a';\nexport const b = 'real-b';\n",
+    );
+    p.file(
+        "setup.ts",
+        "vi.mock('./src/svc', () => { return { a: 'setup-a' }; });\n\
+         vi.mock('*.svg?url', () => ({ default: 'x' }));\n",
+    );
+    // `b` is imported but missing from the factory: the mock module still links
+    p.file(
+        "s.test.ts",
+        "import { a, b } from './src/svc';\n\
+         test('setup mock', () => { expect(a).toBe('setup-a'); expect(b).toBe(undefined); });\n",
+    );
+    for env in [&[][..], &[("TURBO_NO_MR", "1")][..]] {
+        let r = turbo_test(&p.dir, &[], env);
+        assert_passes(&r, 1);
+    }
 }

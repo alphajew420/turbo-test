@@ -128,7 +128,14 @@ fn esm_graph_reuse_reports_load_errors_and_retries_fresh() {
     let p = reuse_project("rb-reuse-esm", false);
     p.file("lib.mjs", "export const x = 1;\n");
     p.file("b1.test.js", &format!("{SEEN}test('b1', () => {{}});\n"));
-    p.file("b2.test.js", &format!("{SEEN}test('b2', () => {{}});\n"));
+    // nested entry: process.cwd() is found by walking up to the package.json
+    p.file(
+        "deep/er/b2.test.js",
+        &format!(
+            "{SEEN}test('b2', () => {{ expect(globalThis.__cwd).toBe({:?}); }});\n",
+            p.dir.to_string_lossy()
+        ),
+    );
     p.file(
         "b3.test.js",
         &format!(
@@ -174,7 +181,7 @@ fn esm_graph_reuse_reports_load_errors_and_retries_fresh() {
             "{}",
             r.all()
         );
-        for f in ["b1.test.js", "b2.test.js", "b3.test.js"] {
+        for f in ["b1.test.js", "er/b2.test.js", "b3.test.js"] {
             assert!(line(f).starts_with("PASS"), "{}", r.all());
         }
         assert_eq!(seen(&r.stdout), vec![1, 2, 3], "{}", r.all());
