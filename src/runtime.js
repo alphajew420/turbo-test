@@ -1088,7 +1088,9 @@ const __fs = {
   existsSync: (p) => globalThis.__fs_existsSync(String(p)),
   readFileSync: (p, enc) => globalThis.__fs_readFileSync(String(p), enc ? String(typeof enc === 'string' ? enc : enc.encoding || 'utf8') : ''),
   writeFileSync: (p, data) => globalThis.__fs_writeFileSync(String(p), data == null ? '' : (typeof data === 'string' ? data : String(data))),
-  appendFileSync: (p, data) => globalThis.__fs_writeFileSync(String(p), (globalThis.__fs_existsSync(String(p)) ? globalThis.__fs_readFileSync(String(p), 'utf8') : '') + (data == null ? '' : String(data))),
+  // a real append (O_APPEND on the Rust side), not read + rewrite: parallel workers appending to
+  // one file would otherwise overwrite each other's lines.
+  appendFileSync: (p, data) => globalThis.__fs_appendFileSync(String(p), data == null ? '' : (typeof data === 'string' ? data : String(data))),
   mkdirSync: (p) => globalThis.__fs_mkdirSync(String(p)),
   rmSync: (p) => globalThis.__fs_rmSync(String(p)),
   rmdirSync: (p) => globalThis.__fs_rmSync(String(p)),
@@ -1098,6 +1100,7 @@ const __fs = {
   promises: {
     readFile: (p, enc) => Promise.resolve(globalThis.__fs_readFileSync(String(p), enc ? 'utf8' : '')),
     writeFile: (p, data) => { globalThis.__fs_writeFileSync(String(p), data == null ? '' : String(data)); return Promise.resolve(); },
+    appendFile: (p, data) => { try { __fs.appendFileSync(p, data); return Promise.resolve(); } catch (e) { return Promise.reject(e); } },
     mkdir: (p) => { globalThis.__fs_mkdirSync(String(p)); return Promise.resolve(); },
     rm: (p) => { globalThis.__fs_rmSync(String(p)); return Promise.resolve(); },
     readdir: (p) => Promise.resolve(globalThis.__fs_readdirSync(String(p))),

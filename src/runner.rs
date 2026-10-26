@@ -3935,6 +3935,7 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "__fs_existsSync", fs_exists_sync);
     bind_fn(scope, global, "__fs_readFileSync", fs_read_file_sync);
     bind_fn(scope, global, "__fs_writeFileSync", fs_write_file_sync);
+    bind_fn(scope, global, "__fs_appendFileSync", fs_append_file_sync);
     bind_fn(scope, global, "__fs_mkdirSync", fs_mkdir_sync);
     bind_fn(scope, global, "__fs_rmSync", fs_rm_sync);
     bind_fn(scope, global, "__fs_readdirSync", fs_readdir_sync);
@@ -4055,6 +4056,30 @@ fn fs_write_file_sync(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
     }
     if let Err(e) = std::fs::write(&p, data) {
         throw(scope, &format!("writeFileSync {p}: {e}"));
+    }
+}
+
+/// native fs.appendFileSync(path, data): a real append (O_APPEND), so concurrent appenders from
+/// parallel workers each land whole instead of racing a read-modify-write. Parents are created,
+/// like `fs_write_file_sync`.
+fn fs_append_file_sync(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    use std::io::Write;
+    let p = args.get(0).to_rust_string_lossy(scope);
+    let data = args.get(1).to_rust_string_lossy(scope);
+    if let Some(parent) = Path::new(&p).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let res = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&p)
+        .and_then(|mut f| f.write_all(data.as_bytes()));
+    if let Err(e) = res {
+        throw(scope, &format!("appendFileSync {p}: {e}"));
     }
 }
 
