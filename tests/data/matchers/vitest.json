@@ -1,0 +1,708 @@
+{
+ "m": [
+  {
+   "label": "toBe",
+   "name": "AssertionError",
+   "message": "expected 1 to be 2 // Object.is equality"
+  },
+  {
+   "label": "not.toBe",
+   "name": "AssertionError",
+   "message": "expected 1 not to be 1 // Object.is equality"
+  },
+  {
+   "label": "toBe obj",
+   "name": "AssertionError",
+   "message": "expected { a: 1 } to be { a: 1 } // Object.is equality\n\nIf it should pass with deep equality, replace \"toBe\" with \"toStrictEqual\"\n\nExpected: { a: 1 }\nReceived: serializes to the same string\n"
+  },
+  {
+   "label": "toBe str",
+   "name": "AssertionError",
+   "message": "expected 'abc' to be 'abd' // Object.is equality"
+  },
+  {
+   "label": "toEqual",
+   "name": "AssertionError",
+   "message": "expected { a: 1 } to deeply equal { a: 2 }"
+  },
+  {
+   "label": "not.toEqual",
+   "name": "AssertionError",
+   "message": "expected [ 1 ] to not deeply equal [ 1 ]"
+  },
+  {
+   "label": "toEqual long",
+   "name": "AssertionError",
+   "message": "expected { aaaa: 1, bbbb: 2, cccc: 3, …(3) } to deeply equal {}"
+  },
+  {
+   "label": "toStrictEqual",
+   "name": "AssertionError",
+   "message": "expected { a: undefined } to strictly equal {}"
+  },
+  {
+   "label": "not.toStrictEqual",
+   "name": "AssertionError",
+   "message": "expected 1 to not strictly equal 1"
+  },
+  {
+   "label": "toBeTruthy",
+   "name": "AssertionError",
+   "message": "expected +0 to be truthy"
+  },
+  {
+   "label": "not.toBeTruthy",
+   "name": "AssertionError",
+   "message": "expected 1 to not be truthy"
+  },
+  {
+   "label": "toBeFalsy",
+   "name": "AssertionError",
+   "message": "expected 1 to be falsy"
+  },
+  {
+   "label": "not.toBeFalsy",
+   "name": "AssertionError",
+   "message": "expected '' to not be falsy"
+  },
+  {
+   "label": "toBeNull",
+   "name": "AssertionError",
+   "message": "expected 1 to be null"
+  },
+  {
+   "label": "not.toBeNull",
+   "name": "AssertionError",
+   "message": "expected null not to be null"
+  },
+  {
+   "label": "toBeUndefined",
+   "name": "AssertionError",
+   "message": "expected 1 to be undefined"
+  },
+  {
+   "label": "not.toBeUndefined",
+   "name": "AssertionError",
+   "message": "expected undefined not to be undefined"
+  },
+  {
+   "label": "toBeDefined",
+   "name": "AssertionError",
+   "message": "expected undefined to be defined"
+  },
+  {
+   "label": "not.toBeDefined",
+   "name": "AssertionError",
+   "message": "expected 1 to be undefined"
+  },
+  {
+   "label": "toBeNaN",
+   "name": "AssertionError",
+   "message": "expected 1 to be NaN"
+  },
+  {
+   "label": "not.toBeNaN",
+   "name": "AssertionError",
+   "message": "expected NaN not to be NaN"
+  },
+  {
+   "label": "toBeGreaterThan",
+   "name": "AssertionError",
+   "message": "expected 1 to be greater than 2"
+  },
+  {
+   "label": "not.toBeGreaterThan",
+   "name": "AssertionError",
+   "message": "expected 3 to be not greater than 2"
+  },
+  {
+   "label": "toBeGreaterThanOrEqual",
+   "name": "AssertionError",
+   "message": "expected 1 to be greater than or equal to 2"
+  },
+  {
+   "label": "not.toBeGreaterThanOrEqual",
+   "name": "AssertionError",
+   "message": "expected 2 to be not greater than or equal to 2"
+  },
+  {
+   "label": "toBeLessThan",
+   "name": "AssertionError",
+   "message": "expected 3 to be less than 2"
+  },
+  {
+   "label": "not.toBeLessThan",
+   "name": "AssertionError",
+   "message": "expected 1 to be not less than 2"
+  },
+  {
+   "label": "toBeLessThanOrEqual",
+   "name": "AssertionError",
+   "message": "expected 3 to be less than or equal to 2"
+  },
+  {
+   "label": "not.toBeLessThanOrEqual",
+   "name": "AssertionError",
+   "message": "expected 2 to be not less than or equal to 2"
+  },
+  {
+   "label": "toBeCloseTo",
+   "name": "AssertionError",
+   "message": "expected 0.1 to be close to 0.3, received difference is 0.19999999999999998, but expected 0.005"
+  },
+  {
+   "label": "not.toBeCloseTo",
+   "name": "AssertionError",
+   "message": "expected 0.3 to not be close to 0.3, received difference is 0, but expected 0.005"
+  },
+  {
+   "label": "toBeCloseTo digits",
+   "name": "AssertionError",
+   "message": "expected 1.23 to be close to 1.2, received difference is 0.030000000000000027, but expected 0.0005"
+  },
+  {
+   "label": "toContain arr",
+   "name": "AssertionError",
+   "message": "expected [ 1 ] to include 2"
+  },
+  {
+   "label": "not.toContain arr",
+   "name": "AssertionError",
+   "message": "expected [ 1 ] to not include 1"
+  },
+  {
+   "label": "toContain str",
+   "name": "AssertionError",
+   "message": "expected 'abc' to contain 'x'"
+  },
+  {
+   "label": "not.toContain str",
+   "name": "AssertionError",
+   "message": "expected 'abc' not to contain 'b'"
+  },
+  {
+   "label": "toContainEqual",
+   "name": "AssertionError",
+   "message": "expected [ { a: 1 } ] to deep equally contain { a: 2 }"
+  },
+  {
+   "label": "not.toContainEqual",
+   "name": "AssertionError",
+   "message": "expected [ { a: 1 } ] to not deep equally contain { a: 1 }"
+  },
+  {
+   "label": "toBeInstanceOf",
+   "name": "AssertionError",
+   "message": "expected {} to be an instance of Foo"
+  },
+  {
+   "label": "not.toBeInstanceOf",
+   "name": "AssertionError",
+   "message": "expected Foo{ a: 1 } to not be an instance of Foo"
+  },
+  {
+   "label": "toMatchObject",
+   "name": "AssertionError",
+   "message": "expected { a: 1, b: 2 } to match object { a: 2 }\n(1 matching property omitted from actual)"
+  },
+  {
+   "label": "not.toMatchObject",
+   "name": "AssertionError",
+   "message": "expected { a: 1 } to not match object { a: 1 }"
+  },
+  {
+   "label": "toHaveLength",
+   "name": "AssertionError",
+   "message": "expected [ 1, 2 ] to have a length of 3 but got 2"
+  },
+  {
+   "label": "not.toHaveLength",
+   "name": "AssertionError",
+   "message": "expected [ 1 ] to not have a length of 1"
+  },
+  {
+   "label": "toHaveLength str",
+   "name": "AssertionError",
+   "message": "expected 'ab' to have a length of 3 but got 2"
+  },
+  {
+   "label": "toHaveProperty",
+   "name": "AssertionError",
+   "message": "expected { a: 1 } to have property \"b\""
+  },
+  {
+   "label": "not.toHaveProperty",
+   "name": "AssertionError",
+   "message": "expected { a: 1 } to not have property \"a\""
+  },
+  {
+   "label": "toHaveProperty value",
+   "name": "AssertionError",
+   "message": "expected { a: 1 } to have property \"a\" with value 2"
+  },
+  {
+   "label": "toHaveProperty path",
+   "name": "AssertionError",
+   "message": "expected { a: { b: 1 } } to have property \"a.c\""
+  },
+  {
+   "label": "toHaveProperty arr",
+   "name": "AssertionError",
+   "message": "expected { a: { b: 1 } } to have property \"a.c\""
+  },
+  {
+   "label": "toMatch re",
+   "name": "AssertionError",
+   "message": "expected 'abc' to match /x/"
+  },
+  {
+   "label": "not.toMatch re",
+   "name": "AssertionError",
+   "message": "expected 'abc' not to match /b/"
+  },
+  {
+   "label": "toMatch str",
+   "name": "AssertionError",
+   "message": "expected 'abc' to match 'x'"
+  },
+  {
+   "label": "toThrow none",
+   "name": "AssertionError",
+   "message": "expected [Function] to throw an error"
+  },
+  {
+   "label": "not.toThrow",
+   "name": "AssertionError",
+   "message": "expected [Function thrower] to not throw an error but 'TypeError: bad thing' was thrown"
+  },
+  {
+   "label": "toThrow str",
+   "name": "AssertionError",
+   "message": "expected [Function thrower] to throw error including 'other' but got 'bad thing'"
+  },
+  {
+   "label": "toThrow re",
+   "name": "AssertionError",
+   "message": "expected [Function thrower] to throw error matching /other/ but got 'bad thing'"
+  },
+  {
+   "label": "toThrow class",
+   "name": "AssertionError",
+   "message": "expected error to be instance of RangeError"
+  },
+  {
+   "label": "toThrow obj",
+   "name": "AssertionError",
+   "message": "expected a thrown value to equal { message: 'other' }"
+  },
+  {
+   "label": "not.toThrow str",
+   "name": "AssertionError",
+   "message": "expected [Function thrower] to throw error not including 'bad'"
+  },
+  {
+   "label": "toThrowError",
+   "name": "AssertionError",
+   "message": "expected [Function] to throw an error"
+  },
+  {
+   "label": "toHaveBeenCalled",
+   "name": "AssertionError",
+   "message": "expected \"mySpy\" to be called at least once"
+  },
+  {
+   "label": "not.toHaveBeenCalled",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to not be called at all, but actually been called 2 times\n\nReceived:\n\n  1st vi.fn() call:\n\n    Array [\n      1,\n      \"a\",\n    ]\n\n  2nd vi.fn() call:\n\n    Array [\n      2,\n    ]\n\n\nNumber of calls: 2\n"
+  },
+  {
+   "label": "toHaveBeenCalledTimes",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called 3 times, but got 2 times"
+  },
+  {
+   "label": "not.toHaveBeenCalledTimes",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to not be called 2 times"
+  },
+  {
+   "label": "toHaveBeenCalledWith",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called with arguments: [ 3 ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   3,\n+   1,\n+   \"a\",\n  ]\n\n  2nd vi.fn() call:\n\n  [\n-   3,\n+   2,\n  ]\n\n\nNumber of calls: 2\n"
+  },
+  {
+   "label": "not.toHaveBeenCalledWith",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to not be called with arguments: [ 2 ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   2,\n+   1,\n+   \"a\",\n  ]\n\n  2nd vi.fn() call:\n\nCompared values have no visual difference.\n\n\nNumber of calls: 2\n"
+  },
+  {
+   "label": "toHaveBeenCalledOnce",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called once, but got 2 times"
+  },
+  {
+   "label": "not.toHaveBeenCalledOnce",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to not be called once"
+  },
+  {
+   "label": "toHaveBeenLastCalledWith",
+   "name": "AssertionError",
+   "message": "expected last \"vi.fn()\" call to have been called with [ 1, 'a' ]"
+  },
+  {
+   "label": "not.toHaveBeenLastCalledWith",
+   "name": "AssertionError",
+   "message": "expected last \"vi.fn()\" call to not have been called with [ 2 ]"
+  },
+  {
+   "label": "toHaveBeenNthCalledWith",
+   "name": "AssertionError",
+   "message": "expected 1st \"vi.fn()\" call to have been called with [ 2 ]"
+  },
+  {
+   "label": "not.toHaveBeenNthCalledWith",
+   "name": "AssertionError",
+   "message": "expected 2nd \"vi.fn()\" call to not have been called with [ 2 ]"
+  },
+  {
+   "label": "toHaveBeenCalledExactlyOnceWith",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called once with arguments: [ 1, 'a' ]\n\nReceived:\n\n  1st vi.fn() call:\n\nCompared values have no visual difference.\n\n  2nd vi.fn() call:\n\n  [\n-   1,\n-   \"a\",\n+   2,\n  ]\n\n\nNumber of calls: 2\n"
+  },
+  {
+   "label": "toHaveReturned",
+   "name": "AssertionError",
+   "message": "expected \"mySpy\" to be successfully called at least once"
+  },
+  {
+   "label": "not.toHaveReturned",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to not be successfully called"
+  },
+  {
+   "label": "toHaveReturnedWith",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to return with: 6 at least once\n\nReceived:\n\n  1st vi.fn() call return:\n\n- 6\n+ 5\n\n\nNumber of calls: 1\n"
+  },
+  {
+   "label": "not.toHaveReturnedWith",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to not return with: 5\n\nReceived:\n\n  1st vi.fn() call return:\n\n\n\n\nNumber of calls: 1\n"
+  },
+  {
+   "label": "toBeTypeOf",
+   "name": "AssertionError",
+   "message": "expected 1 to be type of 'string'"
+  },
+  {
+   "label": "not.toBeTypeOf",
+   "name": "AssertionError",
+   "message": "expected 1 not to be type of 'number'"
+  },
+  {
+   "label": "toSatisfy",
+   "name": "Error",
+   "message": "expect(received).toSatisfy()\n\nExpected value to satisfy:\n[Function anonymous]\n\nReceived:\n1"
+  },
+  {
+   "label": "not.toSatisfy",
+   "name": "Error",
+   "message": "expect(received).not.toSatisfy()\n\nExpected value to not satisfy:\n[Function anonymous]\nReceived:\n1"
+  },
+  {
+   "label": "toHaveBeenCalled nonspy",
+   "name": "TypeError",
+   "message": "1 is not a spy or a call to a spy!"
+  }
+ ],
+ "m2": [
+  {
+   "label": "spyOn name",
+   "name": "AssertionError",
+   "message": "expected \"m\" to be called at least once"
+  },
+  {
+   "label": "fresh times 0",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called 1 times, but got 0 times"
+  },
+  {
+   "label": "fresh calledWith none",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called with arguments: [ 1 ]\n\nNumber of calls: 0\n"
+  },
+  {
+   "label": "fresh nth beyond",
+   "name": "AssertionError",
+   "message": "expected 2nd \"vi.fn()\" call to have been called with [ 1 ], but called only 0 times"
+  },
+  {
+   "label": "toThrow class nothrow",
+   "name": "AssertionError",
+   "message": "expected function to throw an error, but it didn't"
+  },
+  {
+   "label": "toThrow str nothrow",
+   "name": "AssertionError",
+   "message": "expected [Function] to throw an error"
+  },
+  {
+   "label": "not.toThrow re match",
+   "name": "AssertionError",
+   "message": "expected [Function thrower] to throw error not matching /bad/"
+  },
+  {
+   "label": "not.toThrow class",
+   "name": "AssertionError",
+   "message": "expected error not to be instance of TypeError"
+  },
+  {
+   "label": "toThrow errobj",
+   "name": "AssertionError",
+   "message": "expected a thrown error to be Error: nope"
+  },
+  {
+   "label": "toThrow asym",
+   "name": "AssertionError",
+   "message": "expected error to match asymmetric matcher"
+  },
+  {
+   "label": "toThrow throws string",
+   "name": "AssertionError",
+   "message": "expected [Function] to throw error including 'x' but got 'oops'"
+  },
+  {
+   "label": "not.toThrow string thrown",
+   "name": "AssertionError",
+   "message": "expected [Function] to not throw an error but 'oops' was thrown"
+  },
+  {
+   "label": "gt type",
+   "name": "TypeError",
+   "message": "actual value must be number or bigint, received \"string\""
+  },
+  {
+   "label": "toMatch nonstring",
+   "name": "TypeError",
+   "message": ".toMatch() expects to receive a string, but got number"
+  },
+  {
+   "label": "toEqual any",
+   "name": "AssertionError",
+   "message": "expected { a: 'x' } to deeply equal { a: Any<Number> }"
+  },
+  {
+   "label": "toEqual asym",
+   "name": "AssertionError",
+   "message": "expected [ 1 ] to deeply equal ArrayContaining [2]"
+  },
+  {
+   "label": "toEqual anything",
+   "name": "AssertionError",
+   "message": "expected null to deeply equal Anything"
+  },
+  {
+   "label": "toEqual objC",
+   "name": "AssertionError",
+   "message": "expected {} to deeply equal ObjectContaining {\"a\": 1}"
+  },
+  {
+   "label": "toEqual strC",
+   "name": "AssertionError",
+   "message": "expected 'abc' to deeply equal StringContaining \"x\""
+  },
+  {
+   "label": "toEqual strM",
+   "name": "AssertionError",
+   "message": "expected 'abc' to deeply equal StringMatching /x/"
+  },
+  {
+   "label": "toBe long str",
+   "name": "AssertionError",
+   "message": "expected 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…' to be 'y' // Object.is equality"
+  },
+  {
+   "label": "toBe fn",
+   "name": "AssertionError",
+   "message": "expected [Function named] to be 1 // Object.is equality"
+  },
+  {
+   "label": "toBe arr long",
+   "name": "AssertionError",
+   "message": "expected [ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …(5) ] to be 1 // Object.is equality"
+  },
+  {
+   "label": "toBe nested",
+   "name": "AssertionError",
+   "message": "expected { a: { b: { c: { d: 1 } } } } to be 1 // Object.is equality"
+  },
+  {
+   "label": "toBe map",
+   "name": "AssertionError",
+   "message": "expected Map{ 'a' => 1 } to be 1 // Object.is equality"
+  },
+  {
+   "label": "toBe date",
+   "name": "AssertionError",
+   "message": "expected 1970-01-01T00:00:00.000Z to be 1 // Object.is equality"
+  },
+  {
+   "label": "toBe err",
+   "name": "AssertionError",
+   "message": "expected Error: e to be 1 // Object.is equality"
+  },
+  {
+   "label": "toBe sym",
+   "name": "AssertionError",
+   "message": "expected Symbol(s) to be 1 // Object.is equality"
+  },
+  {
+   "label": "toBe undef",
+   "name": "AssertionError",
+   "message": "expected undefined to be null // Object.is equality"
+  },
+  {
+   "label": "toBe -0",
+   "name": "AssertionError",
+   "message": "expected -0 to be +0 // Object.is equality"
+  },
+  {
+   "label": "toContain set",
+   "name": "AssertionError",
+   "message": "expected [ 1 ] to include 2"
+  },
+  {
+   "label": "toContain str nonstr",
+   "name": "AssertionError",
+   "message": "expected 'abc' to include 1"
+  },
+  {
+   "label": "toHaveLength nolen",
+   "name": "AssertionError",
+   "message": "expected 1 to have property 'length'"
+  },
+  {
+   "label": "toBeInstanceOf nonfn",
+   "name": "AssertionError",
+   "message": "The instanceof assertion needs a constructor but Number was given."
+  },
+  {
+   "label": "toHaveProperty dotted",
+   "name": "AssertionError",
+   "message": "expected { 'a.b': 1 } to have property \"a.b\" with value 2"
+  },
+  {
+   "label": "toHaveProperty idx",
+   "name": "AssertionError",
+   "message": "expected { a: [ 1 ] } to have property \"a[0]\" with value 2"
+  },
+  {
+   "label": "toMatchObject nested",
+   "name": "AssertionError",
+   "message": "expected { a: { b: 1, c: 2 }, d: 3 } to match object { a: { b: 2 } }\n(2 matching properties omitted from actual)"
+  },
+  {
+   "label": "toMatchObject arr",
+   "name": "AssertionError",
+   "message": "expected [ { a: 1, b: 2 } ] to match object [ { a: 2 } ]\n(1 matching property omitted from actual)"
+  },
+  {
+   "label": "calledWith objs",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called with arguments: [ { a: 2, b: [ 1 ] }, 'x' ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n    {\n-     \"a\": 2,\n+     \"a\": 1,\n      \"b\": [\n        1,\n+       2,\n      ],\n    },\n    \"x\",\n  ]\n\n\nNumber of calls: 1\n"
+  },
+  {
+   "label": "calledWith many",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called with arguments: [ 9 ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   9,\n+   0,\n  ]\n\n  2nd vi.fn() call:\n\n  [\n-   9,\n+   1,\n  ]\n\n  3rd vi.fn() call:\n\n  [\n-   9,\n+   2,\n  ]\n\n\nNumber of calls: 3\n"
+  },
+  {
+   "label": "returnedWith obj",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to return with: { a: 2 } at least once\n\nReceived:\n\n  1st vi.fn() call return:\n\n  {\n-   \"a\": 2,\n+   \"a\": 1,\n  }\n\n\nNumber of calls: 1\n"
+  },
+  {
+   "label": "returnedWith throw",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to return with: 1 at least once\n\nReceived:\n\n  1st vi.fn() call return:\n\n- Expected:\n1\n\n+ Received:\nError {\n  \"message\": \"t\",\n}\n\n\nNumber of calls: 1\n"
+  },
+  {
+   "label": "not.toHaveBeenCalled objs",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to not be called at all, but actually been called 1 times\n\nReceived:\n\n  1st vi.fn() call:\n\n    Array [\n      Object {\n        \"a\": Array [\n          Map {\n            \"k\" => 1,\n          },\n        ],\n        \"z\": 1,\n      },\n      null,\n      undefined,\n      1n,\n      Symbol(q),\n      [Function anonymous],\n    ]\n\n\nNumber of calls: 1\n"
+  },
+  {
+   "label": "calledWith type mismatch",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called with arguments: [ 1 ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   1,\n+   \"1\",\n  ]\n\n\nNumber of calls: 1\n"
+  },
+  {
+   "label": "calledWith str",
+   "name": "AssertionError",
+   "message": "expected \"vi.fn()\" to be called with arguments: [ 'abd' ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   \"abd\",\n+   \"abc\",\n  ]\n\n\nNumber of calls: 1\n"
+  },
+  {
+   "label": "toHaveBeenLastCalledWith none",
+   "name": "AssertionError",
+   "message": "expected last \"vi.fn()\" call to have been called with [ 1 ]"
+  },
+  {
+   "label": "mockName",
+   "name": "AssertionError",
+   "message": "expected \"nm\" to be called with arguments: [ 2 ]\n\nReceived:\n\n  1st nm call:\n\n  [\n-   2,\n+   1,\n  ]\n\n\nNumber of calls: 1\n"
+  },
+  {
+   "label": "resolves rejected",
+   "name": "AssertionError",
+   "message": "promise rejected \"Error: r\" instead of resolving"
+  },
+  {
+   "label": "rejects resolved",
+   "name": "AssertionError",
+   "message": "promise resolved \"{ a: 1 }\" instead of rejecting"
+  },
+  {
+   "label": "resolves fail",
+   "name": "AssertionError",
+   "message": "expected 2 to be 1 // Object.is equality"
+  },
+  {
+   "label": "rejects toThrow",
+   "name": "AssertionError",
+   "message": "expected [Function] to throw error including 'x' but got 'r'"
+  }
+ ],
+ "s": [
+  {
+   "label": "snapshot",
+   "name": "Error",
+   "message": "Snapshot `snap 1` mismatched"
+  },
+  {
+   "label": "inline",
+   "name": "Error",
+   "message": "Snapshot `snap 2` mismatched"
+  },
+  {
+   "label": "throw inline",
+   "name": "Error",
+   "message": "Snapshot `snap 3` mismatched"
+  },
+  {
+   "label": "extend fn",
+   "name": "Error",
+   "message": "expected x to be foo"
+  },
+  {
+   "label": "extend not",
+   "name": "Error",
+   "message": "expected foo to be foo"
+  },
+  {
+   "label": "extend str",
+   "name": "TypeError",
+   "message": "message is not a function"
+  }
+ ]
+}
