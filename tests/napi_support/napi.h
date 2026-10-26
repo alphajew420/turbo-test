@@ -64,6 +64,18 @@ extern napi_status napi_create_array_with_length(napi_env, size_t, napi_value *)
 extern napi_status napi_set_named_property(napi_env, napi_value, const char *, napi_value);
 extern napi_status napi_get_named_property(napi_env, napi_value, const char *, napi_value *);
 extern napi_status napi_set_element(napi_env, napi_value, uint32_t, napi_value);
+extern napi_status napi_set_property(napi_env, napi_value, napi_value, napi_value);
+extern napi_status napi_get_property(napi_env, napi_value, napi_value, napi_value *);
+extern napi_status napi_has_property(napi_env, napi_value, napi_value, bool *);
+extern napi_status napi_delete_property(napi_env, napi_value, napi_value, bool *);
+extern napi_status napi_has_own_property(napi_env, napi_value, napi_value, bool *);
+extern napi_status napi_has_named_property(napi_env, napi_value, const char *, bool *);
+extern napi_status napi_has_element(napi_env, napi_value, uint32_t, bool *);
+extern napi_status napi_delete_element(napi_env, napi_value, uint32_t, bool *);
+extern napi_status napi_get_all_property_names(napi_env, napi_value, int, int, int, napi_value *);
+extern napi_status napi_get_prototype(napi_env, napi_value, napi_value *);
+extern napi_status napi_object_freeze(napi_env, napi_value);
+extern napi_status napi_object_seal(napi_env, napi_value);
 extern napi_status napi_create_function(napi_env, const char *, size_t, napi_callback, void *,
                                         napi_value *);
 extern napi_status napi_get_cb_info(napi_env, napi_callback_info, size_t *, napi_value *,

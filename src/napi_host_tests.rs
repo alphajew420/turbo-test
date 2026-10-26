@@ -210,3 +210,26 @@ fn ref_and_unref_of_a_dead_reference_are_invalid_arg() {
         assert_eq!(cleared.count, 1);
     });
 }
+
+/// A closure of `catching` reporting that V8 gave nothing: napi_pending_exception when it
+/// threw, napi_generic_failure otherwise (Node's RETURN_STATUS_IF_FALSE_WITH_PREAMBLE); the
+/// status is recorded as the last error.
+#[test]
+fn v8_giving_nothing_is_pending_exception_or_generic_failure() {
+    with_scope(|s| {
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        unsafe {
+            assert_eq!(catching(e, |_| Err(V8_GAVE_NOTHING)), napi_generic_failure);
+            assert_eq!(env.last_error.error_code, napi_generic_failure);
+            let st = catching(e, |s| {
+                let msg = v8::String::new(s, "thrown").unwrap();
+                let exc = v8::Exception::error(s, msg);
+                s.throw_exception(exc);
+                Err(V8_GAVE_NOTHING)
+            });
+            assert_eq!(st, napi_pending_exception);
+            assert!(env.last_exception.take().is_some());
+        }
+    });
+}

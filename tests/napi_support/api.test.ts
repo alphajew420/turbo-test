@@ -9,6 +9,7 @@ const INVALID_ARG = 1;
 const STRING_EXPECTED = 3;
 const NUMBER_EXPECTED = 6;
 const OBJECT_EXPECTED = 2;
+const NAME_EXPECTED = 4;
 const PENDING_EXCEPTION = 10;
 const BIGINT_EXPECTED = 17;
 const DATE_EXPECTED = 18;
@@ -253,6 +254,125 @@ describe('symbols, coercions, arrays', () => {
     expect(Array.isArray(arr)).toBe(true);
     expect(arr.length).toBe(0);
     expect(st).toBe(INVALID_ARG);
+  });
+});
+
+describe('properties', () => {
+  test('set / get / has / has own / has named / delete by a key value', () => {
+    const o: any = { named: 1 };
+    const sym = Symbol('k');
+    const [set, get, has, own, named, del, after, exc] = api.props(o, 'k', 7);
+    expect([set, get, has, own, named, del, after]).toEqual([
+      [OK, undefined], [OK, 7], [OK, true], [OK, true], [OK, true], [OK, true], [OK, false],
+    ]);
+    expect(exc).toBe(undefined);
+    expect(api.props(o, sym, 'v').slice(0, 7)).toEqual([
+      [OK, undefined], [OK, 'v'], [OK, true], [OK, true], [OK, true], [OK, true], [OK, false],
+    ]);
+    // a number key works for every call but napi_has_own_property (which takes a name)
+    const child: any = {};
+    const r = api.props(child, 3, 'three');
+    expect(r.slice(0, 7)).toEqual([
+      [OK, undefined], [OK, 'three'], [OK, true], [NAME_EXPECTED, false], [OK, false],
+      [OK, true], [OK, false],
+    ]);
+    expect(3 in child).toBe(false);
+    // a non-configurable property is not deleted (result false, status napi_ok)
+    const fixed = Object.defineProperty({}, 'k', { value: 1 });
+    const f = api.props(fixed, 'k', 2);
+    expect([f[0], f[1], f[5], f[6]]).toEqual([[OK, undefined], [OK, 1], [OK, false], [OK, true]]);
+  });
+
+  test('a throwing accessor or trap leaves its exception pending', () => {
+    const boom = new Proxy({}, {
+      get() { throw new Error('get'); },
+      set() { throw new Error('set'); },
+      has() { throw new Error('has'); },
+      deleteProperty() { throw new Error('delete'); },
+      getOwnPropertyDescriptor() { throw new Error('own'); },
+    });
+    const r = api.props(boom, 'k', 1);
+    expect(r.slice(0, 7).map((p: any[]) => p[0])).toEqual(Array(7).fill(PENDING_EXCEPTION));
+    expect(r[7].message).toBe('set');
+    // a set trap returning false: a sloppy-mode Set, which succeeds
+    const refuses = new Proxy({}, { set: () => false });
+    expect(api.props(refuses, 'k', 1)[0]).toEqual([OK, undefined]);
+  });
+
+  test('argument checks', () => {
+    expect(api.propChecks({})).toEqual([
+      INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG,
+      INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, OK, INVALID_ARG, INVALID_ARG,
+      INVALID_ARG, NAME_EXPECTED, INVALID_ARG, INVALID_ARG, INVALID_ARG,
+    ]);
+    // ToObject of null: napi_object_expected, the TypeError pending
+    const r = api.props(null, 'k', 1);
+    expect(r[0]).toEqual([OBJECT_EXPECTED, undefined]);
+    expect(r[7]).toBeInstanceOf(TypeError);
+  });
+
+  test('napi_has_element / napi_delete_element', () => {
+    const arr = [1, 2];
+    expect(api.elements(arr, 1).slice(0, 3)).toEqual([[OK, true], [OK, true], [OK, false]]);
+    expect(arr.length).toBe(2);
+    expect(api.elements(arr, 5).slice(0, 3)).toEqual([[OK, false], [OK, true], [OK, false]]);
+    const frozen = Object.freeze([1]);
+    expect(api.elements(frozen, 0).slice(0, 3)).toEqual([[OK, true], [OK, false], [OK, true]]);
+    expect(api.elementChecks([])).toEqual([INVALID_ARG, INVALID_ARG, INVALID_ARG, OK]);
+    const [, , , exc] = api.elements(undefined, 0);
+    expect(exc).toBeInstanceOf(TypeError);
+  });
+
+  test('napi_get_all_property_names: mode, filter, conversion', () => {
+    const proto = { inherited: 1 };
+    const o = Object.create(proto);
+    const sym = Symbol('s');
+    Object.defineProperty(o, 'hidden', { value: 1, enumerable: false, writable: true });
+    Object.defineProperty(o, 'ro', { value: 1, enumerable: true, configurable: true });
+    o[2] = 'two';
+    o.plain = 1;
+    o[sym] = 1;
+    const names = (mode: number, filter: number, conv: number) => {
+      const [st, n] = api.allNames(o, mode, filter, conv);
+      expect(st).toBe(OK);
+      return n;
+    };
+    expect(names(1, 0, 1)).toEqual(['2', 'hidden', 'ro', 'plain', sym]);
+    expect(names(1, 0, 0)).toEqual([2, 'hidden', 'ro', 'plain', sym]);
+    expect(names(0, 2, 1)).toEqual(['2', 'ro', 'plain', sym, 'inherited']);
+    expect(names(1, 1, 1)).toEqual(['2', 'hidden', 'plain', sym]);
+    expect(names(1, 4, 1)).toEqual(['2', 'ro', 'plain', sym]);
+    expect(names(1, 8, 1)).toEqual([sym]);
+    expect(names(1, 16, 1)).toEqual(['2', 'hidden', 'ro', 'plain']);
+    expect(names(1, 2 | 16, 0)).toEqual([2, 'ro', 'plain']);
+    const trap = new Proxy({}, { ownKeys() { throw new Error('keys'); } });
+    const [st, , exc] = api.allNames(trap, 1, 0, 1);
+    expect(st).toBe(PENDING_EXCEPTION);
+    expect(exc.message).toBe('keys');
+  });
+
+  test('napi_get_prototype, napi_object_freeze / napi_object_seal', () => {
+    const proto = {};
+    expect(api.proto(Object.create(proto)).slice(0, 2)).toEqual([OK, proto]);
+    expect(api.proto(Object.create(null)).slice(0, 2)).toEqual([OK, null]);
+    expect(api.proto(5).slice(0, 2)).toEqual([OK, Number.prototype]);
+    // a Proxy's getPrototypeOf trap is not run (V8's GetPrototypeV2 gives a proxy null)
+    const p = new Proxy({}, { getPrototypeOf() { throw new Error('trap'); } });
+    expect(api.proto(p)).toEqual([OK, null, undefined]);
+    const f: any = { a: 1 };
+    expect(api.integrity(f, false)).toEqual([OK, undefined]);
+    expect(Object.isFrozen(f)).toBe(true);
+    const sl: any = { a: 1 };
+    expect(api.integrity(sl, true)).toEqual([OK, undefined]);
+    expect([Object.isSealed(sl), Object.isFrozen(sl)]).toEqual([true, false]);
+    const no = new Proxy({}, { preventExtensions() { throw new Error('no'); } });
+    const [st, exc] = api.integrity(no, false);
+    expect(st).toBe(PENDING_EXCEPTION);
+    expect(exc.message).toBe('no');
+    const refuses = new Proxy({}, { preventExtensions: () => false });
+    const [st2, exc2] = api.integrity(refuses, true);
+    expect([st2, exc2 && exc2.constructor]).toEqual([PENDING_EXCEPTION, TypeError]);
+    expect(api.objectChecks()).toEqual(Array(8).fill(INVALID_ARG));
   });
 });
 

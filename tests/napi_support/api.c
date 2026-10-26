@@ -510,6 +510,147 @@ static napi_value f_create_array(napi_env env, napi_callback_info info) {
     return list(env, 2, it);
 }
 
+/* ---- properties ----------------------------------------------------------------------- */
+
+static napi_value boolean(napi_env env, bool b) {
+    napi_value v;
+    napi_get_boolean(env, b, &v);
+    return v;
+}
+/* the exception left pending (cleared: building the results needs calls that run no JS while
+ * one is pending), undefined when none */
+static napi_value take_exception(napi_env env) {
+    napi_value exc = NULL;
+    napi_get_and_clear_last_exception(env, &exc);
+    return exc;
+}
+
+/* props(obj, key, value) -> [set, get, has, hasOwn, hasNamed("named"), delete, has after,
+ * exception] (each [status, result]) */
+static napi_value f_props(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value o = arg(env, &a, 0), k = arg(env, &a, 1), v = arg(env, &a, 2), got = NULL;
+    bool has = false, own = false, named = false, del = false, after = true;
+    napi_status st[7] = {
+        napi_set_property(env, o, k, v),         napi_get_property(env, o, k, &got),
+        napi_has_property(env, o, k, &has),      napi_has_own_property(env, o, k, &own),
+        napi_has_named_property(env, o, "named", &named),
+        napi_delete_property(env, o, k, &del),   napi_has_property(env, o, k, &after),
+    };
+    napi_value exc = take_exception(env);
+    napi_value results[7] = {undef(env),       or_undef(env, got),   boolean(env, has),
+                             boolean(env, own), boolean(env, named), boolean(env, del),
+                             boolean(env, after)};
+    napi_value it[8];
+    for (int i = 0; i < 7; i++) {
+        napi_value pair[2] = {num(env, st[i]), results[i]};
+        it[i] = list(env, 2, pair);
+    }
+    it[7] = exc;
+    return list(env, 8, it);
+}
+
+/* propChecks(obj) -> statuses: NULL key / value / result / object for each property call, a
+ * non-name key for napi_has_own_property, a NULL name for napi_has_named_property, a NULL
+ * result for napi_delete_property (allowed) */
+static napi_value f_prop_checks(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value o = arg(env, &a, 0), k = str(env, "k"), v = num(env, 1), out;
+    bool b;
+    double st[] = {
+        napi_set_property(env, o, NULL, v),      napi_set_property(env, o, k, NULL),
+        napi_set_property(env, NULL, k, v),      napi_get_property(env, o, NULL, &out),
+        napi_get_property(env, o, k, NULL),      napi_get_property(env, NULL, k, &out),
+        napi_has_property(env, o, k, NULL),      napi_has_property(env, o, NULL, &b),
+        napi_has_property(env, NULL, k, &b),     napi_delete_property(env, o, NULL, &b),
+        napi_delete_property(env, NULL, k, &b),  napi_delete_property(env, o, k, NULL),
+        napi_has_own_property(env, o, NULL, &b), napi_has_own_property(env, o, k, NULL),
+        napi_has_own_property(env, NULL, k, &b), napi_has_own_property(env, o, v, &b),
+        napi_has_named_property(env, o, "k", NULL), napi_has_named_property(env, NULL, "k", &b),
+        napi_has_named_property(env, o, NULL, &b),
+    };
+    return nums(env, sizeof st / sizeof st[0], st);
+}
+
+/* elements(obj, index) -> [hasElement, deleteElement, hasElement after, exception] */
+static napi_value f_elements(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value o = arg(env, &a, 0);
+    uint32_t i = (uint32_t)argd(env, &a, 1);
+    bool has = false, del = false, after = true;
+    napi_status s1 = napi_has_element(env, o, i, &has);
+    napi_status s2 = napi_delete_element(env, o, i, &del);
+    napi_status s3 = napi_has_element(env, o, i, &after);
+    napi_value exc = take_exception(env);
+    napi_value p1[2] = {num(env, s1), boolean(env, has)};
+    napi_value p2[2] = {num(env, s2), boolean(env, del)};
+    napi_value p3[2] = {num(env, s3), boolean(env, after)};
+    napi_value it[4] = {list(env, 2, p1), list(env, 2, p2), list(env, 2, p3), exc};
+    return list(env, 4, it);
+}
+
+/* elementChecks(obj) -> statuses: NULL result / object, and a NULL result for
+ * napi_delete_element (allowed) */
+static napi_value f_element_checks(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value o = arg(env, &a, 0);
+    bool b;
+    double st[] = {napi_has_element(env, o, 0, NULL), napi_has_element(env, NULL, 0, &b),
+                   napi_delete_element(env, NULL, 0, &b), napi_delete_element(env, o, 0, NULL)};
+    return nums(env, 4, st);
+}
+
+/* allNames(obj, mode, filter, conversion) -> [status, names, exception] */
+static napi_value f_all_names(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value names = NULL;
+    napi_status st = napi_get_all_property_names(env, arg(env, &a, 0), (int)argd(env, &a, 1),
+                                                 (int)argd(env, &a, 2), (int)argd(env, &a, 3),
+                                                 &names);
+    napi_value exc = take_exception(env);
+    napi_value it[3] = {num(env, st), or_undef(env, names), exc};
+    return list(env, 3, it);
+}
+
+/* proto(obj) -> [status, prototype, exception]; integrity(obj, seal) -> [status, exception] */
+static napi_value f_proto(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value p = NULL;
+    napi_status st = napi_get_prototype(env, arg(env, &a, 0), &p);
+    napi_value exc = take_exception(env);
+    napi_value it[3] = {num(env, st), or_undef(env, p), exc};
+    return list(env, 3, it);
+}
+static napi_value f_integrity(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    bool seal = false;
+    napi_get_value_bool(env, arg(env, &a, 1), &seal);
+    napi_status st = seal ? napi_object_seal(env, arg(env, &a, 0))
+                          : napi_object_freeze(env, arg(env, &a, 0));
+    napi_value exc = take_exception(env);
+    napi_value it[2] = {num(env, st), exc};
+    return list(env, 2, it);
+}
+
+/* objectChecks() -> statuses: napi_get_all_property_names with a NULL result / object, an
+ * unknown mode / conversion; napi_get_prototype NULL result / object; freeze / seal NULL */
+static napi_value f_object_checks(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value o, out;
+    napi_create_object(env, &o);
+    double st[] = {
+        napi_get_all_property_names(env, o, 0, 0, 0, NULL),
+        napi_get_all_property_names(env, NULL, 0, 0, 0, &out),
+        napi_get_all_property_names(env, o, 2, 0, 0, &out),
+        napi_get_all_property_names(env, o, 0, 0, 2, &out),
+        napi_get_prototype(env, o, NULL),
+        napi_get_prototype(env, NULL, &out),
+        napi_object_freeze(env, NULL),
+        napi_object_seal(env, NULL),
+    };
+    return nums(env, sizeof st / sizeof st[0], st);
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -534,6 +675,9 @@ static napi_value f_null_env(napi_env env, napi_callback_info info) {
         napi_create_symbol(NULL, NULL, &out),
         napi_coerce_to_bool(NULL, v, &out),
         napi_create_array(NULL, &out),
+        napi_set_property(NULL, v, v, v),
+        napi_has_element(NULL, v, 0, NULL),
+        napi_object_freeze(NULL, v),
     };
     return nums(env, sizeof st / sizeof st[0], st);
 }
@@ -565,6 +709,14 @@ static const struct {
     {"coerce", f_coerce},
     {"coerceChecks", f_coerce_checks},
     {"createArray", f_create_array},
+    {"props", f_props},
+    {"propChecks", f_prop_checks},
+    {"elements", f_elements},
+    {"elementChecks", f_element_checks},
+    {"allNames", f_all_names},
+    {"proto", f_proto},
+    {"integrity", f_integrity},
+    {"objectChecks", f_object_checks},
     {"nullEnv", f_null_env},
 };
 

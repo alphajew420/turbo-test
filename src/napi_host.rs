@@ -467,12 +467,38 @@ unsafe fn catching(
     let tc = std::pin::pin!(v8::TryCatch::new(scope(env)));
     let tc = &mut tc.init();
     let result = f(tc);
+    // as Node's RETURN_STATUS_IF_FALSE_WITH_PREAMBLE: V8 giving nothing is a pending exception
+    // when it threw, else the call's failure status
+    let status = match result {
+        Err(V8_GAVE_NOTHING) if tc.has_caught() => napi_pending_exception,
+        Err(V8_GAVE_NOTHING) => napi_generic_failure,
+        other => other.err().unwrap_or(napi_ok),
+    };
     if !tc.has_terminated() {
         if let Some(exc) = tc.exception() {
             (*env).last_exception = Some(v8::Global::new(tc, exc));
         }
     }
-    record(env, result.err().unwrap_or(napi_ok))
+    record(env, status)
+}
+
+/// What a `js_call` / `catching` closure returns when a V8 call gave nothing (an empty Maybe or
+/// `false`): napi_pending_exception when it threw, napi_generic_failure otherwise.
+const V8_GAVE_NOTHING: napi_status = -1;
+
+/// A V8 `Maybe<bool>` that must be `Just(true)`: anything else is `V8_GAVE_NOTHING`.
+fn v8_true(m: Option<bool>) -> NapiResult {
+    m.filter(|&b| b).map(|_| ()).ok_or(V8_GAVE_NOTHING)
+}
+
+/// The object argument of a property call, as Node's CHECK_TO_OBJECT: NULL is
+/// napi_invalid_arg, then ToObject (null / undefined: napi_object_expected).
+unsafe fn obj_arg(
+    s: &mut v8::PinScope<'static, 'static>,
+    v: napi_value,
+) -> Result<v8::Local<'static, v8::Object>, napi_status> {
+    val_arg(v)?;
+    to_object(s, v)
 }
 
 /// ToObject of an object argument, as Node's CHECK_TO_OBJECT: primitives become their wrapper
@@ -1147,6 +1173,224 @@ pub unsafe extern "C" fn napi_set_element(
             .ok_or(napi_pending_exception)?;
         Ok(())
     })
+}
+
+// ---- properties ------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_set_property(
+    env: napi_env,
+    object: napi_value,
+    key: napi_value,
+    value: napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let (k, v) = (val_arg(key)?, val_arg(value)?);
+        let o = obj_arg(s, object)?;
+        v8_true(o.set(s, k, v))
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_property(
+    env: napi_env,
+    object: napi_value,
+    key: napi_value,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let k = val_arg(key)?;
+        let out = out_arg(out)?;
+        let o = obj_arg(s, object)?;
+        *out = to_napi(o.get(s, k).ok_or(V8_GAVE_NOTHING)?);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_has_property(
+    env: napi_env,
+    object: napi_value,
+    key: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let out = out_arg(out)?;
+        let k = val_arg(key)?;
+        let o = obj_arg(s, object)?;
+        *out = o.has(s, k).ok_or(V8_GAVE_NOTHING)?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_delete_property(
+    env: napi_env,
+    object: napi_value,
+    key: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let k = val_arg(key)?;
+        let o = obj_arg(s, object)?;
+        // as Node: the result is optional (false: the property is non-configurable)
+        let deleted = o.delete(s, k).ok_or(V8_GAVE_NOTHING)?;
+        if !out.is_null() {
+            *out = deleted;
+        }
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_has_own_property(
+    env: napi_env,
+    object: napi_value,
+    key: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let k = val_arg(key)?;
+        let out = out_arg(out)?;
+        let o = obj_arg(s, object)?;
+        // as Node: the key must be a string or a symbol
+        let k: v8::Local<v8::Name> = k.try_into().map_err(|_| napi_name_expected)?;
+        *out = o.has_own_property(s, k).ok_or(V8_GAVE_NOTHING)?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_has_named_property(
+    env: napi_env,
+    object: napi_value,
+    name: *const c_char,
+    out: *mut bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let out = out_arg(out)?;
+        let o = obj_arg(s, object)?;
+        let k = cstr_arg(s, name)?;
+        *out = o.has(s, k.into()).ok_or(V8_GAVE_NOTHING)?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_has_element(
+    env: napi_env,
+    object: napi_value,
+    index: u32,
+    out: *mut bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let out = out_arg(out)?;
+        let o = obj_arg(s, object)?;
+        *out = o.has_index(s, index).ok_or(V8_GAVE_NOTHING)?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_delete_element(
+    env: napi_env,
+    object: napi_value,
+    index: u32,
+    out: *mut bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let o = obj_arg(s, object)?;
+        let deleted = o.delete_index(s, index).ok_or(V8_GAVE_NOTHING)?;
+        if !out.is_null() {
+            *out = deleted;
+        }
+        Ok(())
+    })
+}
+
+/// napi_key_filter bits and the V8 property filters they select.
+const KEY_FILTERS: [(i32, v8::PropertyFilter); 5] = [
+    (1, v8::PropertyFilter::ONLY_WRITABLE),
+    (1 << 1, v8::PropertyFilter::ONLY_ENUMERABLE),
+    (1 << 2, v8::PropertyFilter::ONLY_CONFIGURABLE),
+    (1 << 3, v8::PropertyFilter::SKIP_STRINGS),
+    (1 << 4, v8::PropertyFilter::SKIP_SYMBOLS),
+];
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_all_property_names(
+    env: napi_env,
+    object: napi_value,
+    key_mode: i32,
+    key_filter: i32,
+    key_conversion: i32,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let out = out_arg(out)?;
+        let o = obj_arg(s, object)?;
+        let property_filter = KEY_FILTERS
+            .iter()
+            .filter(|(bit, _)| key_filter & bit != 0)
+            .fold(v8::PropertyFilter::ALL_PROPERTIES, |f, &(_, v8f)| f | v8f);
+        // as Node: an unknown napi_key_collection_mode / napi_key_conversion is napi_invalid_arg
+        let mode = match key_mode {
+            0 => v8::KeyCollectionMode::IncludePrototypes,
+            1 => v8::KeyCollectionMode::OwnOnly,
+            _ => return Err(napi_invalid_arg),
+        };
+        let key_conversion = match key_conversion {
+            0 => v8::KeyConversionMode::KeepNumbers,
+            1 => v8::KeyConversionMode::ConvertToString,
+            _ => return Err(napi_invalid_arg),
+        };
+        let args = v8::GetPropertyNamesArgs {
+            mode,
+            property_filter,
+            index_filter: v8::IndexFilter::IncludeIndices,
+            key_conversion,
+        };
+        *out = to_napi(o.get_property_names(s, args).ok_or(V8_GAVE_NOTHING)?.into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_prototype(
+    env: napi_env,
+    object: napi_value,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let out = out_arg(out)?;
+        let o = obj_arg(s, object)?;
+        // (V8's GetPrototypeV2: a Proxy's getPrototypeOf trap is not run)
+        *out = to_napi(o.get_prototype(s).ok_or(V8_GAVE_NOTHING)?);
+        Ok(())
+    })
+}
+
+/// napi_object_freeze / napi_object_seal: SetIntegrityLevel (napi_generic_failure, or the
+/// exception a Proxy trap threw pending, when it fails).
+unsafe fn set_integrity(
+    env: napi_env,
+    object: napi_value,
+    level: v8::IntegrityLevel,
+) -> napi_status {
+    js_call(env, |s| {
+        let o = obj_arg(s, object)?;
+        v8_true(o.set_integrity_level(s, level))
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_object_freeze(env: napi_env, object: napi_value) -> napi_status {
+    set_integrity(env, object, v8::IntegrityLevel::Frozen)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_object_seal(env: napi_env, object: napi_value) -> napi_status {
+    set_integrity(env, object, v8::IntegrityLevel::Sealed)
 }
 
 // ---- functions ------------------------------------------------------------
