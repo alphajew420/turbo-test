@@ -79,12 +79,14 @@ jobs:
             echo "::error::bin/${{ matrix.binname }} crashed at startup (exit $rc)"; exit 1
           fi
 
+      # Before the Rust tests: the CLI integration tests (tests/*.rs) link the repo's
+      # esbuild/typescript installs into their throwaway fixture projects.
+      - name: Install test dependencies
+        if: runner.os != 'Windows'
+        run: npm ci
+
       - name: Rust tests
         run: cargo test --locked --target ${{ matrix.target }}
-
-      - name: Install test dependencies
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
-        run: npm ci
 
       - name: CLI compatibility and type tests
         if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
@@ -109,6 +111,36 @@ jobs:
           name: bin-${{ matrix.target }}
           path: bin/turbo-test-*
           if-no-files-found: error
+
+  # ---- Line-coverage gate for the Rust crate (tarpaulin.toml: Llvm engine, fail-under) ----
+  # Unit tests plus the CLI integration tests, which spawn the instrumented turbo-test and
+  # spike binaries against fixture projects (tarpaulin.toml `objects` attributes their
+  # profiles). macOS arm64 matches the platform the gate was measured on.
+  coverage:
+    name: coverage (tarpaulin, fail-under)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
+      - name: Install test dependencies
+        run: npm ci
+      - name: cargo tarpaulin (fails below tarpaulin.toml fail-under)
+        run: cargo tarpaulin --locked
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: target/cov/report/
+          if-no-files-found: ignore
 
   # ---- The lockfile must install cleanly with npm 10 AND npm 11 (turbo-test#30) ----
   # npm 11 rejects a lock that lacks the optional @esbuild/* platform entries
