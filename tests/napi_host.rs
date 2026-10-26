@@ -201,7 +201,8 @@ fn references_count_up_and_down() {
 /// UTF-16, property keys, external strings), symbols, coercions, arrays, properties (by key
 /// value, own, named, elements, all names, prototype, freeze / seal), comparisons and type
 /// checks, arraybuffers / typed arrays / dataviews / buffers (external ones alias the addon's
-/// memory and run their finalizer on collection), and a NULL env.
+/// memory and run their finalizer on collection), promises, externals (with type tags), and a
+/// NULL env.
 #[test]
 fn every_node_api_family_behaves() {
     let p = project("napi-api");
@@ -215,7 +216,7 @@ fn every_node_api_family_behaves() {
     );
     let j = json_report(&r);
     assert_eq!(j["numFailedTests"], 0, "{}", r.all());
-    assert_eq!(j["numPassedTests"], 34, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 38, "{}", r.all());
     // napi_fatal_exception reported the error as uncaught (what a throwing timer callback gets)
     assert!(
         r.stderr.contains("uncaught reported as uncaught"),

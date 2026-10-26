@@ -536,6 +536,61 @@ describe('arraybuffers, typed arrays, dataviews, buffers', () => {
   });
 });
 
+describe('promises and externals', () => {
+  test('napi_create_promise / napi_resolve_deferred / napi_reject_deferred / napi_is_promise', async () => {
+    const [st, p, isPromise, done] = api.promise(true, 'value');
+    expect([st, isPromise, done]).toEqual([OK, true, OK]);
+    expect(p).toBeInstanceOf(Promise);
+    expect(await p).toBe('value');
+    const [st2, p2, , done2] = api.promise(false, new Error('nope'));
+    expect([st2, done2]).toEqual([OK, OK]);
+    let rejected: any;
+    await p2.catch((e: unknown) => { rejected = e; });
+    expect(rejected.message).toBe('nope');
+    // a deferred settled later, from another call
+    const later = api.deferLater();
+    expect(api.settleLater(true, 42)).toBe(OK);
+    expect(await later).toBe(42);
+    const later2 = api.deferLater();
+    expect(api.settleLater(false, 'why')).toBe(OK);
+    let reason;
+    await later2.catch((e: unknown) => { reason = e; });
+    expect(reason).toBe('why');
+    const [isP, checks] = api.promiseChecks({ then() {} });
+    expect(isP).toBe(false);
+    expect(checks).toEqual([INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG,
+      PENDING_EXCEPTION, PENDING_EXCEPTION, OK]);
+  });
+
+  test('napi_create_external / napi_get_value_external; the finalizer runs on collection', async () => {
+    const before = api.externalFinalized();
+    (() => {
+      const [st, e, type, dataMatches, e2, checks] = api.externals();
+      expect([st, type, dataMatches]).toEqual([OK, 8, true]);
+      expect(typeof e).toBe('object');
+      expect(Object.getPrototypeOf(e)).toBe(null);
+      expect(e).not.toBe(e2);
+      expect(checks).toEqual([INVALID_ARG, INVALID_ARG, INVALID_ARG, INVALID_ARG]);
+    })();
+    for (let i = 0; i < 3; i++) {
+      (globalThis as any).gc();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(api.externalFinalized()).toBe(before + 1);
+  });
+
+  test('an External carries one type tag', () => {
+    const e = api.externals()[1];
+    // check before tagging: false; tag; a second tag is napi_invalid_arg; check T1, T2
+    expect(api.externalTags(e)).toEqual([OK, OK, INVALID_ARG, OK, OK, 1, 0, 0]);
+  });
+
+  // host-only: Node dereferences a NULL tag or result for an External
+  test('host-only: a NULL tag or result for an External is napi_invalid_arg', () => {
+    expect(api.externalTagNulls(api.externals()[1])).toEqual([INVALID_ARG, INVALID_ARG, INVALID_ARG]);
+  });
+});
+
 describe('a NULL env', () => {
   test('is napi_invalid_arg for every entrypoint', () => {
     const statuses = api.nullEnv();

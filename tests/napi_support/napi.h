@@ -131,6 +131,13 @@ extern napi_status napi_get_property_names(napi_env, napi_value, napi_value *);
 extern napi_status napi_wrap(napi_env, napi_value, void *, napi_finalize, void *, napi_ref *);
 extern napi_status napi_unwrap(napi_env, napi_value, void **);
 extern napi_status napi_remove_wrap(napi_env, napi_value, void **);
+typedef void *napi_deferred;
+extern napi_status napi_create_promise(napi_env, napi_deferred *, napi_value *);
+extern napi_status napi_resolve_deferred(napi_env, napi_deferred, napi_value);
+extern napi_status napi_reject_deferred(napi_env, napi_deferred, napi_value);
+extern napi_status napi_is_promise(napi_env, napi_value, bool *);
+extern napi_status napi_create_external(napi_env, void *, napi_finalize, void *, napi_value *);
+extern napi_status napi_get_value_external(napi_env, napi_value, void **);
 extern napi_status napi_new_instance(napi_env, napi_value, size_t, const napi_value *,
                                      napi_value *);
 extern napi_status napi_throw(napi_env, napi_value);

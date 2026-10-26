@@ -840,6 +840,136 @@ static napi_value f_external_ab_no_result(napi_env env, napi_callback_info info)
     return num(env, napi_create_external_arraybuffer(env, mem, 2, NULL, NULL, NULL));
 }
 
+/* ---- promises and externals --------------------------------------------------------- */
+
+/* promise(resolve, value) -> [status, the promise, isPromise(promise), conclude status] */
+static napi_value f_promise(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    bool resolve = false, is = false;
+    napi_get_value_bool(env, arg(env, &a, 0), &resolve);
+    napi_deferred d = NULL;
+    napi_value p = NULL;
+    napi_status st = napi_create_promise(env, &d, &p);
+    napi_is_promise(env, p, &is);
+    napi_status done = resolve ? napi_resolve_deferred(env, d, arg(env, &a, 1))
+                               : napi_reject_deferred(env, d, arg(env, &a, 1));
+    napi_value it[4] = {num(env, st), or_undef(env, p), boolean(env, is), num(env, done)};
+    return list(env, 4, it);
+}
+
+/* a deferred kept for later: deferLater() -> the promise; settleLater(resolve, v) -> status */
+static napi_deferred g_later;
+static napi_value f_defer_later(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value p;
+    napi_create_promise(env, &g_later, &p);
+    return p;
+}
+static napi_value f_settle_later(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    bool resolve = false;
+    napi_get_value_bool(env, arg(env, &a, 0), &resolve);
+    return num(env, resolve ? napi_resolve_deferred(env, g_later, arg(env, &a, 1))
+                            : napi_reject_deferred(env, g_later, arg(env, &a, 1)));
+}
+
+/* promiseChecks(notAPromise) -> [isPromise(notAPromise), statuses: NULL deferred / promise
+ * out-pointers, NULL resolution value, NULL value / result of napi_is_promise, creation and
+ * resolution with an exception pending, then that deferred resolved afterwards] */
+static napi_value f_promise_checks(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_deferred d = NULL, d2 = NULL;
+    napi_value p, ignored, v = num(env, 1);
+    bool is = true, b;
+    napi_is_promise(env, arg(env, &a, 0), &is);
+    napi_create_promise(env, &d, &p);
+    double st[9];
+    st[0] = napi_create_promise(env, NULL, &p);
+    st[1] = napi_create_promise(env, &d2, NULL);
+    st[2] = napi_resolve_deferred(env, d, NULL);
+    st[3] = napi_is_promise(env, NULL, &b);
+    st[4] = napi_is_promise(env, p, NULL);
+    napi_throw_error(env, NULL, "pending");
+    st[5] = napi_create_promise(env, &d2, &p);
+    st[6] = napi_reject_deferred(env, d, v);
+    napi_get_and_clear_last_exception(env, &ignored);
+    /* the deferred survived the refused call */
+    st[7] = napi_resolve_deferred(env, d, v);
+    napi_value it[2] = {boolean(env, is), nums(env, 8, st)};
+    return list(env, 2, it);
+}
+
+static int g_external_finalized;
+static void external_finalize(napi_env env, void *data, void *hint) {
+    (void)env;
+    if (data == (void *)&g_external_finalized && hint == (void *)7) g_external_finalized++;
+}
+
+/* externals() -> [status, the external, typeof, the data matches, a second external (no
+ * finalizer), statuses: get the value of a non-external / NULL, NULL result of create / get] */
+static napi_value f_externals(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value e = NULL, e2 = NULL, obj, out;
+    napi_create_object(env, &obj);
+    napi_status st = napi_create_external(env, &g_external_finalized, external_finalize,
+                                          (void *)7, &e);
+    int t = -1;
+    napi_typeof(env, e, &t);
+    void *data = NULL, *d;
+    napi_get_value_external(env, e, &data);
+    napi_create_external(env, (void *)42, NULL, NULL, &e2);
+    double checks[] = {
+        napi_get_value_external(env, obj, &d),
+        napi_get_value_external(env, NULL, &d),
+        napi_get_value_external(env, e, NULL),
+        napi_create_external(env, NULL, NULL, NULL, NULL),
+    };
+    (void)out;
+    napi_value it[6] = {num(env, st),  or_undef(env, e), num(env, t),
+                        boolean(env, data == (void *)&g_external_finalized), or_undef(env, e2),
+                        nums(env, 4, checks)};
+    return list(env, 6, it);
+}
+static napi_value f_external_finalized(napi_env env, napi_callback_info info) {
+    (void)info;
+    return num(env, g_external_finalized);
+}
+
+/* externalTags(external) -> statuses and results: check before tagging, tag it, tag it again,
+ * check the tag, check another tag */
+static napi_value f_external_tags(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value e = arg(env, &a, 0);
+    static const napi_type_tag T1 = {1, 2}, T2 = {1, 3};
+    bool r1 = false, r2 = true, r3 = true;
+    double st[] = {
+        napi_check_object_type_tag(env, e, &T1, &r3),
+        napi_type_tag_object(env, e, &T1),
+        napi_type_tag_object(env, e, &T2),
+        napi_check_object_type_tag(env, e, &T1, &r1),
+        napi_check_object_type_tag(env, e, &T2, &r2),
+        r1,
+        r2,
+        r3,
+    };
+    return nums(env, sizeof st / sizeof st[0], st);
+}
+
+/* externalTagNulls(external) -> statuses of a NULL tag (tagging, checking) and a NULL result
+ * for an External (host-only: Node dereferences them) */
+static napi_value f_external_tag_nulls(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value e = arg(env, &a, 0);
+    static const napi_type_tag T1 = {1, 2};
+    bool r;
+    double st[] = {
+        napi_type_tag_object(env, e, NULL),
+        napi_check_object_type_tag(env, e, NULL, &r),
+        napi_check_object_type_tag(env, e, &T1, NULL),
+    };
+    return nums(env, 3, st);
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -872,6 +1002,8 @@ static napi_value f_null_env(napi_env env, napi_callback_info info) {
         napi_get_arraybuffer_info(NULL, v, NULL, NULL),
         napi_detach_arraybuffer(NULL, v),
         napi_create_dataview(NULL, 0, v, 0, &out),
+        napi_create_promise(NULL, NULL, NULL),
+        napi_create_external(NULL, NULL, NULL, NULL, &out),
     };
     return nums(env, sizeof st / sizeof st[0], st);
 }
@@ -926,6 +1058,14 @@ static const struct {
     {"extAbPoke", f_ext_ab_poke},
     {"extAbFinalized", f_ext_ab_finalized},
     {"externalAbNoResult", f_external_ab_no_result},
+    {"promise", f_promise},
+    {"deferLater", f_defer_later},
+    {"settleLater", f_settle_later},
+    {"promiseChecks", f_promise_checks},
+    {"externals", f_externals},
+    {"externalFinalized", f_external_finalized},
+    {"externalTags", f_external_tags},
+    {"externalTagNulls", f_external_tag_nulls},
     {"nullEnv", f_null_env},
 };
 

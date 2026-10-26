@@ -313,7 +313,7 @@ pub struct Finalizer {
     finalize: Option<napi_finalize>,
     hint: *mut c_void,
     /// Weak handle on the object; its GC finalizer (`finalizer_collected`) frees this record.
-    weak: Option<v8::Weak<v8::Object>>,
+    weak: Option<v8::Weak<v8::Value>>,
     /// The id of the result reference napi_wrap / napi_add_finalizer handed back (0: none).
     own_ref: usize,
 }
@@ -583,6 +583,8 @@ pub unsafe extern "C" fn napi_typeof(
             napi_valuetype::Bigint
         } else if val.is_function() {
             napi_valuetype::Function
+        } else if val.is_external() {
+            napi_valuetype::External
         } else {
             napi_valuetype::Object
         };
@@ -2543,7 +2545,14 @@ pub unsafe extern "C" fn napi_wrap(
         if obj.has_private(s, key) == Some(true) || (!result.is_null() && finalize_cb.is_none()) {
             return Err(napi_invalid_arg);
         }
-        let wrap = track_finalizer(s, env, obj, native_object, finalize_cb, finalize_hint);
+        let wrap = track_finalizer(
+            s,
+            env,
+            obj.into(),
+            native_object,
+            finalize_cb,
+            finalize_hint,
+        );
         obj.set_private(s, key, v8::External::new(s, wrap as *mut c_void).into());
         if !result.is_null() {
             *result = weak_ref(s, env, obj);
@@ -2558,7 +2567,7 @@ pub unsafe extern "C" fn napi_wrap(
 unsafe fn track_finalizer(
     s: &mut v8::PinScope<'static, 'static>,
     env: napi_env,
-    obj: v8::Local<v8::Object>,
+    obj: v8::Local<v8::Value>,
     native: *mut c_void,
     finalize: Option<napi_finalize>,
     hint: *mut c_void,
@@ -2675,7 +2684,14 @@ pub unsafe extern "C" fn napi_add_finalizer(
             return napi_invalid_arg;
         };
         let s = scope(env);
-        let fin = track_finalizer(s, env, obj, finalize_data, Some(finalize_cb), finalize_hint);
+        let fin = track_finalizer(
+            s,
+            env,
+            obj.into(),
+            finalize_data,
+            Some(finalize_cb),
+            finalize_hint,
+        );
         if !result.is_null() {
             *result = weak_ref(s, env, obj);
             (*fin).own_ref = *result as usize;
@@ -2719,6 +2735,15 @@ pub unsafe extern "C" fn napi_type_tag_object(
     type_tag: *const napi_type_tag,
 ) -> napi_status {
     js_call(env, |s| {
+        // as Node: an External carries its tag in its wrapper (it holds no properties)
+        if let Some(wrapper) = external_wrapper(object) {
+            let tag = type_tag.as_ref().ok_or(napi_invalid_arg)?;
+            if wrapper.tag.is_some() {
+                return Err(napi_invalid_arg);
+            }
+            wrapper.tag = Some((tag.lower, tag.upper));
+            return Ok(());
+        }
         let obj = tag_target(s, object)?;
         if type_tag.is_null() {
             return Err(napi_invalid_arg);
@@ -2747,6 +2772,11 @@ pub unsafe extern "C" fn napi_check_object_type_tag(
     result: *mut bool,
 ) -> napi_status {
     js_call(env, |s| {
+        if let Some(wrapper) = external_wrapper(object) {
+            let tag = type_tag.as_ref().ok_or(napi_invalid_arg)?;
+            *out_arg(result)? = wrapper.tag == Some((tag.lower, tag.upper));
+            return Ok(());
+        }
         let obj = tag_target(s, object)?;
         if type_tag.is_null() || result.is_null() {
             return Err(napi_invalid_arg);
@@ -2762,6 +2792,141 @@ pub unsafe extern "C" fn napi_check_object_type_tag(
         });
         Ok(())
     })
+}
+
+// ---- externals -------------------------------------------------------------------
+
+/// What a napi_create_external External points at, as Node's ExternalWrapper: the addon's
+/// data and the type tag an External can carry (it holds no properties); freed with the
+/// External, by the finalizer of its weak handle.
+struct ExternalWrapper {
+    data: *mut c_void,
+    tag: Option<(u64, u64)>,
+    weak: Option<v8::Weak<v8::External>>,
+}
+
+/// The wrapper of a napi_create_external External, None for anything else (or NULL).
+unsafe fn external_wrapper<'a>(v: napi_value) -> Option<&'a mut ExternalWrapper> {
+    if v.is_null() {
+        return None;
+    }
+    let ext = v8::Local::<v8::External>::try_from(to_local(v)).ok()?;
+    Some(&mut *(ext.value() as *mut ExternalWrapper))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_external(
+    env: napi_env,
+    data: *mut c_void,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let out = out_arg(out)?;
+        let wrapper = Box::into_raw(Box::new(ExternalWrapper {
+            data,
+            tag: None,
+            weak: None,
+        }));
+        let ext = v8::External::new(s, wrapper.cast());
+        let free = Box::new(move |_: &mut v8::Isolate| drop(Box::from_raw(wrapper)));
+        (*wrapper).weak = Some(v8::Weak::with_finalizer(s, ext, free));
+        // as Node: the finalizer runs once the External is collected (or at env teardown)
+        if finalize.is_some() {
+            track_finalizer(s, env, ext.into(), data, finalize, hint);
+        }
+        *out = to_napi(ext.into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_value_external(
+    env: napi_env,
+    v: napi_value,
+    out: *mut *mut c_void,
+) -> napi_status {
+    basic(env, || {
+        val_arg(v)?;
+        let out = out_arg(out)?;
+        *out = external_wrapper(v).ok_or(napi_invalid_arg)?.data;
+        Ok(())
+    })
+}
+
+// ---- promises --------------------------------------------------------------------
+
+/// A napi_deferred: the resolver of its promise, until it is resolved or rejected.
+type Deferred = v8::Global<v8::PromiseResolver>;
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_promise(
+    env: napi_env,
+    deferred: *mut *mut c_void,
+    promise: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let (deferred, promise) = (out_arg(deferred)?, out_arg(promise)?);
+        let resolver = v8::PromiseResolver::new(s).ok_or(napi_generic_failure)?;
+        *promise = to_napi(resolver.get_promise(s).into());
+        *deferred = Box::into_raw(Box::new(Deferred::new(s, resolver))).cast();
+        Ok(())
+    })
+}
+
+/// napi_resolve_deferred / napi_reject_deferred, as Node's ConcludeDeferred: the deferred is
+/// used up (with an exception pending it is left alone, the call napi_pending_exception).
+unsafe fn conclude_deferred(
+    env: napi_env,
+    deferred: *mut c_void,
+    value: napi_value,
+    resolve: bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let value = val_arg(value)?;
+        // (a NULL deferred: Node would crash)
+        if deferred.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let resolver = Box::from_raw(deferred as *mut Deferred);
+        let resolver = v8::Local::new(s, &*resolver);
+        let done = if resolve {
+            resolver.resolve(s, value)
+        } else {
+            resolver.reject(s, value)
+        };
+        done.filter(|&ok| ok)
+            .map(|_| ())
+            .ok_or(napi_generic_failure)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_resolve_deferred(
+    env: napi_env,
+    deferred: *mut c_void,
+    value: napi_value,
+) -> napi_status {
+    conclude_deferred(env, deferred, value, true)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_reject_deferred(
+    env: napi_env,
+    deferred: *mut c_void,
+    value: napi_value,
+) -> napi_status {
+    conclude_deferred(env, deferred, value, false)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_is_promise(
+    env: napi_env,
+    v: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    is_kind(env, v, out, |v| v.is_promise())
 }
 
 // ---- new_instance: not supported; surface as a CATCHABLE JS throw ----------
