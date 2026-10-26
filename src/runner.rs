@@ -413,8 +413,9 @@ fn cjs_first_project_uncached(entry: &Path) -> bool {
             .iter()
             .map(|n| d.join(n))
             .find(|p| p.is_file());
-        let pkg_jest = std::fs::read_to_string(d.join("package.json")).ok()
-            .filter(|s| find_config_key(s, "jest").is_some());
+        let pkg_jest = std::fs::read_to_string(d.join("package.json"))
+            .ok()
+            .and_then(|s| package_json_jest_block(&s));
         if let Some(text) = jest_cfg.and_then(|p| std::fs::read_to_string(p).ok()).or(pkg_jest) {
             // node test env (jest's default) unless it explicitly asks for a DOM env.
             let env = config_string_value(&text, "testEnvironment");
@@ -1174,15 +1175,27 @@ fn reuse_decision(entry: &Path) -> bool {
 /// Find the project's vitest setupFiles (registers jest-dom matchers etc.) by parsing the
 /// nearest vitest/vite config. Returns resolved absolute paths.
 /// Find a config object key (e.g. `setupFiles`) — the occurrence actually used as a key
-/// (`key:`), skipping mentions inside `//` comments or prose (e.g. a doc comment that names
-/// `setupFiles`). Returns the byte offset of the key name.
+/// (`key:`, or the quoted JSON form `"key":` / `'key':`), skipping mentions inside `//`
+/// comments or prose (e.g. a doc comment that names `setupFiles`) and longer names that merely
+/// end in `key`. Returns the byte offset of the key name.
 fn find_config_key(s: &str, key: &str) -> Option<usize> {
     let mut search = 0;
     while let Some(i) = s[search..].find(key) {
         let at = search + i;
         search = at + key.len();
+        let before = s[..at].chars().next_back();
+        let mut after = &s[at + key.len()..];
+        // a quoted key: the same quote must close it
+        if let Some(q) = before.filter(|c| *c == '"' || *c == '\'') {
+            match after.strip_prefix(q) {
+                Some(rest) => after = rest,
+                None => continue,
+            }
+        } else if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$') {
+            continue; // `myjest:` is not `jest:`
+        }
         // must be immediately followed (after optional whitespace) by ':'
-        if !s[at + key.len()..].trim_start().starts_with(':') {
+        if !after.trim_start().starts_with(':') {
             continue;
         }
         // skip if this line is a `//` comment
@@ -1273,15 +1286,9 @@ fn jest_setup_files(dir: &Path) -> Option<Vec<PathBuf>> {
     }
     // package.json "jest" block (only if no standalone config file)
     if text.is_none() {
-        if let Ok(pkg) = std::fs::read_to_string(dir.join("package.json")) {
-            if let Some(start) = find_config_key(&pkg, "jest") {
-                if pkg[start..].trim_start().starts_with("jest")
-                    || pkg[start..].contains('{')
-                {
-                    text = Some(pkg);
-                }
-            }
-        }
+        text = std::fs::read_to_string(dir.join("package.json"))
+            .ok()
+            .and_then(|pkg| package_json_jest_block(&pkg));
     }
     let s = text?;
     // rootDir (default = config dir). Jest paths in setupFiles use `<rootDir>`.
@@ -1333,6 +1340,15 @@ fn config_string_value(s: &str, key: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// The top-level `"jest"` object of a package.json, re-serialized as JSON text (Jest reads its
+/// config from that key only; a `jest` key nested elsewhere, e.g. under `scripts`, is not it).
+/// None when package.json is not valid JSON or has no `"jest"` object.
+fn package_json_jest_block(pkg: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(pkg).ok()?;
+    let jest = v.get("jest")?;
+    jest.is_object().then(|| jest.to_string())
 }
 
 /// Normalize a path lexically (resolve `..`/`.`) without touching the filesystem.

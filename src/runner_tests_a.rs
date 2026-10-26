@@ -263,7 +263,33 @@ fn cjs_first_project_detection() {
             "{env}"
         );
     }
-    // (A package.json "jest" block is not detected: see the JSON-key note on jest_setup_files.)
+    // a package.json "jest" block is a jest config too (turbo-test#31 item 1); its own
+    // testEnvironment decides, not a same-named key elsewhere in package.json
+    put(
+        &d,
+        "pj/package.json",
+        r#"{"name":"p","jest":{"testEnvironment":"node"}}"#,
+    );
+    assert!(cjs_first_project_uncached(&d.join("pj/a.test.ts")));
+    put(
+        &d,
+        "pjdom/package.json",
+        r#"{"name":"p","jest":{"testEnvironment":"jsdom"}}"#,
+    );
+    assert!(!cjs_first_project_uncached(&d.join("pjdom/a.test.ts")));
+    put(
+        &d,
+        "pjo/package.json",
+        r#"{"name":"p","x":{"testEnvironment":"jsdom"},"jest":{}}"#,
+    );
+    assert!(cjs_first_project_uncached(&d.join("pjo/a.test.ts")));
+    // a package.json without a jest block is not a jest config
+    put(
+        &d,
+        "plain/package.json",
+        r#"{"name":"p","scripts":{"jest":"jest"}}"#,
+    );
+    assert!(!cjs_first_project_uncached(&d.join("plain/a.test.ts")));
     // memoized wrapper: miss then hit, same answer
     assert!(cjs_first_project(&d.join("j/b.test.ts")));
     assert!(cjs_first_project(&d.join("j/c.test.ts")));
@@ -649,15 +675,57 @@ fn find_config_key_skips_comments_and_non_keys() {
 }
 
 #[test]
+fn find_config_key_reads_quoted_json_keys() {
+    // turbo-test#31 item 1: JSON keys are quoted, so the quote sits between key and ':'
+    let s = "{\"jest\":{\"setupFiles\":[]}}";
+    assert_eq!(find_config_key(s, "jest"), Some(2));
+    assert_eq!(find_config_key(s, "setupFiles"), Some(10));
+    assert_eq!(find_config_key("{ 'jest' : {} }", "jest"), Some(3));
+    // mismatched or one-sided quotes, a longer key, or a key that is only a suffix: no match
+    assert_eq!(find_config_key("{\"jest': {}}", "jest"), None);
+    assert_eq!(find_config_key("{jest\": {}}", "jest"), None);
+    assert_eq!(find_config_key("{\"jestx\": {}}", "jest"), None);
+    assert_eq!(find_config_key("{ myjest: {} }", "jest"), None);
+    assert_eq!(find_config_key("{\"myjest\": {}}", "jest"), None);
+}
+
+#[test]
+fn package_json_jest_block_is_the_top_level_jest_object_only() {
+    assert_eq!(
+        package_json_jest_block(
+            r#"{"scripts":{"jest":"jest"},"name":"x","jest":{"a":{"b":"}"},"c":1},"z":{"setupFiles":[]}}"#
+        )
+        .as_deref(),
+        Some(r#"{"a":{"b":"}"},"c":1}"#)
+    );
+    assert_eq!(
+        package_json_jest_block(r#"{ "jest" : { } }"#).as_deref(),
+        Some("{}")
+    );
+    // no block, a nested-only `jest` key, a non-object value, or invalid JSON
+    assert_eq!(package_json_jest_block(r#"{"name":"x"}"#), None);
+    assert_eq!(package_json_jest_block(r#"{"scripts":{"jest":{}}}"#), None);
+    assert_eq!(
+        package_json_jest_block(r#"{"jest":"./jest.config.js"}"#),
+        None
+    );
+    assert_eq!(package_json_jest_block(r#"{"jest":{"a":1"#), None);
+}
+
+#[test]
 fn config_string_value_quotes() {
     assert_eq!(
         config_string_value("rootDir: '<x>'", "rootDir").as_deref(),
         Some("<x>")
     );
+    // JSON (quoted) keys, double or single quoted (turbo-test#31 item 1)
     assert_eq!(
-        config_string_value("\"rootDir\" : \"src\"", "rootDir"),
-        None,
-        "the quote after the key name means `rootDir\"` is not followed by ':'"
+        config_string_value("\"rootDir\" : \"src\"", "rootDir").as_deref(),
+        Some("src")
+    );
+    assert_eq!(
+        config_string_value("{ 'rootDir': 'lib' }", "rootDir").as_deref(),
+        Some("lib")
     );
     assert_eq!(
         config_string_value("{ rootDir: \"src\" }", "rootDir").as_deref(),
@@ -766,9 +834,33 @@ fn jest_setup_files_root_dir_absolute_and_resolution() {
     );
     assert_eq!(jest_setup_files(&d), Some(vec![a, b, abs, c]));
 
-    // NOTE: JSON-form jest config (package.json "jest" block / jest.config.json) is not parsed
-    // today: find_config_key needs `key:` but JSON keys are quoted (`"jest":`). Reported as a
-    // pre-existing bug; not asserted here.
+    // JSON-form jest configs (turbo-test#31 item 1): a package.json "jest" block and
+    // jest.config.json, with <rootDir>, a JSON rootDir and both setup keys
+    let pj = tmp("jest-pkg-json");
+    let ps = put(&pj, "setup.js", "");
+    let pa = put(&pj, "after.js", "");
+    put(
+        &pj,
+        "package.json",
+        r#"{"name":"p","jest":{"setupFiles":["<rootDir>/setup.js"],"setupFilesAfterEnv":["./after.js"]}}"#,
+    );
+    assert_eq!(jest_setup_files(&pj), Some(vec![ps, pa]));
+    let jj = tmp("jest-config-json");
+    let js = put(&jj, "src/s.js", "");
+    put(
+        &jj,
+        "jest.config.json",
+        "{\n  \"rootDir\": \"src\",\n  \"setupFiles\": [\"<rootDir>/s.js\"]\n}\n",
+    );
+    assert_eq!(jest_setup_files(&jj), Some(vec![js]));
+    // a package.json "jest" block with no setup keys is still a jest config (stop walking)
+    let pe = tmp("jest-pkg-empty");
+    put(
+        &pe,
+        "package.json",
+        r#"{"name":"p","jest":{"testEnvironment":"node"}}"#,
+    );
+    assert_eq!(jest_setup_files(&pe), Some(vec![]));
     // package.json without jest / no config at all -> None (keep walking)
     let r = tmp("jest-none");
     assert_eq!(jest_setup_files(&r), None);
