@@ -116,7 +116,7 @@ for unmodeled flags. Covered by `test/cli-compat.test.mjs`.
 | `--reporter verbose` | ✅ | Per-file PASS/FAIL line + one `✓/✗/- name (Nms)` line per test. To stdout. **Where:** `Reporter::Verbose`. |
 | `--reporter dot` | ✅ | One char per FILE (`.` pass / `x` fail / `!` load-error), not per-test (vitest is per-test). **Where:** `Reporter::Dot`. Documented divergence. |
 | `--reporter html` / `tap-flat` / `hanging-process` / `basic` / unknown | 🟡 | Accepted-and-ignored → falls back to the default text reporter, never errors. |
-| `--outputFile[.<reporter>] <path>` | 🟡 | `--outputFile <path>` writes the active artifact reporter (json/junit/tap) to disk; for text/dot/verbose it writes the plain PASS/FAIL lines. The vitest per-reporter dotted form `--outputFile.junit=…` (multi-reporter fan-out) is **not** parsed. **Where:** `src/cli.rs` `--outputFile` arm; `cli.js` value-flag regex. |
+| `--outputFile[.<reporter>] <path>` | 🟡 | `--outputFile <path>` writes the active artifact reporter (json/junit/tap) to disk; for text/dot/verbose it writes the plain PASS/FAIL lines. Missing parent dirs are created for every reporter; a failed write prints `turbo-test: failed to write --outputFile '<path>': <err>` to stderr and the run exits 1. The vitest per-reporter dotted form `--outputFile.junit=…` (multi-reporter fan-out) is **not** parsed. **Where:** `src/cli.rs` `--outputFile` arm; `cli.js` value-flag regex. |
 | dotted flags (`--coverage.reporter`, `--reporter.0`) | ❌ | turbo-test uses flat `--coverage-*`; vitest's dotted form unrecognized. |
 
 ---

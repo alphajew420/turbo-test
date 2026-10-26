@@ -827,9 +827,22 @@ pub fn render_artifact(
     }
 }
 
+/// Write `text` to the `--outputFile` `path`, creating missing parent dirs. Returns the stderr
+/// message for a failed write (empty on success).
+fn write_output_file(path: &str, text: &str) -> String {
+    if let Some(parent) = Path::new(path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(path, text) {
+        Ok(()) => String::new(),
+        Err(e) => format!("turbo-test: failed to write --outputFile '{path}': {e}\n"),
+    }
+}
+
 /// Deliver the artifact: to `output_file` when given (parent dirs created), else to stdout. With
-/// a human reporter + `--outputFile`, the plain PASS/FAIL lines are written there so the flag is
-/// never silently ignored. Returns the `(stdout, stderr)` text to print.
+/// a human reporter + `--outputFile`, the plain PASS/FAIL lines are written there (parent dirs
+/// created too) so the flag is never silently ignored. Returns the `(stdout, stderr)` text to
+/// print; stderr is non-empty exactly when writing `--outputFile` failed, which fails the run.
 pub fn emit_output(
     artifact: Option<&str>,
     reporter: Reporter,
@@ -839,19 +852,12 @@ pub fn emit_output(
     let (mut stdout, mut stderr) = (String::new(), String::new());
     if let Some(text) = artifact {
         match output_file {
-            Some(path) => {
-                if let Some(parent) = Path::new(path).parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Err(e) = std::fs::write(path, text) {
-                    stderr = format!("turbo-test: failed to write --outputFile '{path}': {e}\n");
-                }
-            }
+            Some(path) => stderr = write_output_file(path, text),
             None => stdout = format!("{text}\n"),
         }
     } else if let (Some(path), false) = (output_file, reporter.is_artifact()) {
         let text: String = res.iter().map(|r| format!("{}\n", r.line)).collect();
-        let _ = std::fs::write(path, text);
+        stderr = write_output_file(path, &text);
     }
     (stdout, stderr)
 }
@@ -928,9 +934,10 @@ pub fn summary(
     )
 }
 
-/// 0 when nothing failed, nothing failed to load and the coverage gate (if any) passed; else 1.
-pub fn exit_code(t: &Totals, cov_ok: bool) -> i32 {
-    if t.failed == 0 && t.errors == 0 && cov_ok {
+/// 0 when nothing failed, nothing failed to load and the run's other gates passed (`gates_ok`:
+/// the coverage gate, if any, and the `--outputFile` write); else 1.
+pub fn exit_code(t: &Totals, gates_ok: bool) -> i32 {
+    if t.failed == 0 && t.errors == 0 && gates_ok {
         0
     } else {
         1
@@ -990,6 +997,7 @@ pub fn run(opts: Options) -> i32 {
     );
     print!("{out}");
     eprint!("{err}");
+    let output_ok = err.is_empty();
 
     let summary = summary(
         files.len(),
@@ -1012,7 +1020,7 @@ pub fn run(opts: Options) -> i32 {
     } else {
         true
     };
-    exit_code(&t, cov_ok)
+    exit_code(&t, cov_ok && output_ok)
 }
 
 #[cfg(all(test, unix))]

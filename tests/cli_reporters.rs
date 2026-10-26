@@ -181,6 +181,36 @@ fn tap_reporter() {
 }
 
 #[test]
+fn output_file_failures_and_missing_dirs() {
+    // turbo-test#32 item 5: text reporter + --outputFile into a missing dir silently wrote
+    // nothing (exit 0); an unwritable --outputFile never failed the run.
+    let p = Project::new("rep-outfile-dirs");
+    p.file("a.test.js", "test('a', () => {})\n");
+    let target = path(&p, "no/such/dir/out.txt");
+    let r = turbo_test(&p.dir, &["--outputFile", &target, "a.test.js"], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "PASS  a.test.js  (1 passed, 0 failed)\n"
+    );
+    std::fs::create_dir_all(p.path("adir")).unwrap();
+    for reporter in ["default", "json"] {
+        let r = turbo_test(
+            &p.dir,
+            &["--reporter", reporter, "--outputFile", "adir", "a.test.js"],
+            &[],
+        );
+        assert_eq!(r.code, Some(1), "{reporter}: {}", r.all());
+        assert!(
+            r.stderr
+                .contains("turbo-test: failed to write --outputFile 'adir': "),
+            "{reporter}: {}",
+            r.all()
+        );
+    }
+}
+
+#[test]
 fn output_file_artifacts() {
     let p = fixture("rep-outfile");
     // artifact → file (parent dirs created); stdout gets the human footer instead

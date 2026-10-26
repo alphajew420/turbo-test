@@ -1087,6 +1087,22 @@ fn output_delivery() {
         emit_output(None, Reporter::Default, None, &res),
         (String::new(), String::new())
     );
+    // turbo-test#32 item 5: the human-reporter branch creates parent dirs like the artifact
+    // branch, and reports a failed write instead of dropping it silently
+    let deep = t.0.join("no/such/dir/out.txt");
+    assert_eq!(
+        emit_output(None, Reporter::Default, deep.to_str(), &res),
+        (String::new(), String::new())
+    );
+    assert_eq!(std::fs::read_to_string(&deep).unwrap(), lines);
+    let (out, err) = emit_output(None, Reporter::Dot, Some(dir), &res);
+    assert_eq!(out, "");
+    assert!(
+        err.starts_with(&format!(
+            "turbo-test: failed to write --outputFile '{dir}': "
+        )),
+        "{err}"
+    );
 }
 
 #[test]
