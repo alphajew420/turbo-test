@@ -16,6 +16,13 @@ typedef void *napi_callback_info;
 typedef napi_value (*napi_callback)(napi_env, napi_callback_info);
 typedef void (*napi_finalize)(napi_env, void *, void *);
 
+#define napi_ok 0
+#define napi_invalid_arg 1
+#define napi_object_expected 2
+#define napi_name_expected 4
+#define napi_generic_failure 9
+#define napi_pending_exception 10
+
 #define NAPI_AUTO_LENGTH SIZE_MAX
 
 extern napi_status napi_get_undefined(napi_env, napi_value *);
@@ -75,8 +82,43 @@ extern napi_status napi_delete_reference(napi_env, napi_ref);
 extern napi_status napi_reference_unref(napi_env, napi_ref, uint32_t *);
 extern napi_status napi_add_env_cleanup_hook(napi_env, void *, void *);
 extern napi_status napi_stub(void);
+typedef enum {
+    napi_default = 0,
+    napi_writable = 1 << 0,
+    napi_enumerable = 1 << 1,
+    napi_configurable = 1 << 2,
+    napi_static = 1 << 10,
+    napi_default_method = napi_writable | napi_configurable,
+    napi_default_jsproperty = napi_writable | napi_enumerable | napi_configurable,
+} napi_property_attributes;
+
+typedef struct {
+    const char *utf8name;
+    napi_value name;
+    napi_callback method;
+    napi_callback getter;
+    napi_callback setter;
+    napi_value value;
+    napi_property_attributes attributes;
+    void *data;
+} napi_property_descriptor;
+
 extern napi_status napi_define_class(napi_env, const char *, size_t, napi_callback, void *,
-                                     size_t, const void *, napi_value *);
+                                     size_t, const napi_property_descriptor *, napi_value *);
+extern napi_status napi_define_properties(napi_env, napi_value, size_t,
+                                          const napi_property_descriptor *);
+extern napi_status napi_get_new_target(napi_env, napi_callback_info, napi_value *);
+
+typedef struct {
+    uint64_t lower;
+    uint64_t upper;
+} napi_type_tag;
+
+extern napi_status napi_type_tag_object(napi_env, napi_value, const napi_type_tag *);
+extern napi_status napi_check_object_type_tag(napi_env, napi_value, const napi_type_tag *,
+                                              bool *);
+extern napi_status napi_add_finalizer(napi_env, napi_value, void *, napi_finalize, void *,
+                                      napi_ref *);
 extern napi_status napi_create_threadsafe_function(napi_env, napi_value, napi_value, napi_value,
                                                    size_t, size_t, void *, void *, void *,
                                                    void *, void **);

@@ -115,9 +115,42 @@ fn objects_wrap_native_pointers() {
     assert_eq!(j["numPassedTests"], 5, "{}", r.all());
 }
 
-/// Objects still wrapped when the addon's env is torn down (the file's isolate is disposed) have
-/// their finalizers run then, newest first, as Node does at exit: references can still be
-/// deleted, JS cannot run (napi_pending_exception).
+/// A node-addon-api-style ObjectWrap class: napi_define_class builds the prototype (instance
+/// methods with the class as their signature, accessors, values) and the static members from its
+/// property descriptors, with Node's attributes; napi_get_new_target tells `new` from a call;
+/// napi_define_properties defines the same descriptors on any object.
+#[test]
+fn define_class_builds_an_object_wrap_class() {
+    let p = project("napi-objectwrap");
+    compile_addon(&p, "objectwrap");
+    p.file("objectwrap.test.ts", spec("objectwrap.test.ts"));
+    assert_all_pass(&p, 9);
+}
+
+/// Type tags (napi_type_tag_object / napi_check_object_type_tag: one tag per object, compared
+/// as two 64-bit words) and napi_add_finalizer (any number per object, run on collection, an
+/// optional weak result reference), as Node; an addon importing them no longer crashes the run.
+#[test]
+fn objects_carry_type_tags_and_finalizers() {
+    let p = project("napi-typetag");
+    compile_addon(&p, "typetag");
+    p.file("typetag.test.ts", spec("typetag.test.ts"));
+    // --expose-gc: the spec collects objects to run their finalizers
+    let r = turbo_test(
+        &p.dir,
+        &["--reporter", "json"],
+        &[("TURBO_V8_FLAGS", "--expose-gc")],
+    );
+    let j = json_report(&r);
+    assert_eq!(j["numFailedTests"], 0, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 7, "{}", r.all());
+}
+
+/// Objects still wrapped (or with a napi_add_finalizer finalizer) when the addon's env is torn
+/// down (the file's isolate is disposed) have their finalizers run then, newest first and
+/// interleaved, as Node does at exit: in a handle scope, so value calls work (a strong reference
+/// still has its value, the record's own reference has none, values can be created), while JS
+/// cannot run (napi_pending_exception). The expected lines are Node 26's.
 #[test]
 fn wrap_finalizers_run_at_env_teardown() {
     let p = project("napi-wrap-teardown");
@@ -131,13 +164,12 @@ fn wrap_finalizers_run_at_env_teardown() {
         .lines()
         .filter(|l| l.starts_with("wrap teardown finalizer:"))
         .collect();
-    assert_eq!(
-        lines,
-        [
-            "wrap teardown finalizer: id=42 hint=142 delete_reference=0 call_function=10",
-            "wrap teardown finalizer: id=41 hint=141 delete_reference=0 call_function=10",
-        ],
-        "{}",
-        r.all()
-    );
+    let line = |id: u32| {
+        format!(
+            "wrap teardown finalizer: id={id} hint={} own_ref=0:-1 strong_ref=0:6 \
+             create_object=0:6 get_named_property=10 delete_reference=0 call_function=10",
+            id + 100
+        )
+    };
+    assert_eq!(lines, [line(42), line(43), line(41)], "{}", r.all());
 }

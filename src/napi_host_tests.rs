@@ -25,14 +25,15 @@ fn with_scope(f: impl FnOnce(&mut v8::PinScope)) {
 /// An env whose napi calls run in `scope`.
 fn env_for(scope: &mut v8::PinScope) -> Box<Env> {
     Box::new(Env {
-        isolate: std::ptr::null_mut(),
+        isolate: unsafe { scope.as_raw_isolate_ptr() },
         scope: scope as *mut v8::PinScope as *mut c_void,
         context: v8::Global::new(scope, scope.get_current_context()),
         last_exception: None,
         fns: Vec::new(),
         refs: Vec::new(),
-        wraps: Default::default(),
-        next_wrap: 0,
+        finalizers: Default::default(),
+        next_finalizer: 0,
+        tearing_down: false,
     })
 }
 

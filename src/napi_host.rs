@@ -4,7 +4,9 @@
 //! This is what Node/Deno/Bun each provide; here it is scoped to the surface turbo-dom's
 //! parser addon needs (enumerated from `nm -u` on the .node):
 //!   value/object/string/number, arrays, functions + cb_info, arraybuffer/typedarray,
-//!   errors/exceptions, references, napi_wrap / unwrap / remove_wrap, threadsafe-fn (stubbed).
+//!   errors/exceptions, references, napi_wrap / unwrap / remove_wrap, classes and property
+//!   descriptors (napi_define_class / napi_define_properties / napi_get_new_target, what
+//!   node-addon-api's ObjectWrap builds on), threadsafe-fn (stubbed).
 //!
 //! Bridge: `napi_value` IS a `v8::Local<Value>` (Local is `NonNull<T>` — pointer-sized),
 //! so they transmute. Handles are created in the scope stored on the env for the current
@@ -29,6 +31,7 @@ pub const napi_ok: napi_status = 0;
 pub const napi_invalid_arg: napi_status = 1;
 pub const napi_object_expected: napi_status = 2;
 pub const napi_string_expected: napi_status = 3;
+pub const napi_name_expected: napi_status = 4;
 pub const napi_number_expected: napi_status = 6;
 pub const napi_boolean_expected: napi_status = 7;
 pub const napi_array_expected: napi_status = 8;
@@ -41,6 +44,27 @@ pub type napi_ref = *mut c_void;
 pub type napi_callback_info = *mut CbInfo;
 pub type napi_callback = unsafe extern "C" fn(napi_env, napi_callback_info) -> napi_value;
 pub type napi_finalize = unsafe extern "C" fn(napi_env, *mut c_void, *mut c_void);
+
+/// napi_property_attributes bits.
+pub const napi_writable: i32 = 1;
+pub const napi_enumerable: i32 = 1 << 1;
+pub const napi_configurable: i32 = 1 << 2;
+pub const napi_static: i32 = 1 << 10;
+
+/// One property for napi_define_class / napi_define_properties: named by `utf8name`, else by
+/// the `name` value; a `method`, a `getter` / `setter` pair, or a plain `value`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct napi_property_descriptor {
+    pub utf8name: *const c_char,
+    pub name: napi_value,
+    pub method: Option<napi_callback>,
+    pub getter: Option<napi_callback>,
+    pub setter: Option<napi_callback>,
+    pub value: napi_value,
+    pub attributes: i32,
+    pub data: *mut c_void,
+}
 
 #[repr(i32)]
 pub enum napi_valuetype {
@@ -60,7 +84,7 @@ pub enum napi_valuetype {
 /// by its isolate (`AddonEnvs`). `scope` points at the live rusty_v8 scope for the current
 /// native call (the only window during which napi value calls happen).
 pub struct Env {
-    pub isolate: *mut v8::Isolate,
+    pub isolate: v8::UnsafeRawIsolatePtr,
     pub scope: *mut c_void, // *mut v8::PinScope<'static,'static>, valid only during a call
     pub context: v8::Global<v8::Context>,
     pub last_exception: Option<v8::Global<v8::Value>>,
@@ -68,22 +92,22 @@ pub struct Env {
     /// its record, so a function always dispatches into the env (addon) that created it.
     pub fns: Vec<*mut Callback>,
     pub refs: Vec<Option<Ref>>,
-    /// The live napi_wrap records of this env, by creation order.
-    pub wraps: std::collections::BTreeMap<u64, *mut Wrap>,
-    pub next_wrap: u64,
+    /// The live finalizer records of this env (napi_wrap, napi_add_finalizer), by creation order.
+    pub finalizers: std::collections::BTreeMap<u64, *mut Finalizer>,
+    pub next_finalizer: u64,
+    /// The env is being torn down: napi value calls work, JS cannot run (Node's
+    /// !can_call_into_js()).
+    pub tearing_down: bool,
 }
 
 impl Drop for Env {
     /// Env teardown (the isolate is being disposed). As Node's napi_env__::DeleteMe, the
-    /// finalizers of the objects still wrapped run now, newest first. No JS can run any more:
-    /// there is no scope, so a call that could run JS is napi_pending_exception (`js_call`), and
-    /// only the scope-free calls (references, napi_delete_reference) are usable.
+    /// finalizers still pending (napi_wrap, napi_add_finalizer) run now, newest first.
     fn drop(&mut self) {
         let env: napi_env = self;
         unsafe {
-            (*env).scope = std::ptr::null_mut();
-            while let Some((_, wrap)) = (*env).wraps.pop_last() {
-                finalize_wrap(env, &Box::from_raw(wrap));
+            if !(*env).finalizers.is_empty() {
+                teardown_finalizers(env);
             }
         }
         for &f in &self.fns {
@@ -92,33 +116,70 @@ impl Drop for Env {
     }
 }
 
-/// A napi_ref: napi_create_reference holds its value strongly; the reference napi_wrap hands
-/// back is weak (as Node's, refcount 0), so it does not keep the wrapped object alive.
+/// Run the env's remaining finalizers, newest first, the way Node runs them at teardown: in a
+/// handle scope of the env's context, so value calls (references, creating values) work, but
+/// with JS disabled, so a call that could run JS is napi_pending_exception (`js_call`). The
+/// isolate is mid-disposal (OwnedIsolate::drop has exited it before dropping its slots, the env
+/// included) but not yet disposed: it is entered again for the scope.
+unsafe fn teardown_finalizers(env: napi_env) {
+    let isolate = &mut v8::Isolate::from_raw_isolate_ptr((*env).isolate);
+    isolate.enter();
+    {
+        v8::scope!(let hs, isolate);
+        let context = v8::Local::new(hs, &(*env).context);
+        let cs: &mut v8::PinScope = &mut v8::ContextScope::new(hs, context);
+        (*env).scope = cs as *mut v8::PinScope as *mut c_void;
+        (*env).tearing_down = true;
+        while let Some((_, fin)) = (*env).finalizers.pop_last() {
+            run_finalizer(env, &Box::from_raw(fin));
+        }
+        (*env).scope = std::ptr::null_mut();
+    }
+    isolate.exit();
+}
+
+/// A napi_ref: napi_create_reference holds its value strongly; the reference napi_wrap and
+/// napi_add_finalizer hand back is weak (as Node's, refcount 0), so it does not keep the object
+/// alive.
 pub enum Ref {
     Strong(v8::Global<v8::Value>),
     Weak(v8::Weak<v8::Value>),
+    /// The weak reference of a finalizer record whose finalizer has run (or is running): it has
+    /// no value any more, as Node's Reference::Finalize resets it first.
+    Cleared,
 }
 
-/// One napi_wrap: the native pointer stored on a JS object (an External under the isolate's
-/// wrap private key points here) and its optional finalizer, which runs once, when the object is
-/// collected or at env teardown, unless napi_remove_wrap drops the wrap first.
-pub struct Wrap {
+/// A native pointer tied to a JS object's lifetime, with its optional finalizer, which runs
+/// once, when the object is collected or at env teardown. napi_wrap stores one on the object (an
+/// External under the isolate's wrap private key points here; napi_remove_wrap drops it without
+/// finalizing); napi_add_finalizer attaches any number to an object.
+pub struct Finalizer {
     env: napi_env,
     id: u64,
     native: *mut c_void,
     finalize: Option<napi_finalize>,
     hint: *mut c_void,
-    /// Weak handle on the wrapped object; its GC finalizer (`wrap_collected`) frees this record.
+    /// Weak handle on the object; its GC finalizer (`finalizer_collected`) frees this record.
     weak: Option<v8::Weak<v8::Object>>,
+    /// The id of the result reference napi_wrap / napi_add_finalizer handed back (0: none).
+    own_ref: usize,
 }
 
-/// Run `wrap`'s finalizer (if any) in the env's current scope: addon code, so under the lock.
+/// Run `fin`'s finalizer (if any) in the env's current scope: addon code, so under the lock.
 /// The env's pending exception is set aside for it, and what the finalizer leaves pending is
 /// dropped (Node reports it as an uncaught exception; there is no JS caller to throw it to).
-unsafe fn finalize_wrap(env: napi_env, wrap: &Wrap) {
-    if let Some(cb) = wrap.finalize {
+unsafe fn run_finalizer(env: napi_env, fin: &Finalizer) {
+    if let Some(cb) = fin.finalize {
+        // as Node's Reference::Finalize: the record's own reference loses its value first (a
+        // deleted one stays deleted)
+        let refs = &mut (*env).refs;
+        if let Some(slot) = refs.get_mut(fin.own_ref.wrapping_sub(1)) {
+            if slot.is_some() {
+                *slot = Some(Ref::Cleared);
+            }
+        }
         let pending = (*env).last_exception.take();
-        let _ = call_addon(|| cb(env, wrap.native, wrap.hint));
+        let _ = call_addon(|| cb(env, fin.native, fin.hint));
         (*env).last_exception = pending;
     }
 }
@@ -182,9 +243,9 @@ unsafe fn js_call(
     env: napi_env,
     f: impl FnOnce(&mut v8::PinScope<'static, 'static>) -> NapiResult,
 ) -> napi_status {
-    // no scope: the env is being torn down and JS cannot run (Node's !can_call_into_js(), which
-    // is napi_pending_exception for an addon without a declared module API version)
-    if (*env).last_exception.is_some() || (*env).scope.is_null() {
+    // env teardown: JS cannot run (Node's !can_call_into_js(), which is napi_pending_exception
+    // for an addon without a declared module API version)
+    if (*env).last_exception.is_some() || (*env).tearing_down {
         return napi_pending_exception;
     }
     catching(env, f)
@@ -223,6 +284,8 @@ pub struct CbInfo {
     pub args: Vec<napi_value>,
     pub this: napi_value,
     pub data: *mut c_void,
+    /// `new.target` of a construct call, NULL for a plain call (napi_get_new_target).
+    pub new_target: napi_value,
 }
 
 // ---- value getters --------------------------------------------------------
@@ -512,10 +575,16 @@ fn napi_fn_trampoline(
     let argv: Vec<napi_value> = (0..args.length())
         .map(|i| unsafe { to_napi(args.get(i)) })
         .collect();
+    let new_target = if args.is_construct_call() {
+        unsafe { to_napi(args.new_target()) }
+    } else {
+        std::ptr::null_mut()
+    };
     let mut info = CbInfo {
         args: argv,
         this: unsafe { to_napi(args.this().into()) },
         data,
+        new_target,
     };
     // Point the env at this call's scope for the callback's duration and restore it after: a
     // nested call (the addon calling JS that calls the addon again) must not leave the outer
@@ -600,13 +669,7 @@ pub unsafe extern "C" fn napi_create_function(
     out: *mut napi_value,
 ) -> napi_status {
     js_call(env, |s| {
-        let record = Box::into_raw(Box::new(Callback { env, cb, data }));
-        (*env).fns.push(record);
-        let data_val = v8::External::new(s, record as *mut c_void);
-        let tmpl = v8::FunctionTemplate::builder(napi_fn_trampoline)
-            .data(data_val.into())
-            .build(s);
-        let f = tmpl.get_function(s).ok_or(napi_generic_failure)?;
+        let f = new_function(s, env, cb, data)?;
         // as Node: a non-NULL name becomes the function's `name` (a name V8 cannot hold is
         // napi_generic_failure)
         if !name.is_null() {
@@ -618,6 +681,51 @@ pub unsafe extern "C" fn napi_create_function(
         put(out, f.into());
         Ok(())
     })
+}
+
+/// A function template dispatching to the addon callback `cb` with `data` (its `Callback`
+/// record is owned by the env), optionally with a receiver `signature` — Node's
+/// FunctionCallbackWrapper::NewTemplate.
+unsafe fn callback_template<'s>(
+    s: &mut v8::PinScope<'s, 'static>,
+    env: napi_env,
+    cb: napi_callback,
+    data: *mut c_void,
+    signature: Option<v8::Local<'s, v8::Signature>>,
+) -> v8::Local<'s, v8::FunctionTemplate> {
+    let record = Box::into_raw(Box::new(Callback { env, cb, data }));
+    (*env).fns.push(record);
+    let data_val = v8::External::new(s, record as *mut c_void);
+    let builder = v8::FunctionTemplate::builder(napi_fn_trampoline).data(data_val.into());
+    match signature {
+        Some(sig) => builder.signature(sig).build(s),
+        None => builder.build(s),
+    }
+}
+
+/// An unnamed function dispatching to `cb` (Node's FunctionCallbackWrapper::NewFunction).
+unsafe fn new_function<'s>(
+    s: &mut v8::PinScope<'s, 'static>,
+    env: napi_env,
+    cb: napi_callback,
+    data: *mut c_void,
+) -> Result<v8::Local<'s, v8::Function>, napi_status> {
+    let tmpl = callback_template(s, env, cb, data, None);
+    tmpl.get_function(s).ok_or(napi_generic_failure)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_new_target(
+    _env: napi_env,
+    info: napi_callback_info,
+    result: *mut napi_value,
+) -> napi_status {
+    // as Node: both arguments are required; a plain (non-construct) call gives NULL
+    if info.is_null() || result.is_null() {
+        return napi_invalid_arg;
+    }
+    *result = (*info).new_target;
+    napi_ok
 }
 
 #[no_mangle]
@@ -1063,43 +1171,68 @@ pub unsafe extern "C" fn napi_wrap(
         if obj.has_private(s, key) == Some(true) || (!result.is_null() && finalize_cb.is_none()) {
             return Err(napi_invalid_arg);
         }
-        let e = &mut *env;
-        let id = e.next_wrap;
-        e.next_wrap += 1;
-        let wrap = Box::into_raw(Box::new(Wrap {
-            env,
-            id,
-            native: native_object,
-            finalize: finalize_cb,
-            hint: finalize_hint,
-            weak: None,
-        }));
-        let on_gc = Box::new(move |isolate: &mut v8::Isolate| wrap_collected(isolate, wrap));
-        (*wrap).weak = Some(v8::Weak::with_finalizer(s, obj, on_gc));
-        e.wraps.insert(id, wrap);
+        let wrap = track_finalizer(s, env, obj, native_object, finalize_cb, finalize_hint);
         obj.set_private(s, key, v8::External::new(s, wrap as *mut c_void).into());
         if !result.is_null() {
-            let weak = v8::Weak::new(s, v8::Local::<v8::Value>::from(obj));
-            *result = new_ref(e, Ref::Weak(weak));
+            *result = weak_ref(s, env, obj);
+            (*wrap).own_ref = *result as usize;
         }
         Ok(())
     })
 }
 
-/// GC finalizer of a wrapped object: the record leaves its env and its finalizer runs in a fresh
-/// handle scope of the env's context (V8 calls this after the collection, where napi calls are
-/// allowed).
-fn wrap_collected(isolate: &mut v8::Isolate, wrap: *mut Wrap) {
+/// A new finalizer record for `obj`, held by the env until the object is collected (or the env
+/// is torn down).
+unsafe fn track_finalizer(
+    s: &mut v8::PinScope<'static, 'static>,
+    env: napi_env,
+    obj: v8::Local<v8::Object>,
+    native: *mut c_void,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+) -> *mut Finalizer {
+    let e = &mut *env;
+    let id = e.next_finalizer;
+    e.next_finalizer += 1;
+    let fin = Box::into_raw(Box::new(Finalizer {
+        env,
+        id,
+        native,
+        finalize,
+        hint,
+        weak: None,
+        own_ref: 0,
+    }));
+    let on_gc = Box::new(move |isolate: &mut v8::Isolate| finalizer_collected(isolate, fin));
+    (*fin).weak = Some(v8::Weak::with_finalizer(s, obj, on_gc));
+    e.finalizers.insert(id, fin);
+    fin
+}
+
+/// A new weak reference to `obj` (the optional result of napi_wrap / napi_add_finalizer).
+unsafe fn weak_ref(
+    s: &mut v8::PinScope<'static, 'static>,
+    env: napi_env,
+    obj: v8::Local<v8::Object>,
+) -> napi_ref {
+    let weak = v8::Weak::new(s, v8::Local::<v8::Value>::from(obj));
+    new_ref(&mut *env, Ref::Weak(weak))
+}
+
+/// GC finalizer of an object with a finalizer record: the record leaves its env and its
+/// finalizer runs in a fresh handle scope of the env's context (V8 calls this after the
+/// collection, where napi calls are allowed).
+fn finalizer_collected(isolate: &mut v8::Isolate, fin: *mut Finalizer) {
     unsafe {
-        let wrap = Box::from_raw(wrap);
-        let env = wrap.env;
-        (*env).wraps.remove(&wrap.id);
+        let fin = Box::from_raw(fin);
+        let env = fin.env;
+        (*env).finalizers.remove(&fin.id);
         v8::scope!(let hs, isolate);
         let context = v8::Local::new(hs, &(*env).context);
         let cs: &mut v8::PinScope = &mut v8::ContextScope::new(hs, context);
         let here = cs as *mut v8::PinScope as *mut c_void;
         let outer = std::mem::replace(&mut (*env).scope, here);
-        finalize_wrap(env, &wrap);
+        run_finalizer(env, &fin);
         (*env).scope = outer;
     }
 }
@@ -1121,13 +1254,13 @@ unsafe fn unwrap(
         let key = wrap_key(s);
         let held = obj.get_private(s, key).ok_or(napi_pending_exception)?;
         let ext: v8::Local<v8::External> = held.try_into().map_err(|_| napi_invalid_arg)?;
-        let wrap = ext.value() as *mut Wrap;
+        let wrap = ext.value() as *mut Finalizer;
         if !result.is_null() {
             *result = (*wrap).native;
         }
         if remove {
             obj.delete_private(s, key);
-            (*(*wrap).env).wraps.remove(&(*wrap).id);
+            (*(*wrap).env).finalizers.remove(&(*wrap).id);
             drop(Box::from_raw(wrap));
         }
         Ok(())
@@ -1150,6 +1283,112 @@ pub unsafe extern "C" fn napi_remove_wrap(
     result: *mut *mut c_void,
 ) -> napi_status {
     unwrap(env, js_object, result, true)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_add_finalizer(
+    env: napi_env,
+    js_object: napi_value,
+    finalize_data: *mut c_void,
+    finalize_cb: Option<napi_finalize>,
+    finalize_hint: *mut c_void,
+    result: *mut napi_ref,
+) -> napi_status {
+    // as Node: no NAPI_PREAMBLE (it runs no JS, also with an exception pending); the object and
+    // the finalizer are required, and the object must be one (napi_invalid_arg)
+    let Some(finalize_cb) = finalize_cb else {
+        return napi_invalid_arg;
+    };
+    let Ok(obj) = wrap_target(js_object) else {
+        return napi_invalid_arg;
+    };
+    let s = scope(env);
+    let fin = track_finalizer(s, env, obj, finalize_data, Some(finalize_cb), finalize_hint);
+    if !result.is_null() {
+        *result = weak_ref(s, env, obj);
+        (*fin).own_ref = *result as usize;
+    }
+    napi_ok
+}
+
+// ---- type tags ------------------------------------------------------------------
+
+/// A 128-bit type tag (napi_type_tag).
+#[repr(C)]
+pub struct napi_type_tag {
+    pub lower: u64,
+    pub upper: u64,
+}
+
+/// The isolate-wide private key under which an object carries its type tag (Node's
+/// `napi_type_tag` private symbol: one tag per object, whatever its value).
+fn type_tag_key<'s>(s: &v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+    let name = v8::String::new(s, "turbo-test::napi_type_tag");
+    v8::Private::for_api(s, name)
+}
+
+/// The object a type-tag call targets, as Node's CHECK_TO_OBJECT: NULL is napi_invalid_arg,
+/// a primitive is converted with ToObject (null / undefined throw: napi_object_expected).
+unsafe fn tag_target(
+    s: &mut v8::PinScope<'static, 'static>,
+    v: napi_value,
+) -> Result<v8::Local<'static, v8::Object>, napi_status> {
+    if v.is_null() {
+        return Err(napi_invalid_arg);
+    }
+    to_object(s, v)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_type_tag_object(
+    env: napi_env,
+    object: napi_value,
+    type_tag: *const napi_type_tag,
+) -> napi_status {
+    js_call(env, |s| {
+        let obj = tag_target(s, object)?;
+        if type_tag.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        // as Node: the tag is a BigInt of the two words, under one private key: an object that
+        // already carries a tag is napi_invalid_arg
+        let key = type_tag_key(s);
+        if obj.has_private(s, key) != Some(false) {
+            return Err(napi_invalid_arg);
+        }
+        let tag = &*type_tag;
+        let value = v8::BigInt::new_from_words(s, false, &[tag.lower, tag.upper])
+            .ok_or(napi_generic_failure)?;
+        obj.set_private(s, key, value.into())
+            .filter(|&set| set)
+            .ok_or(napi_generic_failure)?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_check_object_type_tag(
+    env: napi_env,
+    object: napi_value,
+    type_tag: *const napi_type_tag,
+    result: *mut bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let obj = tag_target(s, object)?;
+        if type_tag.is_null() || result.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let key = type_tag_key(s);
+        let held = obj.get_private(s, key).ok_or(napi_generic_failure)?;
+        let tag = &*type_tag;
+        *result = v8::Local::<v8::BigInt>::try_from(held).is_ok_and(|held| {
+            // as Node: a non-negative BigInt of up to two words, missing high words being 0
+            let mut words = [0u64; 2];
+            let (negative, _) = held.to_words_array(&mut words);
+            !negative && words == [tag.lower, tag.upper]
+        });
+        Ok(())
+    })
 }
 
 // ---- new_instance: not supported; surface as a CATCHABLE JS throw ----------
@@ -1318,8 +1557,9 @@ pub unsafe extern "C" fn napi_get_reference_value(
     }
     let value = match e.refs[id - 1].as_ref() {
         Some(Ref::Strong(g)) => Some(v8::Local::new(s, g)),
-        // as Node: a weak reference whose value was collected yields NULL
+        // as Node: a weak reference whose value was collected (or finalized) yields NULL
         Some(Ref::Weak(w)) => w.to_local(s),
+        Some(Ref::Cleared) => None,
         None => Some(v8::undefined(s).into()),
     };
     if !out.is_null() {
@@ -1364,20 +1604,193 @@ pub unsafe extern "C" fn napi_stub() -> napi_status {
     napi_generic_failure
 }
 
-/// define_class → treat the constructor as a plain function (prototype methods skipped;
-/// sufficient for addons whose exercised exports are functions, e.g. the parser).
+// ---- classes and property descriptors -----------------------------------------
+
+/// The key a descriptor names, as Node's V8NameFromPropertyDescriptor: `utf8name`, else the
+/// `name` value, which must be a string or a symbol (napi_name_expected).
+unsafe fn property_name(
+    s: &mut v8::PinScope<'static, 'static>,
+    p: &napi_property_descriptor,
+) -> Result<v8::Local<'static, v8::Name>, napi_status> {
+    if !p.utf8name.is_null() {
+        let bytes = std::ffi::CStr::from_ptr(p.utf8name).to_bytes();
+        let name = v8::String::new_from_utf8(s, bytes, v8::NewStringType::Internalized)
+            .ok_or(napi_generic_failure)?;
+        return Ok(name.into());
+    }
+    if p.name.is_null() {
+        return Err(napi_name_expected);
+    }
+    to_local(p.name).try_into().map_err(|_| napi_name_expected)
+}
+
+/// The template attributes of a prototype member, as Node's V8PropertyAttributesFromDescriptor:
+/// a data member without napi_writable is read-only; no napi_enumerable is DontEnum, no
+/// napi_configurable DontDelete.
+fn template_attributes(p: &napi_property_descriptor) -> v8::PropertyAttribute {
+    let mut attr = v8::PropertyAttribute::NONE;
+    if p.getter.is_none() && p.setter.is_none() && p.attributes & napi_writable == 0 {
+        attr = attr | v8::PropertyAttribute::READ_ONLY;
+    }
+    if p.attributes & napi_enumerable == 0 {
+        attr = attr | v8::PropertyAttribute::DONT_ENUM;
+    }
+    if p.attributes & napi_configurable == 0 {
+        attr = attr | v8::PropertyAttribute::DONT_DELETE;
+    }
+    attr
+}
+
+/// The descriptors behind a `(count, properties)` argument pair: properties are required for a
+/// count above 0 (napi_invalid_arg).
+unsafe fn descriptors<'a>(
+    count: usize,
+    properties: *const napi_property_descriptor,
+) -> Result<&'a [napi_property_descriptor], napi_status> {
+    if count == 0 {
+        return Ok(&[]);
+    }
+    if properties.is_null() {
+        return Err(napi_invalid_arg);
+    }
+    Ok(std::slice::from_raw_parts(properties, count))
+}
+
+/// napi_define_class, as Node: a constructor function named `name` whose prototype carries the
+/// instance members (methods with the class as their receiver signature, accessors, values) of
+/// the descriptors; the napi_static ones are then defined on the constructor like
+/// napi_define_properties (the class is handed back even when one of those fails).
 #[no_mangle]
+#[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn napi_define_class(
     env: napi_env,
     name: *const c_char,
     len: usize,
-    ctor: napi_callback,
+    ctor: Option<napi_callback>,
     data: *mut c_void,
-    _property_count: usize,
-    _properties: *const c_void,
+    property_count: usize,
+    properties: *const napi_property_descriptor,
     out: *mut napi_value,
 ) -> napi_status {
-    napi_create_function(env, name, len, ctor, data, out)
+    js_call(env, |s| {
+        if out.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let ctor = ctor.ok_or(napi_invalid_arg)?;
+        let props = descriptors(property_count, properties)?;
+        // as Node's CHECK_NEW_FROM_UTF8_LEN: the class name is required
+        if name.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let tpl = callback_template(s, env, ctor, data, None);
+        let class_name =
+            v8::String::new_from_utf8(s, utf8_arg(name, len), v8::NewStringType::Internalized)
+                .ok_or(napi_generic_failure)?;
+        tpl.set_class_name(class_name);
+        let proto = tpl.prototype_template(s);
+        for p in props.iter().filter(|p| p.attributes & napi_static == 0) {
+            let key = property_name(s, p)?;
+            let attr = template_attributes(p);
+            if p.getter.is_some() || p.setter.is_some() {
+                let getter = p
+                    .getter
+                    .map(|cb| callback_template(s, env, cb, p.data, None));
+                let setter = p
+                    .setter
+                    .map(|cb| callback_template(s, env, cb, p.data, None));
+                proto.set_accessor_property(key, getter, setter, attr);
+            } else if let Some(method) = p.method {
+                let sig = v8::Signature::new(s, tpl);
+                let t = callback_template(s, env, method, p.data, Some(sig));
+                proto.set_with_attr(key, t.into(), attr);
+            } else {
+                // A template holds only primitives: V8 aborts the process on an object (Node
+                // crashes there); refuse it instead.
+                if p.value.is_null() || to_local(p.value).is_object() {
+                    return Err(napi_invalid_arg);
+                }
+                proto.set_with_attr(key, to_local(p.value).into(), attr);
+            }
+        }
+        let class = tpl.get_function(s).ok_or(napi_generic_failure)?;
+        put(out, class.into());
+        let statics: Vec<napi_property_descriptor> = props
+            .iter()
+            .filter(|p| p.attributes & napi_static != 0)
+            .copied()
+            .collect();
+        define_properties(s, env, class.into(), &statics)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_define_properties(
+    env: napi_env,
+    object: napi_value,
+    property_count: usize,
+    properties: *const napi_property_descriptor,
+) -> napi_status {
+    js_call(env, |s| {
+        let props = descriptors(property_count, properties)?;
+        if object.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let obj = to_object(s, object)?;
+        define_properties(s, env, obj, props)
+    })
+}
+
+/// Define `props` on `obj`, as Node's napi_define_properties: an accessor pair or a method
+/// becomes a new function per property (no signature, no name); a data property with all three
+/// attributes takes the CreateDataProperty fast path. A definition V8 refuses is
+/// napi_invalid_arg (napi_generic_failure for a method).
+unsafe fn define_properties(
+    s: &mut v8::PinScope<'static, 'static>,
+    env: napi_env,
+    obj: v8::Local<'static, v8::Object>,
+    props: &[napi_property_descriptor],
+) -> NapiResult {
+    for p in props {
+        let key = property_name(s, p)?;
+        let enumerable = p.attributes & napi_enumerable != 0;
+        let configurable = p.attributes & napi_configurable != 0;
+        let writable = p.attributes & napi_writable != 0;
+        let (mut desc, refused) = if p.getter.is_some() || p.setter.is_some() {
+            let undefined: v8::Local<v8::Value> = v8::undefined(s).into();
+            let mut accessor = |cb: Option<napi_callback>| match cb {
+                Some(cb) => new_function(s, env, cb, p.data).map(Into::into),
+                None => Ok(undefined),
+            };
+            let (get, set) = (accessor(p.getter)?, accessor(p.setter)?);
+            (
+                v8::PropertyDescriptor::new_from_get_set(get, set),
+                napi_invalid_arg,
+            )
+        } else if let Some(method) = p.method {
+            let f = new_function(s, env, method, p.data)?;
+            let desc = v8::PropertyDescriptor::new_from_value_writable(f.into(), writable);
+            (desc, napi_generic_failure)
+        } else {
+            if p.value.is_null() {
+                return Err(napi_invalid_arg);
+            }
+            let value = to_local(p.value);
+            if enumerable && writable && configurable {
+                if obj.create_data_property(s, key, value) != Some(true) {
+                    return Err(napi_invalid_arg);
+                }
+                continue;
+            }
+            let desc = v8::PropertyDescriptor::new_from_value_writable(value, writable);
+            (desc, napi_invalid_arg)
+        };
+        desc.set_enumerable(enumerable);
+        desc.set_configurable(configurable);
+        if obj.define_property(s, key, &desc) != Some(true) {
+            return Err(refused);
+        }
+    }
+    Ok(())
 }
 
 // threadsafe-function family: napi-rs creates a GC-finalizer tsfn at module init, so
@@ -1434,7 +1847,7 @@ pub fn load_addon(
             .get(b"napi_register_module_v1")
             .map_err(|e| format!("no napi_register_module_v1: {e}"))?;
 
-        let isolate = std::ptr::null_mut();
+        let isolate = scope_ref.as_raw_isolate_ptr();
         let context = v8::Global::new(scope_ref, scope_ref.get_current_context());
         let env_ptr: napi_env = Box::into_raw(Box::new(Env {
             isolate,
@@ -1443,8 +1856,9 @@ pub fn load_addon(
             last_exception: None,
             fns: Vec::new(),
             refs: Vec::new(),
-            wraps: Default::default(),
-            next_wrap: 0,
+            finalizers: Default::default(),
+            next_finalizer: 0,
+            tearing_down: false,
         }));
         // The isolate owns the env from here on (freed with it, like the functions using it).
         match scope_ref.get_slot_mut::<AddonEnvs>() {

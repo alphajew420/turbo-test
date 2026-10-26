@@ -1903,7 +1903,7 @@ fn native_transform_cjs(file: &Path) -> Option<String> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
     file.extension().and_then(|e| e.to_str()).unwrap_or("").hash(&mut h);
-    "native-cjs-v3".hash(&mut h);
+    "native-cjs-v4".hash(&mut h); // v4: await_do_mocks_on_import
     // Legacy-decorator lowering happens inside esm_cjs::emit when the project enables
     // experimentalDecorators/emitDecoratorMetadata AND this file uses a decorator. Without it the
     // native emitter leaves `@Decorator` syntax intact (→ "Unexpected token 'export'") or lowers
@@ -1921,7 +1921,7 @@ fn native_transform_cjs(file: &Path) -> Option<String> {
     }
     CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
     let emitted = crate::esm_cjs::emit_with(file, &raw, legacy_decorators)?;
-    let mut code = hoist_mock_setup(&emitted);
+    let mut code = hoist_mock_setup(&await_do_mocks_on_import(emitted));
     let shared = shared_mock_lets(&raw);
     if !shared.is_empty() {
         code = rewrite_shared_lets(&code, &shared);
@@ -1968,8 +1968,9 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
     file.extension().and_then(|e| e.to_str()).unwrap_or("").hash(&mut h);
-    // v2: `import.meta` is filled in (fill_import_meta) instead of esbuild's empty object
-    "mr-cjs-v2".hash(&mut h);
+    // v2: `import.meta` is filled in (fill_import_meta) instead of esbuild's empty object;
+    // v3: import() waits for a pending async vi.doMock (await_do_mocks_on_import)
+    "mr-cjs-v3".hash(&mut h);
     // esbuild can't emit decorator metadata. By default we DON'T pay that cost — only when a
     // decorator file actually threw at load (Mongoose @Prop / Sequelize @Column read design:type
     // at class-definition) does the loader retry with `prefer_metadata`, routing it through the
@@ -2007,8 +2008,8 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
             .and_then(|r| r.ok())
         });
         if let Some(cjs) = meta_esm.and_then(|esm| esbuild_format_cjs(&root, &esm)) {
-            let mut code = fill_import_meta(postprocess_mr_cjs(cjs));
-            code = hoist_mock_setup(&code);
+            let code = await_do_mocks_on_import(fill_import_meta(postprocess_mr_cjs(cjs)));
+            let mut code = hoist_mock_setup(&code);
             let shared = shared_mock_lets(&raw);
             if !shared.is_empty() {
                 code = rewrite_shared_lets(&code, &shared);
@@ -2050,7 +2051,8 @@ fn esbuild_transform_cjs(file: &Path, prefer_metadata: bool) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let mut code = fill_import_meta(postprocess_mr_cjs(String::from_utf8(out.stdout).ok()?));
+    let code = postprocess_mr_cjs(String::from_utf8(out.stdout).ok()?);
+    let mut code = await_do_mocks_on_import(fill_import_meta(code));
     // vitest-style vi.mock hoisting: move consumer requires below the vi.mock setup so the mock
     // is registered (immediately, in this module's scope) before the mocked module loads.
     code = hoist_mock_setup(&code);
@@ -2238,24 +2240,72 @@ fn hoist_mock_setup(code: &str) -> String {
     out.join("\n")
 }
 
-/// Extract the first string literal ("..." or '...') from `s`.
+/// The value of the first string literal (`"..."`, `'...'` or `` `...` ``) in `s`, escape
+/// sequences decoded (an unterminated one runs to the end of `s`).
 fn extract_first_string_literal(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if c == b'"' || c == b'\'' {
-            let quote = c;
-            let start = i + 1;
-            let mut j = start;
-            while j < bytes.len() && bytes[j] != quote {
-                j += 1;
-            }
-            return s.get(start..j).map(|x| x.to_string());
+    let at = s.find(['"', '\'', '`'])?;
+    Some(js_string_literal_at(&s[at..])?.0)
+}
+
+/// The JS string literal `s` starts with (`"..."`, `'...'`, or a template literal, read
+/// verbatim apart from its escapes): its value with the escape sequences decoded (`\"`, `\\`,
+/// `\n`, `\x41`, `\u0041`, `\u{1F600}`, line continuations; any other escaped character stands for
+/// itself), and its length in bytes through the closing quote, None when unterminated. None
+/// when `s` does not start with a quote.
+fn js_string_literal_at(s: &str) -> Option<(String, Option<usize>)> {
+    let quote = s.chars().next().filter(|c| matches!(c, '"' | '\'' | '`'))?;
+    let mut out = String::new();
+    let mut i = 1;
+    while let Some(c) = s[i..].chars().next() {
+        i += c.len_utf8();
+        if c == quote {
+            return Some((out, Some(i)));
         }
-        i += 1;
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let Some(e) = s[i..].chars().next() else {
+            break;
+        };
+        i += e.len_utf8();
+        // \xHH, \uHHHH, \u{H...}: the code point (a malformed one stands for its letter)
+        let hex = |digits: &str| {
+            let valid = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_hexdigit());
+            valid
+                .then(|| u32::from_str_radix(digits, 16).ok())
+                .flatten()
+                .and_then(char::from_u32)
+        };
+        let escaped = match e {
+            'n' => Some('\n'),
+            't' => Some('\t'),
+            'r' => Some('\r'),
+            'b' => Some('\u{8}'),
+            'f' => Some('\u{c}'),
+            'v' => Some('\u{b}'),
+            '0' => Some('\0'),
+            'x' => s.get(i..i + 2).and_then(hex).inspect(|_| i += 2),
+            'u' if s[i..].starts_with('{') => s[i + 1..].find('}').and_then(|n| {
+                let c = hex(&s[i + 1..i + 1 + n]);
+                c.inspect(|_| i += n + 2)
+            }),
+            'u' => s.get(i..i + 4).and_then(hex).inspect(|_| i += 4),
+            // a line continuation stands for nothing (\r\n is one line terminator)
+            '\r' => {
+                i += usize::from(s[i..].starts_with('\n'));
+                None
+            }
+            '\n' | '\u{2028}' | '\u{2029}' => None,
+            _ => Some(e),
+        };
+        match escaped {
+            Some(c) => out.push(c),
+            None if matches!(e, 'x' | 'u') => out.push(e),
+            None => {}
+        }
     }
-    None
+    Some((out, None))
 }
 
 /// From `var import_X = require("SPEC");` or `... = __toESM(require("SPEC"), 1);` -> "SPEC".
@@ -2572,6 +2622,38 @@ fn postprocess_mr_cjs(mut code: String) -> String {
     code
 }
 
+/// The module-runner's lowered `import()` (esbuild's and esm_cjs's
+/// `Promise.resolve().then(() => __toESM(require(SPEC)))`) waits for a pending async vi.doMock
+/// factory of its module, as vitest awaits it (turbo-test#42 item 6):
+/// `__ttImportReady(__dirname, SPEC)` (runtime.js) takes the place of `Promise.resolve()` for a
+/// literal SPEC or esm_cjs's already-evaluated `__tt_spec`. It is `Promise.resolve()` itself
+/// while nothing is pending, so the timing is unchanged. `__dirname` is the CJS wrapper's.
+fn await_do_mocks_on_import(code: String) -> String {
+    const LOWERED: &str = "Promise.resolve().then(() => __toESM(require(";
+    if !code.contains(LOWERED) {
+        return code;
+    }
+    let mut out = String::with_capacity(code.len() + 64);
+    let mut rest = code.as_str();
+    while let Some(at) = rest.find(LOWERED) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + LOWERED.len()..];
+        let literal = js_string_literal_at(rest).and_then(|(_, len)| len);
+        let spec = match literal {
+            Some(len) => Some(&rest[..len]),
+            None => rest.starts_with("__tt_spec)").then_some("__tt_spec"),
+        };
+        match spec {
+            Some(spec) => out.push_str(&format!(
+                "__ttImportReady(__dirname, {spec}).then(() => __toESM(require("
+            )),
+            None => out.push_str(LOWERED),
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Module-runner: is it enabled? (default on; TURBO_NO_MR disables → legacy bundle path)
 fn mr_enabled() -> bool {
     std::env::var("TURBO_NO_MR").is_err()
@@ -2799,16 +2881,17 @@ fn extract_mock_calls(src: &str, needles: [&str; 2]) -> Vec<(String, String)> {
         let rest = src.get(start..).unwrap_or("");
         let q = rest.trim_start();
         let lead = rest.len() - q.len();
-        let Some(quote) = q.chars().next() else { break };
-        if quote != '"' && quote != '\'' && quote != '`' {
+        if q.is_empty() {
+            break;
+        }
+        // (escapes decoded: an escaped quote does not end the specifier, turbo-test#42 item 4)
+        let Some((spec, len)) = js_string_literal_at(q) else {
             i = start;
             continue;
-        }
-        let after_q = &q[1..];
-        let Some(end_q) = after_q.find(quote) else { break };
-        let spec = after_q[..end_q].to_string();
+        };
+        let Some(len) = len else { break };
         // find factory: from after the spec's closing quote to the balanced ')'
-        let mut j = start + lead + 1 + end_q + 1;
+        let mut j = start + lead + len;
         // the next token after the specifier decides: ',' -> a factory follows, anything else
         // (normally ')') -> no factory. A ',' further on belongs to later code (another call's
         // factory, a test callback), never to this call.
@@ -4189,6 +4272,60 @@ fn dynamic_import_callback<'s>(
     specifier: v8::Local<'s, v8::String>,
     _import_attributes: v8::Local<'s, v8::FixedArray>,
 ) -> Option<v8::Local<'s, v8::Promise>> {
+    // vitest awaits a vi.doMock's async factory before an import() of its module resolves
+    // (turbo-test#42 item 6): while one is pending (runtime.js __ttImportWait), the import runs
+    // once it is registered
+    if let Some(wait) = do_mock_wait(scope, resource_name, specifier) {
+        let data = v8::Array::new_with_elements(scope, &[resource_name, specifier.into()]);
+        let then = v8::Function::builder(import_after_do_mock)
+            .data(data.into())
+            .build(scope)?;
+        return wait.then(scope, then);
+    }
+    dynamic_import(scope, resource_name, specifier)
+}
+
+/// The pending async vi.doMock registration an import() of `specifier` from the module
+/// `resource_name` waits for (runtime.js __ttImportWait), if any.
+fn do_mock_wait<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    resource_name: v8::Local<'s, v8::Value>,
+    specifier: v8::Local<'s, v8::String>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    let global = scope.get_current_context().global(scope);
+    let key = v8::String::new(scope, "__ttImportWait")?;
+    let wait: v8::Local<v8::Function> = global.get(scope, key.into())?.try_into().ok()?;
+    let referrer = resource_name.to_rust_string_lossy(scope);
+    let dir = Path::new(&referrer)
+        .parent()?
+        .to_string_lossy()
+        .into_owned();
+    let dir = v8::String::new(scope, &dir)?;
+    let undefined = v8::undefined(scope).into();
+    let pending = wait.call(scope, undefined, &[dir.into(), specifier.into()])?;
+    pending.try_into().ok()
+}
+
+/// The deferred import() of dynamic_import_callback: `[resource_name, specifier]` is its data.
+fn import_after_do_mock(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let data = v8::Local::<v8::Array>::try_from(args.data()).ok();
+    let parts = data.and_then(|d| Some((d.get_index(scope, 0)?, d.get_index(scope, 1)?)));
+    let parts = parts.and_then(|(r, s)| Some((r, v8::Local::<v8::String>::try_from(s).ok()?)));
+    if let Some(promise) = parts.and_then(|(r, s)| dynamic_import(scope, r, s)) {
+        rv.set(promise.into());
+    }
+}
+
+/// import() of `specifier` from the module `resource_name`: a promise for its namespace.
+fn dynamic_import<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    resource_name: v8::Local<'s, v8::Value>,
+    specifier: v8::Local<'s, v8::String>,
+) -> Option<v8::Local<'s, v8::Promise>> {
     let resolver = v8::PromiseResolver::new(scope)?;
     let promise = resolver.get_promise(scope);
 
@@ -4840,15 +4977,18 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
         let sf_dir = sf.parent().unwrap_or(Path::new("."));
         let sf_src = std::fs::read_to_string(sf).unwrap_or_default();
         for (s, factory) in extract_mocks(&sf_src) {
-            // skip glob/query mock specifiers (e.g. '*?url') — not real modules.
-            if s.contains('*') || s.contains('?') {
+            // a glob (e.g. '*?url') is not a module; a `?query` id is one of its own (mock_key
+            // keeps the query, so the rewritten import reaches that mock, not the plain
+            // module's: turbo-test#42 item 5), externalized only when its file exists
+            if s.contains('*') || !mock_externalizable(&factory) {
                 continue;
             }
-            if !mock_externalizable(&factory) {
-                continue;
-            }
-            if let Some(abs) = resolve_spec(&s, sf_dir) {
-                mock_targets.entry(spec_basename(&s)).or_insert(abs);
+            match mock_key(&s, sf_dir) {
+                Some(abs) => {
+                    mock_targets.entry(spec_basename(&s)).or_insert(abs);
+                }
+                None if s.contains('?') => continue,
+                None => {}
             }
             if !externals.contains(&s) {
                 externals.push(s);

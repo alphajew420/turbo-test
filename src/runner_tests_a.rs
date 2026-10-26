@@ -1044,6 +1044,55 @@ fn extract_string_literal_and_require_spec() {
     );
     assert_eq!(extract_require_spec("var a = b;"), None);
     assert_eq!(extract_require_spec("require(dynamic)"), None);
+    // turbo-test#42 item 4: an escaped quote does not end the specifier (esbuild prints
+    // `./q"a'b.js` as "./q\"a'b.js"), and a template literal is a literal too
+    assert_eq!(
+        extract_require_spec(r#"var import_q = require("./q\"a'b.js");"#).as_deref(),
+        Some("./q\"a'b.js")
+    );
+    assert_eq!(
+        extract_first_string_literal("(`./q\"a'b.js`, () => 1)").as_deref(),
+        Some("./q\"a'b.js")
+    );
+}
+
+#[test]
+fn js_string_literals_decode_their_escapes() {
+    fn value(s: &str) -> Option<(String, Option<&str>)> {
+        js_string_literal_at(s).map(|(v, len)| (v, len.map(|n| &s[..n])))
+    }
+    // the length runs through the closing quote; the other quotes are plain characters
+    assert_eq!(
+        value(r#""a'b`c" + x"#),
+        Some(("a'b`c".into(), Some(r#""a'b`c""#)))
+    );
+    assert_eq!(value(r#"'a"b'"#), Some((r#"a"b"#.into(), Some(r#"'a"b'"#))));
+    assert_eq!(value("`a'\"b`"), Some(("a'\"b".into(), Some("`a'\"b`"))));
+    // escapes: quotes and backslash, the single-character escapes, hex and unicode
+    assert_eq!(value(r#""\"\'\`\\""#).unwrap().0, "\"'`\\");
+    assert_eq!(
+        value(r#""\n\t\r\b\f\v\0""#).unwrap().0,
+        "\n\t\r\u{8}\u{c}\u{b}\0"
+    );
+    assert_eq!(
+        value(r#""\x41\u0042\u{43}\u{1F600}é""#).unwrap().0,
+        "ABC\u{1F600}é"
+    );
+    // malformed hex / unicode escapes stand for their letter (JS rejects them)
+    assert_eq!(
+        value(r#""\xZ1\u12\u{}\u{110000}\x+1""#).unwrap().0,
+        "xZ1u12u{}u{110000}x+1"
+    );
+    // any other escaped character is itself; line continuations are nothing (CRLF is one)
+    assert_eq!(
+        value("'\\q\\\n\\\r\n\\\r\\\u{2028}\\\u{2029}z'").unwrap().0,
+        "qz"
+    );
+    // unterminated (also right after a backslash), and not a literal at all
+    assert_eq!(value(r#""abc"#), Some(("abc".into(), None)));
+    assert_eq!(value("'ab\\"), Some(("ab".into(), None)));
+    assert_eq!(value("x'a'"), None);
+    assert_eq!(value(""), None);
 }
 
 // ---- shared mock lets -------------------------------------------------------------------------
