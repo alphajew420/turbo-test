@@ -276,7 +276,7 @@ fn duration_history_orders_slowest_first_and_is_saved() {
             .find(|l| l.starts_with(&format!("{}\t", abs(f))))
             .unwrap_or_else(|| panic!("{f}: {saved}"));
         let ms: f64 = line.split('\t').nth(1).unwrap().parse().unwrap();
-        assert!(ms >= 0.0 && ms < 900.0, "{line}");
+        assert!((0.0..900.0).contains(&ms), "{line}");
     }
     assert!(!saved.contains("bogus"));
 }
