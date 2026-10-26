@@ -1175,6 +1175,113 @@ pub unsafe extern "C" fn napi_set_element(
     })
 }
 
+// ---- comparisons and type checks ---------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_strict_equals(
+    env: napi_env,
+    lhs: napi_value,
+    rhs: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    js_call(env, |_| {
+        let (a, b) = (val_arg(lhs)?, val_arg(rhs)?);
+        *out_arg(out)? = a.strict_equals(b);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_instanceof(
+    env: napi_env,
+    object: napi_value,
+    constructor: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    js_call(env, |s| {
+        let value = val_arg(object)?;
+        let out = out_arg(out)?;
+        *out = false;
+        let ctor = obj_arg(s, constructor)?;
+        // as Node: a constructor that is not a function throws a TypeError
+        // (ERR_NAPI_CONS_FUNCTION) and the call is napi_function_expected
+        if !ctor.is_function() {
+            let msg = v8::String::new(s, "Constructor must be a function").unwrap();
+            let err = new_error(s, ErrorKind::Type, msg);
+            let code = v8::String::new(s, "ERR_NAPI_CONS_FUNCTION").unwrap();
+            set_error_code(s, err, code)?;
+            s.throw_exception(err);
+            return Err(napi_function_expected);
+        }
+        // as Node's CHECK_MAYBE_NOTHING: an InstanceOf that throws is napi_generic_failure (the
+        // exception pending)
+        *out = value.instance_of(s, ctor).ok_or(napi_generic_failure)?;
+        Ok(())
+    })
+}
+
+/// A type test of a value (napi_is_arraybuffer, ...): the value and the result are required.
+unsafe fn is_kind(
+    env: napi_env,
+    v: napi_value,
+    out: *mut bool,
+    test: impl FnOnce(v8::Local<v8::Value>) -> bool,
+) -> napi_status {
+    basic(env, || {
+        let value = val_arg(v)?;
+        *out_arg(out)? = test(value);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_is_arraybuffer(
+    env: napi_env,
+    v: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    is_kind(env, v, out, |v| v.is_array_buffer())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_is_typedarray(
+    env: napi_env,
+    v: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    is_kind(env, v, out, |v| v.is_typed_array())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_is_dataview(
+    env: napi_env,
+    v: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    is_kind(env, v, out, |v| v.is_data_view())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_is_buffer(
+    env: napi_env,
+    v: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    // as Node's node::Buffer::HasInstance: any ArrayBufferView
+    is_kind(env, v, out, |v| v.is_array_buffer_view())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_is_detached_arraybuffer(
+    env: napi_env,
+    v: napi_value,
+    out: *mut bool,
+) -> napi_status {
+    is_kind(env, v, out, |v| {
+        v8::Local::<v8::ArrayBuffer>::try_from(v).is_ok_and(|ab| ab.was_detached())
+    })
+}
+
 // ---- properties ------------------------------------------------------------
 
 #[no_mangle]

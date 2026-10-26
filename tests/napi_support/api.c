@@ -651,6 +651,58 @@ static napi_value f_object_checks(napi_env env, napi_callback_info info) {
     return nums(env, sizeof st / sizeof st[0], st);
 }
 
+/* ---- comparisons and type checks ------------------------------------------------------ */
+
+/* compare(a, b) -> [status, a === b]; instanceOf(v, ctor) -> [status, result, exception] */
+static napi_value f_compare(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    bool eq = false;
+    napi_status st = napi_strict_equals(env, arg(env, &a, 0), arg(env, &a, 1), &eq);
+    napi_value it[2] = {num(env, st), boolean(env, eq)};
+    return list(env, 2, it);
+}
+static napi_value f_instance_of(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    bool r = true;
+    napi_status st = napi_instanceof(env, arg(env, &a, 0), arg(env, &a, 1), &r);
+    napi_value exc = take_exception(env);
+    napi_value it[3] = {num(env, st), boolean(env, r), exc};
+    return list(env, 3, it);
+}
+
+/* kinds(v) -> [isArrayBuffer, isTypedArray, isDataView, isBuffer, isDetachedArrayBuffer,
+ * the OR of the statuses] */
+static napi_value f_kinds(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value v = arg(env, &a, 0);
+    bool r[5] = {true, true, true, true, true};
+    int acc = napi_is_arraybuffer(env, v, &r[0]) | napi_is_typedarray(env, v, &r[1]) |
+              napi_is_dataview(env, v, &r[2]) | napi_is_buffer(env, v, &r[3]) |
+              napi_is_detached_arraybuffer(env, v, &r[4]);
+    napi_value it[6];
+    for (int i = 0; i < 5; i++) it[i] = boolean(env, r[i]);
+    it[5] = num(env, acc);
+    return list(env, 6, it);
+}
+
+/* compareChecks() -> statuses: NULL arguments of napi_strict_equals / napi_instanceof and of
+ * each type check */
+static napi_value f_compare_checks(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value v = num(env, 1), out;
+    napi_get_global(env, &out);
+    bool b;
+    double st[] = {
+        napi_strict_equals(env, NULL, v, &b),  napi_strict_equals(env, v, NULL, &b),
+        napi_strict_equals(env, v, v, NULL),   napi_instanceof(env, NULL, out, &b),
+        napi_instanceof(env, v, out, NULL),    napi_instanceof(env, v, NULL, &b),
+        napi_is_arraybuffer(env, NULL, &b),    napi_is_arraybuffer(env, v, NULL),
+        napi_is_typedarray(env, NULL, &b),     napi_is_dataview(env, v, NULL),
+        napi_is_buffer(env, NULL, &b),         napi_is_detached_arraybuffer(env, v, NULL),
+    };
+    return nums(env, sizeof st / sizeof st[0], st);
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -678,6 +730,8 @@ static napi_value f_null_env(napi_env env, napi_callback_info info) {
         napi_set_property(NULL, v, v, v),
         napi_has_element(NULL, v, 0, NULL),
         napi_object_freeze(NULL, v),
+        napi_strict_equals(NULL, v, v, NULL),
+        napi_is_buffer(NULL, v, NULL),
     };
     return nums(env, sizeof st / sizeof st[0], st);
 }
@@ -717,6 +771,10 @@ static const struct {
     {"proto", f_proto},
     {"integrity", f_integrity},
     {"objectChecks", f_object_checks},
+    {"compare", f_compare},
+    {"instanceOf", f_instance_of},
+    {"kinds", f_kinds},
+    {"compareChecks", f_compare_checks},
     {"nullEnv", f_null_env},
 };
 

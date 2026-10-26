@@ -10,6 +10,8 @@ const STRING_EXPECTED = 3;
 const NUMBER_EXPECTED = 6;
 const OBJECT_EXPECTED = 2;
 const NAME_EXPECTED = 4;
+const FUNCTION_EXPECTED = 5;
+const GENERIC_FAILURE = 9;
 const PENDING_EXCEPTION = 10;
 const BIGINT_EXPECTED = 17;
 const DATE_EXPECTED = 18;
@@ -373,6 +375,57 @@ describe('properties', () => {
     const [st2, exc2] = api.integrity(refuses, true);
     expect([st2, exc2 && exc2.constructor]).toEqual([PENDING_EXCEPTION, TypeError]);
     expect(api.objectChecks()).toEqual(Array(8).fill(INVALID_ARG));
+  });
+});
+
+describe('comparisons and type checks', () => {
+  test('napi_strict_equals is ===', () => {
+    const o = {};
+    expect(api.compare(o, o)).toEqual([OK, true]);
+    expect(api.compare(o, {})).toEqual([OK, false]);
+    expect(api.compare(NaN, NaN)).toEqual([OK, false]);
+    expect(api.compare(0, -0)).toEqual([OK, true]);
+    expect(api.compare('a', 'a')).toEqual([OK, true]);
+    expect(api.compare(1, '1')).toEqual([OK, false]);
+  });
+
+  test('napi_instanceof', () => {
+    class A {}
+    class B extends A {}
+    expect(api.instanceOf(new B(), A)).toEqual([OK, true, undefined]);
+    expect(api.instanceOf(new A(), B)).toEqual([OK, false, undefined]);
+    expect(api.instanceOf(5, Number)).toEqual([OK, false, undefined]);
+    // Symbol.hasInstance decides, but only on a function
+    const Any = { [Symbol.hasInstance]: () => true };
+    expect(api.instanceOf(1, Any)[0]).toBe(FUNCTION_EXPECTED);
+    const Yes = function () {};
+    Object.defineProperty(Yes, Symbol.hasInstance, { value: () => true });
+    expect(api.instanceOf(1, Yes)).toEqual([OK, true, undefined]);
+    // a constructor that is not a function: a TypeError and napi_function_expected
+    const [st, r, exc] = api.instanceOf({}, {});
+    expect([st, r]).toEqual([FUNCTION_EXPECTED, false]);
+    expect(exc).toBeInstanceOf(TypeError);
+    expect([exc.message, exc.code]).toEqual(['Constructor must be a function', 'ERR_NAPI_CONS_FUNCTION']);
+    // ToObject of null: napi_object_expected
+    expect(api.instanceOf({}, null).slice(0, 2)).toEqual([OBJECT_EXPECTED, false]);
+    // a throwing Symbol.hasInstance: napi_generic_failure, the exception pending
+    const Throws = function () {};
+    Object.defineProperty(Throws, Symbol.hasInstance, { value: () => { throw new Error('has'); } });
+    const [st2, , exc2] = api.instanceOf({}, Throws);
+    expect(st2).toBe(GENERIC_FAILURE);
+    expect(exc2.message).toBe('has');
+  });
+
+  test('napi_is_arraybuffer / _typedarray / _dataview / _buffer / _detached_arraybuffer', () => {
+    const ab = new ArrayBuffer(8);
+    expect(api.kinds(ab)).toEqual([true, false, false, false, false, OK]);
+    expect(api.kinds(new Uint8Array(ab))).toEqual([false, true, false, true, false, OK]);
+    expect(api.kinds(new DataView(ab))).toEqual([false, false, true, true, false, OK]);
+    expect(api.kinds({})).toEqual([false, false, false, false, false, OK]);
+    const detached = new ArrayBuffer(4);
+    (detached as any).transfer();
+    expect(api.kinds(detached)).toEqual([true, false, false, false, true, OK]);
+    expect(api.compareChecks()).toEqual(Array(12).fill(INVALID_ARG));
   });
 });
 

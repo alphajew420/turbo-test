@@ -199,7 +199,8 @@ fn references_count_up_and_down() {
 /// passes against Node 26: errors (napi_throw_* / napi_create_* of each kind,
 /// napi_get_last_error_info, napi_fatal_exception), numbers, bigints, dates, strings (Latin-1,
 /// UTF-16, property keys, external strings), symbols, coercions, arrays, properties (by key
-/// value, own, named, elements, all names, prototype, freeze / seal) and a NULL env.
+/// value, own, named, elements, all names, prototype, freeze / seal), comparisons and type
+/// checks, and a NULL env.
 #[test]
 fn every_node_api_family_behaves() {
     let p = project("napi-api");
@@ -213,7 +214,7 @@ fn every_node_api_family_behaves() {
     );
     let j = json_report(&r);
     assert_eq!(j["numFailedTests"], 0, "{}", r.all());
-    assert_eq!(j["numPassedTests"], 25, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 28, "{}", r.all());
     // napi_fatal_exception reported the error as uncaught (what a throwing timer callback gets)
     assert!(
         r.stderr.contains("uncaught reported as uncaught"),
