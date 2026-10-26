@@ -1,4 +1,4 @@
-/* Exercises every Node-API entrypoint src/napi_host.rs implements. Each export is a
+/* Exercises the core Node-API entrypoints (api.c, async.c and the others cover the rest). Each export is a
  * thin wrapper around one (or a few) napi_* calls; it hands the results back to JS so
  * the spec (full.test.ts) can assert them, and records the napi_status of its last
  * call in g_status (read back via `status()`). */

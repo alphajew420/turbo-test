@@ -5,6 +5,41 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
 
 ## [Unreleased]
 
+### Fixed
+- Config discovery (turbo-test#43 item 1): `setupFiles` are read from every config file vitest
+  resolves, in its order (`vitest.config` then `vite.config`, each `.ts .mts .cts .js .mjs
+  .cjs`); `vitest.config.{cts,mjs,cjs}` and `vite.config.{mts,cts,js,mjs,cjs}` were ignored and
+  `vite.config.ts` beat `vitest.config.js`.
+- Matchers build their failure message only when the assertion fails (turbo-test#43 item 2):
+  a passing `toBe` no longer throws when formatting an operand throws (a native class
+  prototype whose members check their receiver: "Illegal invocation").
+- Node-API references keep a count (turbo-test#43 item 3): `napi_create_reference` honours
+  `initial_refcount`, `napi_reference_ref` / `napi_reference_unref` move it, and a reference at
+  0 is weak, as in Node.
+- `napi_define_properties` leaves a missing accessor half out of the definition (turbo-test#43
+  item 4), so redefining an existing accessor with one half keeps the other.
+- Node-API (turbo-test#44): every function of Node 26's `js_native_api.h` and `node_api.h` up to
+  NAPI_VERSION 10 is implemented with Node's semantics — the error family and
+  `napi_get_last_error_info` (every call records its status; a NULL env is
+  `napi_invalid_arg`), numbers / bigints / dates, Latin-1 / UTF-16 / external strings and
+  property keys, symbols, coercions, the property family, comparisons and type checks,
+  arraybuffers / typed arrays / dataviews, external buffers over the addon's memory (no
+  longer copied, their finalizer runs), promises, externals, `napi_new_instance` (it threw "not
+  implemented"), `napi_run_script`, handle scopes, instance data, cleanup hooks (run at env
+  teardown in Node's order), `napi_module_register`, `node_api_get_module_file_name`, the
+  versions (`process.versions.napi` is `'10'`) and the declared module API version, async work
+  on a four-thread pool, threadsafe functions, async contexts / `napi_make_callback` / callback
+  scopes. Their completions and calls run on the JS thread between macrotasks, and in-flight
+  work keeps the event loop alive. An addon importing a function the host does not provide now
+  fails its `require()` with an error naming it instead of crashing the whole run (SIGSEGV), and
+  load errors carry the loader's message. The inventory (function, version, tests, host
+  differences) is [docs/node-api.md](docs/node-api.md).
+
+### Tests
+- Node-API fixtures `api.c`, `async.c`, `cleanup.c`, `apiversion.c`, `refs.c`, `selfreg.c`,
+  `fatal.c` and `unknown.c` with their specs; every spec also passes against Node 26.11 with the
+  same compiled addon (but its host-only cases).
+
 ## [0.6.0] - 2026-10-26 — turbo-dom consolidation
 
 The browser binding and the V8 fork moved into the

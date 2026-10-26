@@ -1,5 +1,5 @@
-/* Minimal Node-API declarations for the turbo-test napi host integration tests.
- * Only the entrypoints src/napi_host.rs exports are declared; every one is left
+/* Node-API declarations for the turbo-test napi host integration tests (written for these
+ * fixtures, not Node's headers). Only what the host exports is declared; every one is left
  * undefined in the compiled .node and resolved against the turbo-test binary at
  * dlopen time (macOS: -undefined dynamic_lookup, Linux: default for -shared). */
 #ifndef TT_NAPI_H

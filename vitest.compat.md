@@ -172,6 +172,12 @@ has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve
 | `constants` | Node's merge of `os.constants` (`errno`, `priority`, `signals`), `fs.constants` and `crypto.constants`. `os.constants.signals`/`errno` carry the POSIX numbers Linux and macOS share (empty on Windows). |
 | `path`, `os`, `url`, `util`, `events`, `stream`, `crypto`, `module`, `child_process`, `perf_hooks`, `http`, `https`, `http2`, `net`, `tls`, `zlib`, `dns`, `dns/promises`, `tty`, `dgram`, `readline`, `v8`, `diagnostics_channel`, `async_hooks` | Load-time surfaces (enough for libraries to import and construct); see `src/runtime.js`. No real networking, processes or compression. |
 
+Native addons (`.node`) load through turbo-test's own Node-API host, which implements every
+Node-API function up to version 10 with Node 26's semantics; see
+[docs/node-api.md](docs/node-api.md) for the inventory and the few host differences.
+Matchers build their failure message only when the assertion fails, as vitest does: a passing
+assertion never formats its operands.
+
 ---
 
 ## 5. Config-file reading (`cli.js`)
@@ -183,7 +189,8 @@ has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve
 | `coverage.include/exclude/thresholds` | ✅ | string-scan; flags win over config. |
 | `test.environment` | ✅ | string-scan; sets the run default env when `--environment` is absent → `TURBO_ENV`. Per-file pragma still wins. |
 | anything requiring evaluating the config (functions, `defineConfig` logic, env interpolation, plugins, `setupFiles` array beyond first, aliases) | 🟡/❌ | Pure regex scan — dynamic config is invisible. |
-| `test.globals`, `test.testTimeout`, `test.retry`, `test.bail`, `test.pool`, `test.setupFiles`, `test.reporters` | ❌ | Not read from config. (`test.isolate:false` IS autodetected separately in `runner.rs`.) |
+| `test.setupFiles` | ✅ | read by the runner (`runner.rs`) from the nearest config, every name vitest resolves in its order (`vitest.config` then `vite.config`, each `.ts .mts .cts .js .mjs .cjs`); a jest config's `setupFiles` / `setupFilesAfterEnv` otherwise. |
+| `test.globals`, `test.testTimeout`, `test.retry`, `test.bail`, `test.pool`, `test.reporters` | ❌ | Not read from config. (`test.isolate:false` IS autodetected separately in `runner.rs`.) |
 
 ---
 

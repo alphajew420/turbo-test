@@ -1,12 +1,11 @@
 //! Node-API (napi) host — load native `.node` addons in turbo-test's V8 embedding.
 //!
-//! Implements the subset of the napi C ABI that real addons call, backed by rusty_v8.
-//! This is what Node/Deno/Bun each provide; here it is scoped to the surface turbo-dom's
-//! parser addon needs (enumerated from `nm -u` on the .node):
-//!   value/object/string/number, arrays, functions + cb_info, arraybuffer/typedarray,
-//!   errors/exceptions, references, napi_wrap / unwrap / remove_wrap, classes and property
-//!   descriptors (napi_define_class / napi_define_properties / napi_get_new_target, what
-//!   node-addon-api's ObjectWrap builds on), threadsafe-fn (stubbed).
+//! Implements the Node-API C ABI, backed by rusty_v8: every function of Node 26's
+//! `js_native_api.h` and `node_api.h` up to NAPI_VERSION 10 (the inventory is
+//! docs/node-api.md). The asynchronous part (async work, threadsafe functions, async contexts,
+//! callback scopes) is `napi_host_async.rs`. An addon is opened with every import bound at load
+//! (RTLD_NOW), so one importing a function the host does not provide fails its require() with
+//! an error naming it instead of crashing on the first call.
 //!
 //! Bridge: `napi_value` IS a `v8::Local<Value>` (Local is `NonNull<T>` — pointer-sized),
 //! so they transmute. Handles are created in the scope stored on the env for the current

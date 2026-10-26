@@ -1,13 +1,15 @@
-//! The Node-API host (src/napi_host.rs) end to end: C addons compiled at test time are
-//! `require()`d from specs run by the real CLI, and the specs assert what every implemented
-//! `napi_*` entrypoint produced (values, statuses, thrown errors, pending exceptions), plus the
-//! module-init paths (exports vs returned value, throwing init, an import the host does not
-//! provide, a module registered with napi_module_register, missing init symbol, a file that fails to dlopen, a nested require() during init, init serialized
-//! across workers), re-entrant callbacks, several addons loaded side by side, and napi_wrap with
-//! its finalizers (on collection and at env teardown). The expected
-//! values are Node-API's: the same specs pass against Node 26 with the same fixtures, except for
-//! host-only behaviour (unsupported napi_new_instance etc., reference ids, cases where Node aborts or
-//! deadlocks).
+//! The Node-API host (src/napi_host.rs, src/napi_host_async.rs) end to end: C addons compiled
+//! at test time are `require()`d from specs run by the real CLI, and the specs assert what the
+//! `napi_*` / `node_api_*` functions produced (values, statuses, thrown errors, pending
+//! exceptions, last-error info), plus the module-init paths (exports vs returned value,
+//! throwing init, an import the host does not provide, a module registered with
+//! napi_module_register, a declared module API version, missing init symbol, a file that
+//! fails to dlopen, a nested require() during init, init serialized across workers),
+//! re-entrant callbacks, several addons loaded side by side, references, napi_wrap and
+//! finalizers (on collection and at env teardown), cleanup hooks, async work and threadsafe
+//! functions on the event loop. The expected values are Node-API's: the same specs pass against
+//! Node 26 with the same fixtures, except for host-only behaviour (reference ids, host load
+//! messages, cases where Node aborts, crashes or deadlocks). docs/node-api.md has the inventory.
 #![cfg(unix)]
 
 mod common;
