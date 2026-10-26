@@ -91,3 +91,40 @@ fn only_runs_what_vitest_runs() {
         r.all()
     );
 }
+
+/// The tests a `--reporter tap` run ran (its points without a `# SKIP` directive), names only.
+fn ran(r: &Run) -> Vec<String> {
+    tap_points(r)
+        .into_iter()
+        .filter(|l| !l.ends_with("# SKIP"))
+        .map(|l| l.split_once(" - ").unwrap().1.to_string())
+        .collect()
+}
+
+#[test]
+#[ignore = "turbo-test#66: fails until the fix"]
+fn name_pattern_matches_the_space_joined_full_name() {
+    // turbo-test#66: -t was matched against `describe > test`. vitest 4.1.12 matches the full
+    // name, the names joined with a space (`getTaskFullName`).
+    let p = Project::new("rc-collect-tname");
+    p.file(
+        "a.test.js",
+        "describe('outer', () => {\n\
+           it('inner pass', () => {})\n\
+           describe('deep', () => { it('leaf', () => {}) })\n\
+         })\n\
+         test('top', () => {})\n",
+    );
+    let cases: [(&str, &[&str]); 5] = [
+        ("outer inner", &["outer > inner pass"]),
+        ("outer > inner", &[]),
+        ("^outer deep leaf$", &["outer > deep > leaf"]),
+        ("deep", &["outer > deep > leaf"]),
+        ("^top$", &["top"]),
+    ];
+    for (pat, want) in cases {
+        let r = turbo_test(&p.dir, &["--reporter", "tap", "-t", pat, "a.test.js"], &[]);
+        assert_eq!(r.code, Some(0), "{pat}\n{}", r.all());
+        assert_eq!(ran(&r), want, "{pat}\n{}", r.all());
+    }
+}
