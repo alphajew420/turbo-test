@@ -1426,23 +1426,43 @@ fn run_js(scope: &mut v8::PinScope, js: &str) {
     }
 }
 
-/// Extract `const/let/var ... = vi.hoisted(...)` declarations (full statements) so they can
-/// be replayed in the mock prepass — mock factories commonly close over hoisted vars.
+/// Extract the `vi.hoisted(...)` statements (full statements) so they can be replayed in the
+/// mock prepass — mock factories commonly close over hoisted vars. A declared call
+/// (`const|let|var <binding> = [await] vi.hoisted(...)`) is taken from its keyword; a bare call
+/// (`[await] vi.hoisted(...)`, also hoisted by vitest) from the call itself. A statement ends at
+/// the call's closing paren, plus a `;` that follows it.
 fn extract_hoisted(src: &str) -> Vec<String> {
     let mut out = Vec::new();
     let bytes = src.as_bytes();
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
     let mut i = 0;
     while let Some(p) = src.get(i..).and_then(|s| s.find("vi.hoisted(")) {
         let at = i + p;
         i = at + "vi.hoisted(".len();
-        // statement start: nearest preceding `const `/`let `/`var ` on the way back
         let head = src.get(..at).unwrap_or("");
+        // `await` directly before the call belongs to it
+        let lead = head.trim_end();
+        let call_start = match lead.strip_suffix("await") {
+            Some(pre) if !pre.chars().next_back().is_some_and(ident) => pre.len(),
+            _ => at,
+        };
+        let before_call = src.get(..call_start).unwrap_or("").trim_end();
+        // declared: the nearest `const `/`let `/`var ` keyword whose text up to the call is just
+        // `<binding> =` (no statement boundary in between); otherwise a bare call
         let start = ["const ", "let ", "var "]
             .iter()
             .filter_map(|kw| head.rfind(kw))
-            .max();
-        let Some(start) = start else { continue };
-        // balance parens from vi.hoisted( to its close, then include up to ';'
+            .max()
+            .filter(|&kw| {
+                let between = src.get(kw..call_start).unwrap_or("");
+                !head[..kw].chars().next_back().is_some_and(ident)
+                    && before_call.ends_with('=')
+                    && !before_call.ends_with("==")
+                    && !between.contains(';')
+                    && !between.contains("vi.hoisted(")
+            })
+            .unwrap_or(call_start);
+        // balance parens from vi.hoisted( to its close, then include a following ';'
         let mut depth = 1i32;
         let mut k = i;
         while k < bytes.len() && depth > 0 {
@@ -1453,12 +1473,12 @@ fn extract_hoisted(src: &str) -> Vec<String> {
             }
             k += 1;
         }
-        // swallow a trailing semicolon if present
-        while k < bytes.len() && (bytes[k] as char).is_whitespace() {
-            k += 1;
+        let mut end = k;
+        while end < bytes.len() && (bytes[end] as char).is_whitespace() {
+            end += 1;
         }
-        if k < bytes.len() && bytes[k] as char == ';' {
-            k += 1;
+        if end < bytes.len() && bytes[end] as char == ';' {
+            k = end + 1;
         }
         out.push(src.get(start..k).unwrap_or("").to_string());
         i = k.max(at + 1);

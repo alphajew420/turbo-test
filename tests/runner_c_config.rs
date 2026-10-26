@@ -1,7 +1,7 @@
 //! Config and mock semantics that follow jest/vitest: a JSON jest config (package.json
 //! `"jest"` block, `jest.config.json`) is read like `jest.config.js`; a factory-less `vi.mock`
 //! stays factory-less whatever code follows it; entry-file mocks intercept on the legacy
-//! TURBO_NO_MR bundle path too.
+//! TURBO_NO_MR bundle path too; a bare `vi.hoisted` after a declared one is its own statement.
 #![cfg(unix)]
 
 mod common;
@@ -142,6 +142,46 @@ test('entry mocks intercept', () => {
     );
     for env in [&[("TURBO_NO_MR", "1")][..], &[][..]] {
         let r = turbo_test(&p.dir, &["src/a.test.js"], env);
+        assert_passes(&r, 1);
+    }
+}
+
+#[test]
+fn a_bare_vi_hoisted_after_a_declared_one_runs_once_in_the_prepass() {
+    // turbo-test#31 item 7: the bare call's statement start was walked back to the previous
+    // `let`, so the mock prepass declared `b` twice (SyntaxError) and its mocks never
+    // registered. Under TURBO_NO_MR (legacy bundle path) the prepass is the only registration
+    // of an entry mock, so the real package leaked through.
+    let p = Project::new("rc-hoisted");
+    p.with_esbuild();
+    p.file("package.json", r#"{"name":"r7"}"#);
+    p.file(
+        "node_modules/react/package.json",
+        r#"{"name":"react","main":"index.js"}"#,
+    );
+    p.file(
+        "node_modules/react/index.js",
+        "exports.createElement = () => null;\n",
+    );
+    p.file(
+        "node_modules/dep/package.json",
+        r#"{"name":"dep","main":"index.js"}"#,
+    );
+    p.file("node_modules/dep/index.js", "exports.dep = () => 'real';\n");
+    p.file(
+        "a.test.js",
+        r#"import { dep } from 'dep';
+let b = vi.hoisted(() => 2)
+vi.hoisted(() => { globalThis.H3 = 3; });
+vi.mock('dep', () => ({ dep: () => b + globalThis.H3 }));
+test('hoisted values reach the factory', () => {
+  expect(b).toBe(2);
+  expect(dep()).toBe(5);
+});
+"#,
+    );
+    for env in [&[][..], &[("TURBO_NO_MR", "1")][..]] {
+        let r = turbo_test(&p.dir, &["a.test.js"], env);
         assert_passes(&r, 1);
     }
 }

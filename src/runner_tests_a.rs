@@ -892,12 +892,37 @@ fn extract_hoisted_statements() {
         extract_hoisted(src),
         vec![
             "const { a } = vi.hoisted(() => ({ a: fn(1) }));".to_string(),
-            // no `;`: the whitespace scanned while looking for one is kept
-            "let b = vi.hoisted(() => 2)\n".to_string(),
+            // no `;`: the statement ends at the call's closing paren
+            "let b = vi.hoisted(() => 2)".to_string(),
         ]
     );
-    // no declaring keyword before it -> skipped
-    assert!(extract_hoisted("vi.hoisted(() => 1);").is_empty());
+    // a bare call is hoisted too (vitest hoists every vi.hoisted)
+    assert_eq!(
+        extract_hoisted("vi.hoisted(() => 1);"),
+        vec!["vi.hoisted(() => 1);".to_string()]
+    );
+    // turbo-test#31 item 7: a bare call after a declared one starts at the call, not at the
+    // previous statement's `let` (which declared `b` twice in the prepass)
+    assert_eq!(
+        extract_hoisted("let b = vi.hoisted(() => 2)\nvi.hoisted(() => 3);"),
+        vec![
+            "let b = vi.hoisted(() => 2)".to_string(),
+            "vi.hoisted(() => 3);".to_string()
+        ]
+    );
+    // `await vi.hoisted(async ...)`, declared and bare
+    assert_eq!(
+        extract_hoisted("const { m } = await vi.hoisted(async () => ({ m: 1 }));\nawait vi.hoisted(async () => {});"),
+        vec![
+            "const { m } = await vi.hoisted(async () => ({ m: 1 }));".to_string(),
+            "await vi.hoisted(async () => {});".to_string()
+        ]
+    );
+    // a keyword that only ends an identifier (`outlet `) is not a declaration
+    assert_eq!(
+        extract_hoisted("outlet = vi.hoisted(() => 4);"),
+        vec!["vi.hoisted(() => 4);".to_string()]
+    );
     // unbalanced: runs to the end of the source
     assert_eq!(
         extract_hoisted("var h = vi.hoisted(() => (1"),
