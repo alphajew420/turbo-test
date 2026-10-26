@@ -840,3 +840,16 @@ test('t', () => { expect(f(1)).toBe(1); expect(h()).toBe(3); });\n",
         assert!(rec.contains("LF:3\nLH:3\n"), "{rec}");
     }
 }
+
+#[test]
+fn top_level_statements_are_covered() {
+    let (p, lcov, j) = issue34_run("cov-i34-top");
+    let top = p.path("top.cjs");
+    // V8 counts top-level code only in the module-wide range, which opens on the wrapper line
+    assert_eq!(summary_of(&j, &top, "statements"), (3, 3));
+    assert_eq!(summary_of(&j, &top, "lines"), (3, 3));
+    assert_eq!(
+        lines_with(&lcov_record(&lcov, &top), "DA:"),
+        vec!["DA:1,1", "DA:2,1", "DA:3,1"]
+    );
+}

@@ -605,7 +605,7 @@ function f(x, y) {
     register_meta(&p, &identity_wrapped(src), src);
     let body = (at(src, "function", 0), WRAP.len() + src.len(), 4);
     let ranges = vec![
-        (0, WRAP.len() + src.len(), 1), // module wrapper: starts on line 0 → dropped
+        (0, WRAP.len() + src.len(), 1), // module wrapper: opens on line 0 → starts at (0, 0)
         body,
         (at(src, "{\n    a()", 0), at(src, "} else", 1), 3), // consequent
         (at(src, "{\n    b()", 0), at(src, "  }\n  const t", 3), 1), // alternate
@@ -708,6 +708,63 @@ fn map_statements_uses_the_innermost_covering_range() {
     map_statements(&p, &[(at(src, "function", 0), WRAP.len() + src.len(), 7)]);
     let s = stmts_of(&p);
     assert_eq!((s[&0].1, s[&2].1, s[&3].1), (7, 7, 7));
+}
+
+#[test]
+fn top_level_code_takes_the_module_range_that_opens_on_the_wrapper_line() {
+    // V8 counts top-level code only in the module-wide ranges (the script and the CJS wrapper
+    // function), which start on wrapper line 0 and end past the source map comment — neither end
+    // has a source position of its own.
+    let src = "const a = 0;\nif (a) {\n  g();\n}\nfunction g() {\n  return a;\n}\nfunction h() {\n  return 0;\n}";
+    let p = vpath("top-level.js");
+    let w = identity_wrapped(src);
+    register_meta(&p, &w, src);
+    let meta = meta_for(&p).unwrap();
+    let last_line = WRAP.len() + src.rfind('\n').unwrap() + 1;
+    assert_eq!(meta.code_span, Some((WRAP.len(), last_line)));
+    let ranges = vec![
+        (0, w.len(), 1),                                          // the script
+        (1, w.len() - 1, 1),                                      // the wrapper function
+        (at(src, "{\n  g()", 0), at(src, "}\nfunction g", 1), 0), // the `if` never fires
+        (at(src, "function g", 0), at(src, "}\nfunction h", 1), 0),
+        (at(src, "function h", 0), WRAP.len() + src.len(), 0),
+    ];
+    map_statements(&p, &ranges);
+    // const a (1), if (2), g() (3), return a (6), return 0 (9)
+    assert_eq!(
+        stmts_of(&p),
+        BTreeMap::from([
+            (0, (1, 1)),
+            (1, (2, 1)),
+            (2, (3, 0)),
+            (3, (6, 0)),
+            (4, (9, 0))
+        ])
+    );
+    // the top-level `if` is reached: then 0, else 1 (was "-" / "-": never reached)
+    map_branches(&p, &ranges);
+    assert_eq!(
+        brs_of(&p),
+        BTreeMap::from([((0, 0), (2, true, 0)), ((0, 1), (2, true, 1))])
+    );
+    // a range that ends before the first mapped position (a runtime helper) is still dropped
+    let q = vpath("top-level-helper.js");
+    register_meta(&q, &w, src);
+    map_statements(&q, &[(0, WRAP.len() - 1, 9)]);
+    assert!(stmts_of(&q).values().all(|&(_, c)| c == 0));
+}
+
+#[test]
+fn innermost_range_prefers_the_narrower_of_two_with_the_same_start() {
+    // a CommonJS function on line 1 column 0 starts where the module range does (both map to
+    // (0, 0)): its own range, not the module's, must count its statements — whatever the order.
+    let src = "function f() {\n  return 1;\n}\nmodule.exports = f;";
+    let p = vpath("same-start.js");
+    let w = identity_wrapped(src);
+    register_meta(&p, &w, src);
+    let f = (at(src, "function f", 0), at(src, "}\nmodule", 1));
+    map_statements(&p, &[(f.0, f.1, 0), (0, w.len(), 1)]);
+    assert_eq!(stmts_of(&p), BTreeMap::from([(0, (2, 0)), (1, (4, 1))]));
 }
 
 #[test]

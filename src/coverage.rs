@@ -373,6 +373,8 @@ struct ScriptMeta {
     statements: Vec<(u32, u32)>,   // executable statement starts in original (line, col)
     /// gen lines `[0, header_end)` are esbuild's interop prologue (see `interop_header_end`)
     header_end: usize,
+    /// wrapped offsets of the first and last mapped positions of the code (see `code_span`)
+    code_span: Option<(usize, usize)>,
 }
 
 impl ScriptMeta {
@@ -404,6 +406,23 @@ fn interop_header_end(gen_lines: &[&str], segs: &Segments) -> usize {
         }
     }
     0
+}
+
+/// Wrapped offsets of the first and last mapped generated positions after the prologue (None
+/// when nothing is mapped). V8 ranges that open before / close after them are the module-wide
+/// ones — see `orig_ranges`.
+fn code_span(line_start: &[usize], segs: &Segments, header_end: usize) -> Option<(usize, usize)> {
+    let mut mapped = segs
+        .iter()
+        .enumerate()
+        .skip(header_end)
+        .filter_map(|(g, row)| {
+            let ls = *line_start.get(g + 1)?; // esbuild gen line g ↔ wrapped line g+1
+            Some((ls + row.first()?.0 as usize, ls + row.last()?.0 as usize))
+        });
+    let first = mapped.next()?;
+    let last = mapped.next_back().unwrap_or(first);
+    Some((first.0, last.1))
 }
 static META: Mutex<Option<HashMap<PathBuf, Option<Arc<ScriptMeta>>>>> = Mutex::new(None);
 
@@ -439,6 +458,7 @@ pub fn register_meta(file: &Path, wrapped: &str, orig_source: &str) {
             .collect();
         let gen_lines: Vec<&str> = wrapped.split('\n').skip(1).collect();
         let header_end = interop_header_end(&gen_lines, &segments);
+        let code_span = code_span(&line_start, &segments, header_end);
         Arc::new(ScriptMeta {
             line_start,
             genmap,
@@ -446,6 +466,7 @@ pub fn register_meta(file: &Path, wrapped: &str, orig_source: &str) {
             branches,
             statements,
             header_end,
+            code_span,
         })
     });
     let mut g = META.lock().unwrap();
@@ -714,6 +735,36 @@ fn gen_to_orig(meta: &ScriptMeta, off: usize) -> Option<(u32, u32)> {
     Some((s.1, s.2 + (gen_col - s.0)))
 }
 
+type OrigPos = (u32, u32);
+type OrigRange = (OrigPos, OrigPos, i64);
+
+/// V8's covered ranges in original (line, col) coordinates; empty and unmappable ones dropped.
+/// A range that opens before the first mapped generated position starts at (0, 0), and one that
+/// closes after the last mapped position ends at the end of the source. That keeps the
+/// module-wide ranges — the script and the CJS wrapper function, which open on wrapper line 0
+/// and close past the source-map comment — and they are V8's only count for top-level code. A
+/// runtime helper (it lies wholly before the first mapping) is still dropped.
+fn orig_ranges(meta: &ScriptMeta, ranges: &[(usize, usize, i64)]) -> Vec<OrigRange> {
+    let (first, last) = meta.code_span.unwrap_or((0, usize::MAX));
+    let start = |o: usize| gen_to_orig(meta, o).or((o < first).then_some((0, 0)));
+    let end = |o: usize| gen_to_orig(meta, o).or((o > last).then_some((u32::MAX, u32::MAX)));
+    ranges
+        .iter()
+        .filter_map(|&(gs, ge, c)| Some((start(gs)?, end(ge)?, c)))
+        .filter(|(s, e, _)| s < e)
+        .collect()
+}
+
+/// The innermost range containing `p`: the latest start and, among equal starts, the earliest
+/// end (a function at source (0, 0) starts where the module range does).
+fn innermost(oranges: &[OrigRange], p: OrigPos) -> Option<OrigRange> {
+    oranges
+        .iter()
+        .filter(|(s, e, _)| *s <= p && p < *e)
+        .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
+        .copied()
+}
+
 /// Branch coverage: map V8's generated block ranges into original (line, col) ranges, then look up
 /// each AST decision arm's count to emit lcov BRDA/BRF/BRH.
 pub fn map_branches(file: &Path, ranges: &[(usize, usize, i64)]) {
@@ -721,34 +772,10 @@ pub fn map_branches(file: &Path, ranges: &[(usize, usize, i64)]) {
     if meta.branches.is_empty() {
         return;
     }
-    // original-coordinate covered ranges
-    let mut oranges: Vec<((u32, u32), (u32, u32), i64)> = Vec::new();
-    for &(gs, ge, c) in ranges {
-        if let (Some(s), Some(e)) = (gen_to_orig(&meta, gs), gen_to_orig(&meta, ge)) {
-            if s < e {
-                oranges.push((s, e, c));
-            }
-        }
-    }
-    let count_at = |p: (u32, u32)| -> Option<i64> {
-        let mut best: Option<((u32, u32), i64)> = None;
-        for &(s, e, c) in &oranges {
-            if s <= p && p < e && best.map(|(bs, _)| s >= bs).unwrap_or(true) {
-                best = Some((s, c));
-            }
-        }
-        best.map(|(_, c)| c)
-    };
+    let oranges = orig_ranges(&meta, ranges);
+    let count_at = |p: OrigPos| innermost(&oranges, p).map(|r| r.2);
     // The innermost covered range CONTAINING `p` (start, end, count) — gives the enclosing block.
-    let block_of = |p: (u32, u32)| -> Option<((u32, u32), (u32, u32), i64)> {
-        let mut best: Option<((u32, u32), (u32, u32), i64)> = None;
-        for &(s, e, c) in &oranges {
-            if s <= p && p < e && best.map(|(bs, _, _)| s >= bs).unwrap_or(true) {
-                best = Some((s, e, c));
-            }
-        }
-        best
-    };
+    let block_of = |p: OrigPos| innermost(&oranges, p);
     // The covered range with the SMALLEST start within `[lo, hi)` — used to find a consequent's
     // own block, which V8 may start a column or two past the AST keyword position (so plain
     // point-containment at the keyword misses it and falls through to the parent count).
@@ -808,25 +835,9 @@ pub fn map_statements(file: &Path, ranges: &[(usize, usize, i64)]) {
     if meta.statements.is_empty() {
         return;
     }
-    // original-coordinate covered ranges (same construction as map_branches)
-    let mut oranges: Vec<((u32, u32), (u32, u32), i64)> = Vec::new();
-    for &(gs, ge, c) in ranges {
-        if let (Some(s), Some(e)) = (gen_to_orig(&meta, gs), gen_to_orig(&meta, ge)) {
-            if s < e {
-                oranges.push((s, e, c));
-            }
-        }
-    }
-    // innermost (smallest-start) range containing `p` gives that statement's hit count.
-    let count_at = |p: (u32, u32)| -> Option<i64> {
-        let mut best: Option<((u32, u32), i64)> = None;
-        for &(s, e, c) in &oranges {
-            if s <= p && p < e && best.map(|(bs, _)| s >= bs).unwrap_or(true) {
-                best = Some((s, c));
-            }
-        }
-        best.map(|(_, c)| c)
-    };
+    // the innermost range containing a statement's start gives its hit count
+    let oranges = orig_ranges(&meta, ranges);
+    let count_at = |p: OrigPos| innermost(&oranges, p).map(|r| r.2);
     for (idx, &pos) in meta.statements.iter().enumerate() {
         let line = pos.0 + 1; // 1-based source line of the statement
         let count = count_at(pos).unwrap_or(0).max(0) as u64;
