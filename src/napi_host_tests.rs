@@ -1,6 +1,7 @@
 //! Unit tests for the napi host paths an addon cannot drive through `require()`: the panic
-//! guards (a C callback cannot unwind into Rust), stored pending exceptions, same-thread
-//! re-entry of the addon lock, and the trampoline's dispatch through its callback record.
+//! guards (a C callback cannot unwind into Rust), stored pending exceptions, termination
+//! handling, same-thread re-entry of the addon lock, and the trampoline's dispatch through its
+//! callback record.
 //! The end-to-end surface is covered by tests/napi_host.rs.
 
 use super::*;

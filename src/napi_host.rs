@@ -8,7 +8,14 @@
 //!
 //! Bridge: `napi_value` IS a `v8::Local<Value>` (Local is `NonNull<T>` — pointer-sized),
 //! so they transmute. Handles are created in the scope stored on the env for the current
-//! native call (set by the function trampoline / loader before calling into the addon).
+//! native call (set by the function trampoline / loader before calling into the addon, and
+//! restored when a nested call returns).
+//!
+//! Semantics follow Node's js_native_api_v8.cc (the status codes, the checks and coercions):
+//! every loaded addon gets its own env, owned by its isolate; callbacks may re-enter (native ->
+//! JS -> native); calls that can run JS honour a pending exception (NAPI_PREAMBLE) and park
+//! what JS throws on the env (`js_call`), from where napi_get_and_clear_last_exception can take
+//! it or the trampoline throws it to the JS caller. No entrypoint panics across the FFI boundary.
 
 #![allow(non_camel_case_types, non_upper_case_globals, dead_code, clippy::missing_safety_doc)]
 

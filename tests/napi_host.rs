@@ -1,8 +1,11 @@
 //! The Node-API host (src/napi_host.rs) end to end: C addons compiled at test time are
 //! `require()`d from specs run by the real CLI, and the specs assert what every implemented
-//! `napi_*` entrypoint produced (values, statuses, thrown errors), plus the module-init paths
-//! (exports vs returned value, throwing init, unsupported entrypoint, missing init symbol,
-//! a file that fails to dlopen).
+//! `napi_*` entrypoint produced (values, statuses, thrown errors, pending exceptions), plus the
+//! module-init paths (exports vs returned value, throwing init, unsupported entrypoint, missing
+//! init symbol, a file that fails to dlopen), re-entrant callbacks and several addons loaded
+//! side by side. The expected values are Node-API's: the same specs pass against Node 26 with
+//! the same fixtures, except for host-only behaviour (unsupported napi_wrap etc., reference ids,
+//! cases where Node aborts).
 #![cfg(unix)]
 
 mod common;
