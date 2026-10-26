@@ -147,3 +147,138 @@ fn json_report_matches_vitest() {
         }
     }
 }
+
+/// Test locations (`--includeTaskLocation` / `test.includeTaskLocation`): plain calls, member
+/// calls (`it.skip` — the property), call-of-call (`test.each(...)(` — its parenthesis, also
+/// across lines), a non-ASCII prefix (UTF-16 columns), `.for`, and a TypeScript file whose
+/// `vi.mock` is hoisted and whose mock factory shares a `let`.
+const LOCATED: [(&str, &str); 3] = [
+    (
+        "a.test.js",
+        r#"import { describe, it, test, expect } from 'vitest'
+test('top', () => { expect(1).toBe(1) })
+describe('d', () => {
+  it('inner', () => {})
+  it.skip('sk', () => {})
+  it.todo('td')
+    test.each([1, 2])('each %i', () => {})
+  test.each([
+    [1, 2],
+  ])('multi %i', () => {})
+})
+const é = 'ü'; test('after unicode ' + é, () => {})
+test.for([3])('for %i', () => {})
+"#,
+    ),
+    (
+        "dep.ts",
+        r#"export const v = (): number => 1
+"#,
+    ),
+    (
+        "t.test.ts",
+        r#"import { describe, it, test, expect, vi } from 'vitest'
+import { v } from './dep'
+interface Row { n: number }
+const rows: Row[] = [{ n: 1 }]
+let shared = 2
+describe('typed', () => {
+  test('uses mock', () => { expect(v()).toBe(2) })
+  it.each(rows)('row $n', (r: Row) => { expect(r.n).toBe(1) })
+})
+test('last', (): void => {})
+vi.mock('./dep', () => ({ v: () => shared }))
+"#,
+    ),
+];
+
+/// vitest 4.1.12's `location` for each test of [`LOCATED`], by file and full name.
+const LOCATIONS: [(&str, &str, u64, u64); 12] = [
+    ("a.test.js", "top", 2, 1),
+    ("a.test.js", "d inner", 4, 3),
+    ("a.test.js", "d sk", 5, 6),
+    ("a.test.js", "d td", 6, 6),
+    ("a.test.js", "d each 1", 7, 22),
+    ("a.test.js", "d each 2", 7, 22),
+    ("a.test.js", "d multi 1", 10, 5),
+    ("a.test.js", "after unicode ü", 12, 16),
+    ("a.test.js", "for 3", 13, 14),
+    ("t.test.ts", "typed uses mock", 7, 3),
+    ("t.test.ts", "typed row 1", 8, 16),
+    ("t.test.ts", "last", 10, 1),
+];
+
+#[test]
+#[ignore = "turbo-test#63: fails until the fix"]
+fn json_report_has_vitest_task_locations() {
+    // turbo-test#63 item 1: `--includeTaskLocation` was an unsupported flag and the report had no
+    // `location`. vitest writes `location: { line, column }` (1-based, UTF-16 columns, the call's
+    // V8 position mapped to the original source) after `failureMessages`.
+    for esbuild in [false, true] {
+        for via_config in [false, true] {
+            let p = Project::new("json-location");
+            if esbuild {
+                p.with_esbuild();
+            }
+            for (name, src) in LOCATED {
+                // without esbuild a mock factory cannot read the file's `let` (turbo-test#72);
+                // same line layout either way
+                let src = if esbuild {
+                    src.to_string()
+                } else {
+                    src.replace("v: () => shared", "v: () => 2")
+                };
+                p.file(name, &src);
+            }
+            let mut args = vec!["--reporter", "json"];
+            if via_config {
+                p.file(
+                    "vitest.config.js",
+                    "export default { test: { includeTaskLocation: true } }\n",
+                );
+            } else {
+                args.push("--includeTaskLocation");
+            }
+            let r = turbo_test(&p.dir, &args, &[]);
+            assert_eq!(r.code, Some(0), "{}", r.all());
+            let j = normalized(&p, &r);
+            let mut got = Vec::new();
+            for f in j["testResults"].as_array().unwrap() {
+                for a in f["assertionResults"].as_array().unwrap() {
+                    let loc = &a["location"];
+                    got.push((
+                        f["name"].as_str().unwrap().to_string(),
+                        a["fullName"].as_str().unwrap().to_string(),
+                        loc["line"].as_u64().unwrap_or(0),
+                        loc["column"].as_u64().unwrap_or(0),
+                    ));
+                }
+            }
+            let want: Vec<_> = LOCATIONS
+                .iter()
+                .map(|(f, n, l, c)| (f.to_string(), n.to_string(), *l, *c))
+                .collect();
+            assert_eq!(
+                got,
+                want,
+                "esbuild={esbuild} config={via_config}\n{}",
+                r.all()
+            );
+            let k = keys(r.stdout.trim());
+            let at = k.iter().position(|k| k == "location").unwrap();
+            assert_eq!(
+                &k[at - 1..at + 4],
+                ["failureMessages", "location", "line", "column", "meta"]
+            );
+        }
+    }
+    // without the option there is no `location`
+    let p = Project::new("json-no-location");
+    p.file("a.test.js", LOCATED[0].1);
+    let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
+    assert!(
+        !keys(r.stdout.trim()).contains(&"location".to_string()),
+        "{}",
+        r.all()
+    );
+}
