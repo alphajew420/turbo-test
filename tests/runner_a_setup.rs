@@ -1,5 +1,6 @@
-//! Setup files and isolate reuse through the real CLI: vitest `setupFiles` (bundled, with their
-//! vi.mock specifiers externalized and rewritten to absolute paths), setup-mock snapshot/restore
+//! Setup files and isolate reuse through the real CLI: vitest `setupFiles` (module-runner: loaded
+//! like a test file; otherwise bundled, with their vi.mock specifiers externalized and rewritten to
+//! absolute paths), setup-mock snapshot/restore
 //! and importer invalidation across files on a reused isolate (`isolate: false`,
 //! TURBO_REUSE_ISOLATE, TURBO_NO_REUSE), and setup files that fail to bundle.
 #![cfg(unix)]

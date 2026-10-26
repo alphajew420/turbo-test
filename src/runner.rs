@@ -991,7 +991,7 @@ fn esbuild_bundle_full(
     for e in externals {
         cmd.arg(format!("--external:{e}"));
     }
-    // Under the module-runner, this ESM bundle (setup files) must NOT inline node_modules
+    // Under the module-runner, this ESM bundle (setup-file fallback) must NOT inline node_modules
     // packages: the entry + its require-graph load every package via the shared CJS dep cache
     // (esbuild_bundle_dep_cjs uses --packages=external), so any package this bundle inlines
     // becomes a SECOND, separate instance. For a module-level singleton (react's dispatcher,
@@ -1348,14 +1348,37 @@ fn normalize_path(p: &Path) -> PathBuf {
     out
 }
 
-/// Run a setup module (bundled, with mock specifiers externalized) in the current context,
-/// then drain any vi.mock() calls it made (resolved relative to the setup file's dir).
+/// Run a setup module in the current context. Module-runner: like the test file itself (vitest
+/// runs setup files through the same module runner), so its vi.mock()s are hoisted above its own
+/// imports: the mock prepass registers them, then the setup module loads as CJS with its requires
+/// below its vi.mock calls. Otherwise (no esbuild CJS transform, e.g. top-level await): bundled,
+/// with mock specifiers externalized, then any vi.mock() calls it made are drained (resolved
+/// relative to the setup file's dir) — they reach the test files, not the setup's own imports.
 fn run_setup_file(
     scope: &mut v8::PinScope,
     file: &Path,
     externals: &[String],
     rewrite_map: &std::collections::HashMap<String, PathBuf>,
 ) {
+    if mr_enabled() && esbuild_transform_cjs(file, false).is_some() {
+        run_entry_mocks(scope, file);
+        // the setup's vi.hoisted() calls re-hit the prepass cache by index; afterwards the cache
+        // is cleared so the test file's own vi.hoisted() calls never read the setup's values
+        run_js(scope, "globalThis.__hoistedIdx = 0;");
+        {
+            // a throwing setup file is ignored, as on the bundle path
+            let tc = std::pin::pin!(v8::TryCatch::new(scope));
+            let tc = &mut tc.init();
+            if load_cjs(tc, file, false).is_some() {
+                tc.perform_microtask_checkpoint();
+            }
+        }
+        run_js(
+            scope,
+            "globalThis.__hoistedCache = []; globalThis.__hoistedIdx = 0;",
+        );
+        return;
+    }
     // reset the pending-mock queue before this setup file runs
     {
         let global = scope.get_current_context().global(scope);
@@ -1376,6 +1399,15 @@ fn run_setup_file(
     }
     resolve_pending_mocks(scope);
     drain_pending_mocks(scope, file.parent().unwrap_or(Path::new(".")), true);
+}
+
+/// Run a short framework snippet in the current context.
+fn run_js(scope: &mut v8::PinScope, js: &str) {
+    if let Some(code) = v8::String::new(scope, js) {
+        if let Some(s) = v8::Script::compile(scope, code, None) {
+            s.run(scope);
+        }
+    }
 }
 
 /// Extract `const/let/var ... = vi.hoisted(...)` declarations (full statements) so they can
@@ -2542,7 +2574,7 @@ fn esbuild_cjs_fallback(abs: &Path, prefer_metadata: bool) -> Option<String> {
 fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<String> {
     // Module-runner: per-module CJS transform (app) / per-package CJS bundle (node_modules)
     // so imports are live + mockable and react is shared. Only on the CJS load path (the test
-    // entry + its require-graph); the legacy ESM path (DOM boot, setup files) stays oxc.
+    // entry, setup files + their require-graph); the legacy ESM path (DOM boot) stays oxc.
     if as_cjs && mr_enabled() {
         // App code: transform per-file (live bindings → spyOn/vi.mock work). node_modules:
         // bundle-per-package (fast), but the context-bearing packages (react, @mui/*, @emotion/*)

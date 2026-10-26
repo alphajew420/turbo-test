@@ -1,7 +1,8 @@
 //! Module-runner (esbuild project) semantics that follow vitest/Node: a module's own load error
 //! is the reported cause (entry import, `require()`, dynamic `import()`); `import.meta`
 //! (url/filename/dirname) and CSS-module class-name proxies; a mock factory that throws fails the
-//! import of the mocked module with that error.
+//! import of the mocked module with that error; a setup file's `vi.mock` is hoisted above its own
+//! imports.
 #![cfg(unix)]
 
 mod common;
@@ -297,4 +298,46 @@ fn esm_graph_mock_factory_error_fails_the_import() {
         r.all()
     );
     assert_passes(&turbo_test(&p.dir, &["dyn.test.js"], &[]), 1);
+}
+
+#[test]
+fn setup_file_mocks_are_hoisted_above_its_own_imports() {
+    let p = esbuild_project("rc-setup-hoist");
+    p.file(
+        "vitest.config.js",
+        "export default { test: { setupFiles: ['./setup.js'] } };\n",
+    );
+    p.file(
+        "m.js",
+        "export const v = 'real';\nexport const f = () => 'real-f';\n",
+    );
+    p.file(
+        "setup.js",
+        r#"import { v, f } from './m.js';
+const { spy } = vi.hoisted(() => ({ spy: vi.fn(() => 'mocked-f') }));
+vi.mock('./m.js', () => ({ v: 'mocked', f: spy }));
+globalThis.SETUP_SAW = v;
+globalThis.SETUP_F = f;
+"#,
+    );
+    p.file(
+        "a.test.js",
+        r#"import { v, f } from './m.js';
+const own = vi.hoisted(() => 'entry-hoisted');
+test('the setup file saw its own mock', () => {
+  expect(globalThis.SETUP_SAW).toBe('mocked');
+});
+test('setup and test file share one mock', () => {
+  expect(v).toBe('mocked');
+  expect(f).toBe(globalThis.SETUP_F);
+  expect(f()).toBe('mocked-f');
+});
+test("the setup's vi.hoisted values do not leak into the test file's", () => {
+  expect(own).toBe('entry-hoisted');
+});
+"#,
+    );
+    for env in FRESH_AND_REUSE {
+        assert_passes(&turbo_test(&p.dir, &[], env), 3);
+    }
 }
