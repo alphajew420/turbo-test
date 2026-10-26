@@ -2667,13 +2667,15 @@ globalThis.jest = {
 };
 
 // ---- collector: describe / it / hooks ----
-const root = { name: '', tests: [], suites: [], hooks: { be: [], ae: [], ba: [], aa: [] }, parent: null };
+// A suite's `tasks` hold its tests and child suites (`suite: true`) in declaration order: vitest
+// runs and reports them in that order (turbo-test#64).
+const root = { name: '', tasks: [], suite: true, hooks: { be: [], ae: [], ba: [], aa: [] }, parent: null };
 let current = root;
 
 function describe(name, a, b) {
   const fn = typeof a === 'function' ? a : (typeof b === 'function' ? b : () => {});
-  const suite = { name, tests: [], suites: [], hooks: { be: [], ae: [], ba: [], aa: [] }, parent: current };
-  current.suites.push(suite);
+  const suite = { name, tasks: [], suite: true, hooks: { be: [], ae: [], ba: [], aa: [] }, parent: current };
+  current.tasks.push(suite);
   const prev = current;
   current = suite;
   fn();
@@ -2709,22 +2711,22 @@ function __defaultTimeout() {
 }
 function it(name, a, b) {
   const { fn, o } = __normTest(a, b);
-  current.tests.push({ name, fn, skip: false, only: false, retry: o.retry || 0, timeout: o.timeout });
+  current.tasks.push({ name, fn, skip: false, only: false, retry: o.retry || 0, timeout: o.timeout });
 }
-it.skip = (name, a, b) => current.tests.push({ name, fn: __normTest(a, b).fn, skip: true });
-it.todo = (name) => current.tests.push({ name, fn: () => {}, skip: true });
-it.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tests.push({ name, fn, skip: false, only: true, retry: o.retry || 0, timeout: o.timeout }); };
+it.skip = (name, a, b) => current.tasks.push({ name, fn: __normTest(a, b).fn, skip: true });
+it.todo = (name) => current.tasks.push({ name, fn: () => {}, skip: true });
+it.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn, skip: false, only: true, retry: o.retry || 0, timeout: o.timeout }); };
 it.concurrent = it; // accepted; this runner executes a file's tests sequentially
 it.each = (rows) => (name, fn) => {
   rows.forEach((row, i) => {
     const args = Array.isArray(row) ? row : [row];
-    current.tests.push({ name: `${name} [${i}]`, fn: () => fn(...args), skip: false, only: false, retry: 0 });
+    current.tasks.push({ name: `${name} [${i}]`, fn: () => fn(...args), skip: false, only: false, retry: 0 });
   });
 };
-it.skipIf = (cond) => (name, fn) => current.tests.push({ name, fn, skip: !!cond, only: false, retry: 0 });
-it.runIf = (cond) => (name, fn) => current.tests.push({ name, fn, skip: !cond, only: false, retry: 0 });
+it.skipIf = (cond) => (name, fn) => current.tasks.push({ name, fn, skip: !!cond, only: false, retry: 0 });
+it.runIf = (cond) => (name, fn) => current.tasks.push({ name, fn, skip: !cond, only: false, retry: 0 });
 // it.fails: the test PASSES iff its body throws (runSuite inverts the outcome via `fails`).
-it.fails = (name, a, b) => { const { fn, o } = __normTest(a, b); current.tests.push({ name, fn, skip: false, only: false, retry: o.retry || 0, fails: true }); };
+it.fails = (name, a, b) => { const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn, skip: false, only: false, retry: o.retry || 0, fails: true }); };
 // it.extend({...}) — test-context fixtures (best-effort). vitest passes a merged context object as
 // the test fn's first arg; fixtures defined as plain values or `async ({}, use) => use(value)`
 // functions are resolved here and provided. Returns a new test fn with these fixtures baked in.
@@ -2747,12 +2749,12 @@ it.extend = (fixtures) => {
     return ctx;
   };
   const wrap = (userFn) => async () => { const ctx = await resolveCtx(); return userFn(ctx); };
-  const ext = (name, a, b) => { const { fn, o } = __normTest(a, b); current.tests.push({ name, fn: wrap(fn), skip: false, only: false, retry: o.retry || 0 }); };
-  ext.skip = (name, a, b) => current.tests.push({ name, fn: wrap(__normTest(a, b).fn), skip: true });
-  ext.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tests.push({ name, fn: wrap(fn), skip: false, only: true, retry: o.retry || 0 }); };
+  const ext = (name, a, b) => { const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn: wrap(fn), skip: false, only: false, retry: o.retry || 0 }); };
+  ext.skip = (name, a, b) => current.tasks.push({ name, fn: wrap(__normTest(a, b).fn), skip: true });
+  ext.only = (name, a, b) => { __tt.hasOnly = true; const { fn, o } = __normTest(a, b); current.tasks.push({ name, fn: wrap(fn), skip: false, only: true, retry: o.retry || 0 }); };
   ext.each = (rows) => (name, fn) => rows.forEach((row, i) => {
     const args = Array.isArray(row) ? row : [row];
-    current.tests.push({ name: `${name} [${i}]`, fn: wrap((ctx) => fn(...args, ctx)), skip: false, only: false, retry: 0 });
+    current.tasks.push({ name: `${name} [${i}]`, fn: wrap((ctx) => fn(...args, ctx)), skip: false, only: false, retry: 0 });
   });
   ext.extend = (more) => it.extend({ ...fixtures, ...more });
   return ext;
@@ -2773,7 +2775,8 @@ async function runSuite(suite, ancestors, summary) {
     try { await h(); } catch (e) { summary.failed++; summary.failures.push(`${suite.name || '<root>'} beforeAll: ${(e && e.message) || String(e)}`); }
   }
   const chain = [...ancestors, suite];
-  for (const t of suite.tests) {
+  for (const t of suite.tasks) {
+    if (t.suite) { await runSuite(t, chain, summary); continue; }
     const label = chain.map((s) => s.name).filter(Boolean).concat(t.name).join(' > ');
     // -t/--testNamePattern: skip tests whose full `describe > it` name does not match the regex
     // (vitest: unanchored, case-sensitive, tested against the joined name).
@@ -2856,7 +2859,6 @@ async function runSuite(suite, ancestors, summary) {
       summary.tests.push({ name: label, status: 'failed', duration_ms: __dur, message: msg });
     }
   }
-  for (const child of suite.suites) await runSuite(child, chain, summary);
   for (const h of suite.hooks.aa) {
     try { await h(); } catch (e) { summary.failed++; summary.failures.push(`${suite.name || '<root>'} afterAll: ${(e && e.message) || String(e)}`); }
   }
@@ -2879,7 +2881,7 @@ globalThis.__tt = {
     // and todo ones included — fails with "No test suite found in file <path>" unless
     // passWithNoTests. Reported as the file's only failure entry with no failed test; the CLI
     // turns that into a file-level error (cli.rs `file_result`).
-    if (!root.tests.length && !root.suites.length && !this.skippedSuites && !globalThis.__TT_PASS_WITH_NO_TESTS) {
+    if (!root.tasks.length && !this.skippedSuites && !globalThis.__TT_PASS_WITH_NO_TESTS) {
       summary.failures.push(`No test suite found in file ${globalThis.__ttFile}`);
       return summary;
     }
@@ -2924,8 +2926,7 @@ globalThis.__ttResetForNextFile = () => {
   // turbo-test collects tests into a single global `root` (vitest scopes per file via
   // startTests([file])) — so we must drop the prior file's collected tests/suites. Setup files
   // run once per worker, so root.hooks only holds setup hooks; leave them in place.
-  root.tests = [];
-  root.suites = [];
+  root.tasks = [];
   // Reset snapshot counters between files (keyed by test name; cleared to avoid cross-file drift).
   __snap.counters = Object.create(null);
   // NOTE: root.hooks is intentionally LEFT in place. Restoring it to a post-global-setup baseline

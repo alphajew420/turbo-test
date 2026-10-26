@@ -15,7 +15,6 @@ fn tap_points(r: &Run) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "turbo-test#64: fails until the fix"]
 fn tasks_run_in_declaration_order() {
     // turbo-test#64: a block's own tests ran before its nested describes, so `last` ran before
     // `d > inner`. vitest 4.1.12 runs (and reports) first, d > inner, last.

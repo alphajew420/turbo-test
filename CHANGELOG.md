@@ -62,6 +62,9 @@ All notable changes to `@miaskiewicz/turbo-test`. Format based on
   is keyed by absolute path) and nothing to run prints vitest's `No test files found, exiting
   with code N` with its filter / include / exclude lines (turbo-test#59). A missing file
   argument is no longer dropped with a warning: like any filter, it matches nothing.
+- Tests and `describe` blocks run, and are reported, in declaration order (turbo-test#64): a
+  block's own tests ran before its nested `describe`s, so a test declared after a `describe` ran
+  before that block's tests.
 
 ### CI
 - `lint` job: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (toolchain
