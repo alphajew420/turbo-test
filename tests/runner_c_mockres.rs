@@ -1,6 +1,6 @@
 //! Mock resolution that follows vitest: a `vi.doMock` applies to a later `import()` on every
 //! loader path, and a mock whose specifier has a `?query` is a module id of its own; a
-//! specifier with escaped quotes is read whole.
+//! specifier with escaped quotes is read whole. All of it for setup-file mocks too.
 #![cfg(unix)]
 
 mod common;
@@ -95,6 +95,62 @@ test('query ids are separate modules', async () => {
   // only the query id is mocked: the plain module stays real
   expect(o).toBe('real-o');
   // the query id itself gets its own mock
+  expect((await import('./rel.js?raw')).default).toBe('raw');
+  expect((await import('./other.js?inline')).default).toBe('inline');
+});
+"#,
+        );
+        let envs: &[&[(&str, &str)]] = if esbuild {
+            &[&[], &[("TURBO_NO_MR", "1")]]
+        } else {
+            &[&[]]
+        };
+        for env in envs {
+            assert_passes(&turbo_test(&p.dir, &["a.test.js"], env), 1);
+        }
+    }
+}
+
+#[test]
+fn a_setup_file_query_mock_is_a_module_of_its_own() {
+    // turbo-test#42 item 5: turbo-test#39 item 2 externalized an entry file's `?query` mock
+    // targets on the TURBO_NO_MR bundle path, but a setup file's were still skipped, so the
+    // bundle inlined `./rel.js?raw` (a static import failed the graph, an `import()` got the
+    // real module). Expected values are vitest 4.1.12's for the same files.
+    for esbuild in [true, false] {
+        let p = if esbuild {
+            let p = Project::new("rc-setup-query-mock");
+            p.with_esbuild();
+            p.file("package.json", r#"{"name":"r42s"}"#);
+            p
+        } else {
+            esm_graph_project("rc-setup-query-mock-esm")
+        };
+        p.file(
+            "vitest.config.ts",
+            "export default { test: { setupFiles: ['./setup.js'] } };\n",
+        );
+        p.file("rel.js", "export const r = () => 'real';\n");
+        p.file("other.js", "export const o = 'real-o';\n");
+        p.file(
+            "setup.js",
+            r#"vi.mock('./rel.js', () => ({ r: () => 'mock-rel' }));
+vi.mock('./rel.js?raw', () => ({ default: 'raw' }));
+vi.mock('./other.js?inline', () => ({ default: 'inline' }));
+vi.mock('./missing.js?raw', () => ({ default: 'never imported' }));
+vi.mock('not-installed', () => ({ default: 'never imported' }));
+"#,
+        );
+        p.file(
+            "a.test.js",
+            r#"import { r } from './rel.js';
+import { o } from './other.js';
+import raw from './rel.js?raw';
+test('setup-file query mocks are modules of their own', async () => {
+  expect(r()).toBe('mock-rel');
+  // only the query id is mocked: the plain module stays real
+  expect(o).toBe('real-o');
+  expect(raw).toBe('raw');
   expect((await import('./rel.js?raw')).default).toBe('raw');
   expect((await import('./other.js?inline')).default).toBe('inline');
 });

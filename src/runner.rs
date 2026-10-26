@@ -4889,15 +4889,18 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
         let sf_dir = sf.parent().unwrap_or(Path::new("."));
         let sf_src = std::fs::read_to_string(sf).unwrap_or_default();
         for (s, factory) in extract_mocks(&sf_src) {
-            // skip glob/query mock specifiers (e.g. '*?url') — not real modules.
-            if s.contains('*') || s.contains('?') {
+            // a glob (e.g. '*?url') is not a module; a `?query` id is one of its own (mock_key
+            // keeps the query, so the rewritten import reaches that mock, not the plain
+            // module's: turbo-test#42 item 5), externalized only when its file exists
+            if s.contains('*') || !mock_externalizable(&factory) {
                 continue;
             }
-            if !mock_externalizable(&factory) {
-                continue;
-            }
-            if let Some(abs) = resolve_spec(&s, sf_dir) {
-                mock_targets.entry(spec_basename(&s)).or_insert(abs);
+            match mock_key(&s, sf_dir) {
+                Some(abs) => {
+                    mock_targets.entry(spec_basename(&s)).or_insert(abs);
+                }
+                None if s.contains('?') => continue,
+                None => {}
             }
             if !externals.contains(&s) {
                 externals.push(s);
