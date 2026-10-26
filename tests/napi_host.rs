@@ -197,7 +197,7 @@ fn references_count_up_and_down() {
 
 /// The Node-API functions beyond full.c (turbo-test#44), one section per family; the same spec
 /// passes against Node 26: errors (napi_throw_* / napi_create_* of each kind,
-/// napi_get_last_error_info, napi_fatal_exception) and a NULL env.
+/// napi_get_last_error_info, napi_fatal_exception), numbers, bigints, dates and a NULL env.
 #[test]
 fn every_node_api_family_behaves() {
     let p = project("napi-api");
@@ -206,7 +206,7 @@ fn every_node_api_family_behaves() {
     let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
     let j = json_report(&r);
     assert_eq!(j["numFailedTests"], 0, "{}", r.all());
-    assert_eq!(j["numPassedTests"], 6, "{}", r.all());
+    assert_eq!(j["numPassedTests"], 13, "{}", r.all());
     // napi_fatal_exception reported the error as uncaught (what a throwing timer callback gets)
     assert!(
         r.stderr.contains("uncaught reported as uncaught"),

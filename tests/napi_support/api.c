@@ -162,6 +162,165 @@ static napi_value f_fatal_exception(napi_env env, napi_callback_info info) {
     return num(env, napi_fatal_exception(env, is_undefined(env, err) ? NULL : err));
 }
 
+/* ---- numbers, bigints, dates ----------------------------------------------------------- */
+
+/* numbers() -> [int32s, int64s, statuses of the NULL-result creations] */
+static napi_value f_numbers(napi_env env, napi_callback_info info) {
+    (void)info;
+    static const int32_t I32[] = {0, -1, INT32_MIN, INT32_MAX};
+    static const int64_t I64[] = {0, -7, 9007199254740993LL, INT64_MIN, INT64_MAX};
+    napi_value a32[4], a64[5];
+    for (int i = 0; i < 4; i++) napi_create_int32(env, I32[i], &a32[i]);
+    for (int i = 0; i < 5; i++) napi_create_int64(env, I64[i], &a64[i]);
+    double st[2] = {napi_create_int32(env, 1, NULL), napi_create_int64(env, 1, NULL)};
+    napi_value it[3] = {list(env, 4, a32), list(env, 5, a64), nums(env, 2, st)};
+    return list(env, 3, it);
+}
+
+/* getInt32(v) -> [status, value (-99 when left alone)] */
+static napi_value f_get_int32(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    int32_t n = -99;
+    napi_status st = napi_get_value_int32(env, arg(env, &a, 0), &n);
+    double r[2] = {st, n};
+    return nums(env, 2, r);
+}
+
+/* bigints() -> [from int64s, from uint64s, from words, NULL / oversize statuses] */
+static napi_value f_bigints(napi_env env, napi_callback_info info) {
+    (void)info;
+    static const int64_t I[] = {0, -1, INT64_MIN, INT64_MAX};
+    static const uint64_t U[] = {0, 1, UINT64_MAX};
+    static const uint64_t W[] = {1, 2};
+    napi_value ai[4], au[3], aw[4], out;
+    for (int i = 0; i < 4; i++) napi_create_bigint_int64(env, I[i], &ai[i]);
+    for (int i = 0; i < 3; i++) napi_create_bigint_uint64(env, U[i], &au[i]);
+    napi_create_bigint_words(env, 0, 2, W, &aw[0]);
+    napi_create_bigint_words(env, 1, 2, W, &aw[1]);
+    napi_create_bigint_words(env, 1, 0, W, &aw[2]);
+    napi_create_bigint_words(env, 0, 1, W, &aw[3]);
+    /* one word past V8's maximum BigInt size: a RangeError, left pending */
+    size_t huge = ((size_t)1 << 24) + 1;
+    uint64_t *big = calloc(huge, sizeof *big);
+    double st[8];
+    st[0] = napi_create_bigint_int64(env, 1, NULL);
+    st[1] = napi_create_bigint_uint64(env, 1, NULL);
+    st[2] = napi_create_bigint_words(env, 0, 1, NULL, &out);
+    st[3] = napi_create_bigint_words(env, 0, 1, W, NULL);
+    st[4] = napi_create_bigint_words(env, 0, (size_t)INT32_MAX + 1, W, &out);
+    st[5] = napi_create_bigint_words(env, 0, huge, big, &out);
+    free(big);
+    napi_value exc = NULL;
+    napi_get_and_clear_last_exception(env, &exc);
+    /* with an exception pending, napi_create_bigint_words runs no JS */
+    napi_throw_error(env, NULL, "pending");
+    st[6] = napi_create_bigint_words(env, 0, 1, W, &out);
+    napi_get_and_clear_last_exception(env, &out);
+    st[7] = napi_create_bigint_int64(env, 1, &out);
+    napi_value it[5] = {list(env, 4, ai), list(env, 3, au), list(env, 4, aw), nums(env, 8, st),
+                        or_undef(env, exc)};
+    return list(env, 5, it);
+}
+
+/* getBigInt64(v) / getBigUint64(v) -> [status, value as a BigInt, lossless] */
+static napi_value f_get_bigint64(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    int64_t n = 0;
+    bool lossless = false;
+    napi_status st = napi_get_value_bigint_int64(env, arg(env, &a, 0), &n, &lossless);
+    napi_value v, b;
+    napi_create_bigint_int64(env, n, &v);
+    napi_get_boolean(env, lossless, &b);
+    napi_value it[3] = {num(env, st), v, b};
+    return list(env, 3, it);
+}
+static napi_value f_get_biguint64(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    uint64_t n = 0;
+    bool lossless = false;
+    napi_status st = napi_get_value_bigint_uint64(env, arg(env, &a, 0), &n, &lossless);
+    napi_value v, b;
+    napi_create_bigint_uint64(env, n, &v);
+    napi_get_boolean(env, lossless, &b);
+    napi_value it[3] = {num(env, st), v, b};
+    return list(env, 3, it);
+}
+
+/* getWords(v, capacity) -> [status, sign, word count, words written (as BigInts)...];
+ * capacity -1: a word-count query (NULL sign and words) */
+static napi_value f_get_words(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    int cap = (int)argd(env, &a, 1);
+    int sign = -1;
+    uint64_t words[4] = {0, 0, 0, 0};
+    size_t count = cap < 0 ? 0 : (size_t)cap;
+    napi_status st = cap < 0 ? napi_get_value_bigint_words(env, arg(env, &a, 0), NULL, &count, NULL)
+                             : napi_get_value_bigint_words(env, arg(env, &a, 0), &sign, &count,
+                                                           words);
+    napi_value it[7];
+    it[0] = num(env, st);
+    it[1] = num(env, sign);
+    it[2] = num(env, (double)count);
+    for (int i = 0; i < 4; i++) napi_create_bigint_uint64(env, words[i], &it[3 + i]);
+    return list(env, 7, it);
+}
+
+/* bigintChecks(big) -> statuses: NULL value / result / lossless / word count, a sign without
+ * words, words without a sign, a non-BigInt for each getter */
+static napi_value f_bigint_checks(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value big = arg(env, &a, 0), n = num(env, 1);
+    int64_t i;
+    uint64_t u, w[1];
+    bool l;
+    int sign;
+    size_t count = 1;
+    double st[] = {
+        napi_get_value_bigint_int64(env, NULL, &i, &l),
+        napi_get_value_bigint_int64(env, big, NULL, &l),
+        napi_get_value_bigint_int64(env, big, &i, NULL),
+        napi_get_value_bigint_uint64(env, NULL, &u, &l),
+        napi_get_value_bigint_uint64(env, big, &u, NULL),
+        napi_get_value_bigint_words(env, NULL, &sign, &count, w),
+        napi_get_value_bigint_words(env, big, &sign, NULL, w),
+        napi_get_value_bigint_words(env, big, &sign, &count, NULL),
+        napi_get_value_bigint_words(env, big, NULL, &count, w),
+        napi_get_value_bigint_int64(env, n, &i, &l),
+        napi_get_value_bigint_uint64(env, n, &u, &l),
+        napi_get_value_bigint_words(env, n, &sign, &count, w),
+        napi_get_value_bigint_words(env, n, NULL, NULL, NULL),
+    };
+    return nums(env, sizeof st / sizeof st[0], st);
+}
+
+/* dates(time, notADate) -> [the date, isDate(date), isDate(notADate), value, statuses] */
+static napi_value f_dates(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    napi_value date = NULL, other = arg(env, &a, 1);
+    napi_status created = napi_create_date(env, argd(env, &a, 0), &date);
+    bool is_date = false, other_is = true, b;
+    double value = -1, d;
+    napi_is_date(env, date, &is_date);
+    napi_is_date(env, other, &other_is);
+    napi_status got = napi_get_date_value(env, date, &value);
+    double st[] = {
+        created,
+        got,
+        napi_get_date_value(env, other, &d),
+        napi_get_date_value(env, NULL, &d),
+        napi_get_date_value(env, date, NULL),
+        napi_is_date(env, NULL, &b),
+        napi_is_date(env, date, NULL),
+        napi_create_date(env, 0, NULL),
+    };
+    napi_value bt, bf;
+    napi_get_boolean(env, is_date, &bt);
+    napi_get_boolean(env, other_is, &bf);
+    napi_value it[5] = {or_undef(env, date), bt, bf, num(env, value),
+                        nums(env, sizeof st / sizeof st[0], st)};
+    return list(env, 5, it);
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -177,6 +336,10 @@ static napi_value f_null_env(napi_env env, napi_callback_info info) {
         napi_throw_type_error(NULL, NULL, "m"),
         napi_get_last_error_info(NULL, &ei),
         napi_fatal_exception(NULL, v),
+        napi_create_int32(NULL, 1, &out),
+        napi_get_value_bigint_words(NULL, v, NULL, NULL, NULL),
+        napi_create_bigint_words(NULL, 0, 0, NULL, &out),
+        napi_create_date(NULL, 0, &out),
     };
     return nums(env, sizeof st / sizeof st[0], st);
 }
@@ -190,6 +353,14 @@ static const struct {
     {"errorChecks", f_error_checks},
     {"lastErrorInfo", f_last_error_info},
     {"fatalException", f_fatal_exception},
+    {"numbers", f_numbers},
+    {"getInt32", f_get_int32},
+    {"bigints", f_bigints},
+    {"getBigInt64", f_get_bigint64},
+    {"getBigUint64", f_get_biguint64},
+    {"getWords", f_get_words},
+    {"bigintChecks", f_bigint_checks},
+    {"dates", f_dates},
     {"nullEnv", f_null_env},
 };
 

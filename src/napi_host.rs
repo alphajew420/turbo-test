@@ -407,6 +407,24 @@ unsafe fn checked(env: napi_env, f: impl FnOnce() -> napi_status) -> napi_status
     record(env, f())
 }
 
+/// `checked` for a call written with `?`: an `Err` carries its status.
+unsafe fn basic(env: napi_env, f: impl FnOnce() -> NapiResult) -> napi_status {
+    checked(env, || f().err().unwrap_or(napi_ok))
+}
+
+/// A required out-pointer argument (Node's CHECK_ARG): NULL is napi_invalid_arg.
+unsafe fn out_arg<'a, T>(p: *mut T) -> Result<&'a mut T, napi_status> {
+    p.as_mut().ok_or(napi_invalid_arg)
+}
+
+/// A required napi_value argument (Node's CHECK_ARG): NULL is napi_invalid_arg.
+unsafe fn val_arg(v: napi_value) -> Result<v8::Local<'static, v8::Value>, napi_status> {
+    if v.is_null() {
+        return Err(napi_invalid_arg);
+    }
+    Ok(to_local(v))
+}
+
 /// Run `f` the way Node runs a napi call that can execute JS (`NAPI_PREAMBLE` plus its
 /// `v8impl::TryCatch`): while an exception is pending it returns `napi_pending_exception`
 /// without running `f`, and when JS cannot run (env teardown) napi_pending_exception, or
@@ -1302,6 +1320,198 @@ pub unsafe extern "C" fn napi_get_value_int64(
             *out = if n.is_finite() { n as i64 } else { 0 };
         }
         napi_ok
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_int32(
+    env: napi_env,
+    n: i32,
+    out: *mut napi_value,
+) -> napi_status {
+    basic(env, || {
+        *out_arg(out)? = to_napi(v8::Integer::new(scope(env), n).into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_int64(
+    env: napi_env,
+    n: i64,
+    out: *mut napi_value,
+) -> napi_status {
+    // as Node: a Number (the nearest double), not a BigInt
+    basic(env, || {
+        *out_arg(out)? = to_napi(v8::Number::new(scope(env), n as f64).into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_value_int32(
+    env: napi_env,
+    v: napi_value,
+    out: *mut i32,
+) -> napi_status {
+    basic(env, || {
+        val_arg(v)?;
+        let out = out_arg(out)?;
+        // as Node: ToInt32 of a number (V8's Int32Value): NaN and the infinities are 0
+        let n = number_of(v).ok_or(napi_number_expected)?;
+        *out = to_uint32(n) as i32;
+        Ok(())
+    })
+}
+
+// ---- bigints ---------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_bigint_int64(
+    env: napi_env,
+    n: i64,
+    out: *mut napi_value,
+) -> napi_status {
+    basic(env, || {
+        *out_arg(out)? = to_napi(v8::BigInt::new_from_i64(scope(env), n).into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_bigint_uint64(
+    env: napi_env,
+    n: u64,
+    out: *mut napi_value,
+) -> napi_status {
+    basic(env, || {
+        *out_arg(out)? = to_napi(v8::BigInt::new_from_u64(scope(env), n).into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_bigint_words(
+    env: napi_env,
+    sign_bit: i32,
+    word_count: usize,
+    words: *const u64,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        if words.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let out = out_arg(out)?;
+        if word_count > i32::MAX as usize {
+            return Err(napi_invalid_arg);
+        }
+        let words = std::slice::from_raw_parts(words, word_count);
+        // V8 throws a RangeError for a BigInt over its maximum size
+        let big =
+            v8::BigInt::new_from_words(s, sign_bit != 0, words).ok_or(napi_pending_exception)?;
+        *out = to_napi(big.into());
+        Ok(())
+    })
+}
+
+/// The BigInt argument of a BigInt getter: NULL is napi_invalid_arg, anything but a BigInt
+/// napi_bigint_expected.
+unsafe fn bigint_arg(v: napi_value) -> Result<v8::Local<'static, v8::BigInt>, napi_status> {
+    val_arg(v)?.try_into().map_err(|_| napi_bigint_expected)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_value_bigint_int64(
+    env: napi_env,
+    v: napi_value,
+    out: *mut i64,
+    lossless: *mut bool,
+) -> napi_status {
+    basic(env, || {
+        let (out, lossless) = (out_arg(out)?, out_arg(lossless)?);
+        (*out, *lossless) = bigint_arg(v)?.i64_value();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_value_bigint_uint64(
+    env: napi_env,
+    v: napi_value,
+    out: *mut u64,
+    lossless: *mut bool,
+) -> napi_status {
+    basic(env, || {
+        let (out, lossless) = (out_arg(out)?, out_arg(lossless)?);
+        (*out, *lossless) = bigint_arg(v)?.u64_value();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_value_bigint_words(
+    env: napi_env,
+    v: napi_value,
+    sign_bit: *mut i32,
+    word_count: *mut usize,
+    words: *mut u64,
+) -> napi_status {
+    basic(env, || {
+        let count = out_arg(word_count)?;
+        let big = bigint_arg(v)?;
+        // as Node: without a sign and words it is a word-count query; otherwise both are needed
+        // and up to *word_count words are written; *word_count becomes the BigInt's count
+        if !(sign_bit.is_null() && words.is_null()) {
+            let sign = out_arg(sign_bit)?;
+            if words.is_null() {
+                return Err(napi_invalid_arg);
+            }
+            let dst = std::slice::from_raw_parts_mut(words, (*count).min(i32::MAX as usize));
+            *sign = big.to_words_array(dst).0 as i32;
+        }
+        *count = big.word_count();
+        Ok(())
+    })
+}
+
+// ---- dates -----------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_create_date(
+    env: napi_env,
+    time: f64,
+    out: *mut napi_value,
+) -> napi_status {
+    js_call(env, |s| {
+        let out = out_arg(out)?;
+        let date = v8::Date::new(s, time).ok_or(napi_generic_failure)?;
+        *out = to_napi(date.into());
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_is_date(env: napi_env, v: napi_value, out: *mut bool) -> napi_status {
+    basic(env, || {
+        let value = val_arg(v)?;
+        *out_arg(out)? = value.is_date();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_get_date_value(
+    env: napi_env,
+    v: napi_value,
+    out: *mut f64,
+) -> napi_status {
+    js_call(env, |_| {
+        let value = val_arg(v)?;
+        let out = out_arg(out)?;
+        let date: v8::Local<v8::Date> = value.try_into().map_err(|_| napi_date_expected)?;
+        *out = date.value_of();
+        Ok(())
     })
 }
 

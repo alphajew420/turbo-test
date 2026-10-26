@@ -61,6 +61,18 @@ extern napi_status napi_get_buffer_info(napi_env, napi_value, void **, size_t *)
 extern napi_status napi_get_value_bool(napi_env, napi_value, bool *);
 extern napi_status napi_get_value_double(napi_env, napi_value, double *);
 extern napi_status napi_get_value_int64(napi_env, napi_value, int64_t *);
+extern napi_status napi_create_int32(napi_env, int32_t, napi_value *);
+extern napi_status napi_create_int64(napi_env, int64_t, napi_value *);
+extern napi_status napi_get_value_int32(napi_env, napi_value, int32_t *);
+extern napi_status napi_create_bigint_int64(napi_env, int64_t, napi_value *);
+extern napi_status napi_create_bigint_uint64(napi_env, uint64_t, napi_value *);
+extern napi_status napi_create_bigint_words(napi_env, int, size_t, const uint64_t *, napi_value *);
+extern napi_status napi_get_value_bigint_int64(napi_env, napi_value, int64_t *, bool *);
+extern napi_status napi_get_value_bigint_uint64(napi_env, napi_value, uint64_t *, bool *);
+extern napi_status napi_get_value_bigint_words(napi_env, napi_value, int *, size_t *, uint64_t *);
+extern napi_status napi_create_date(napi_env, double, napi_value *);
+extern napi_status napi_is_date(napi_env, napi_value, bool *);
+extern napi_status napi_get_date_value(napi_env, napi_value, double *);
 extern napi_status napi_is_array(napi_env, napi_value, bool *);
 extern napi_status napi_get_array_length(napi_env, napi_value, uint32_t *);
 extern napi_status napi_get_element(napi_env, napi_value, uint32_t, napi_value *);
