@@ -110,6 +110,33 @@ jobs:
           path: bin/turbo-test-*
           if-no-files-found: error
 
+  # ---- The lockfile must install cleanly with npm 10 AND npm 11 (turbo-test#30) ----
+  # npm 11 rejects a lock that lacks the optional @esbuild/* platform entries
+  # (EUSAGE "Missing: @esbuild/aix-ppc64 from lock file") while npm 10 accepts it, so
+  # an npm-10-only CI stayed green while `npm ci` on a current npm failed and the two
+  # tsc tests silently skipped. Both majors must install the same tree from the
+  # committed lock without rewriting it.
+  npm-lockfile:
+    name: npm ${{ matrix.npm }} ci
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        npm: ['10', '11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm ci (npm ${{ matrix.npm }})
+        run: npx -y npm@${{ matrix.npm }} ci
+      - name: Lockfile unchanged and installed tree complete
+        run: |
+          git diff --exit-code package-lock.json
+          npx -y npm@${{ matrix.npm }} ls --all
+          node_modules/.bin/tsc --version
+          node_modules/.bin/esbuild --version
+
   # ---- Publish to npm on a version tag ----
   # One package containing every platform binary; cli.js picks the matching one at runtime
   # (linux x64 also detects musl vs glibc). Requires repo secret NPM_TOKEN (a Classic
