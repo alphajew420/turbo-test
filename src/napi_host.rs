@@ -2193,9 +2193,8 @@ pub unsafe extern "C" fn node_api_create_buffer_from_arraybuffer(
             s.throw_exception(err);
             return Ok(());
         }
-        // a Buffer (here a Uint8Array) over the same memory
-        let buf = v8::Uint8Array::new(s, ab, byte_offset, byte_length).unwrap();
-        *out = to_napi(buf.into());
+        // a Buffer over the same memory
+        *out = to_napi(new_buffer(s, ab, byte_offset, byte_length).unwrap());
         Ok(())
     })
 }
@@ -2207,6 +2206,28 @@ pub unsafe extern "C" fn node_api_create_buffer_from_arraybuffer(
 // the first call jumped to NULL -> SIGSEGV that killed the whole run with no output.
 // Back them with a Uint8Array (the runtime exposes Buffer as a Uint8Array subclass),
 // which is what real Buffer-consuming JS expects.
+
+/// A Buffer over `ab`, as Node's node::Buffer::New: a Uint8Array with the runtime's
+/// Buffer.prototype (so Buffer.isBuffer and the Buffer methods apply).
+fn new_buffer<'s>(
+    s: &mut v8::PinScope<'s, 'static>,
+    ab: v8::Local<'s, v8::ArrayBuffer>,
+    offset: usize,
+    len: usize,
+) -> Option<v8::Local<'s, v8::Value>> {
+    let buf = v8::Uint8Array::new(s, ab, offset, len)?;
+    let global = s.get_current_context().global(s);
+    let ctor = v8::String::new(s, "Buffer").unwrap();
+    let key = v8::String::new(s, "prototype").unwrap();
+    let proto = global
+        .get(s, ctor.into())
+        .and_then(|b| v8::Local::<v8::Object>::try_from(b).ok())
+        .and_then(|b| b.get(s, key.into()));
+    if let Some(proto) = proto {
+        buf.set_prototype(s, proto);
+    }
+    Some(buf.into())
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn napi_create_buffer(
@@ -2225,9 +2246,7 @@ pub unsafe extern "C" fn napi_create_buffer(
                 .map(|p| p.as_ptr())
                 .unwrap_or(std::ptr::null_mut());
         }
-        let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
-            .map(|t| t.into())
-            .unwrap_or_else(|| ab.into());
+        let buf = new_buffer(s, ab, 0, len).unwrap_or_else(|| ab.into());
         *out = to_napi(buf);
         Ok(())
     })
@@ -2254,9 +2273,7 @@ pub unsafe extern "C" fn napi_create_buffer_copy(
         } else if !result_data.is_null() {
             *result_data = std::ptr::null_mut();
         }
-        let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
-            .map(|t| t.into())
-            .unwrap_or_else(|| ab.into());
+        let buf = new_buffer(s, ab, 0, len).unwrap_or_else(|| ab.into());
         *out = to_napi(buf);
         Ok(())
     })
@@ -2274,9 +2291,7 @@ pub unsafe extern "C" fn napi_create_external_buffer(
     js_call(env, |s| {
         let out = out_arg(out)?;
         let ab = external_arraybuffer(s, env, data, len, finalize, hint);
-        let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
-            .map(|t| t.into())
-            .unwrap_or_else(|| ab.into());
+        let buf = new_buffer(s, ab, 0, len).unwrap_or_else(|| ab.into());
         *out = to_napi(buf);
         Ok(())
     })

@@ -462,6 +462,15 @@ describe('arraybuffers, typed arrays, dataviews, buffers', () => {
     expect(api.taInfo(new DataView(ab))[0]).toBe(INVALID_ARG);
   });
 
+  test('the buffer creators hand back Buffers', () => {
+    const [b, copy, ext, fromAb] = api.buffers();
+    for (const x of [b, copy, ext, fromAb]) {
+      expect(Buffer.isBuffer(x)).toBe(true);
+      expect(x).toBeInstanceOf(Uint8Array);
+    }
+    expect([b.length, copy.toString(), ext.toString('latin1'), fromAb.length]).toEqual([2, 'abc', 'ext', 2]);
+  });
+
   test('napi_create_typedarray over an ArrayBuffer or a SharedArrayBuffer', () => {
     for (const buffer of [new ArrayBuffer(8), new SharedArrayBuffer(8)]) {
       const [st, ta, exc] = api.typedArrayOver(buffer, 5, 1, 4);

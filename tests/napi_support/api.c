@@ -1169,6 +1169,20 @@ static napi_value f_typed_array_over(napi_env env, napi_callback_info info) {
     return list(env, 3, it);
 }
 
+/* buffers() -> [napi_create_buffer, _copy("abc"), _external, node_api_create_buffer_from_arraybuffer] */
+static char g_ext_bytes[] = "ext";
+static napi_value f_buffers(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value it[4], ab;
+    void *data;
+    napi_create_buffer(env, 2, &data, &it[0]);
+    napi_create_buffer_copy(env, 3, "abc", &data, &it[1]);
+    napi_create_external_buffer(env, 3, g_ext_bytes, NULL, NULL, &it[2]);
+    napi_create_arraybuffer(env, 4, &data, &ab);
+    node_api_create_buffer_from_arraybuffer(env, ab, 1, 2, &it[3]);
+    return list(env, 4, it);
+}
+
 /* ---- every entrypoint with a NULL env is napi_invalid_arg ------------------------------- */
 
 static napi_value f_null_env(napi_env env, napi_callback_info info) {
@@ -1293,6 +1307,7 @@ static const struct {
     {"moduleFileName", f_module_file_name},
     {"coreNulls", f_core_nulls},
     {"typedArrayOver", f_typed_array_over},
+    {"buffers", f_buffers},
     {"nullEnv", f_null_env},
 };
 

@@ -142,8 +142,8 @@ Version: the first `NAPI_VERSION` that declares the function. Tests: the specs u
 | `napi_async_init` | 1 | node_api.h | implemented | api.test.ts, async.test.ts | no async_hooks: the context identifies nothing more |
 | `napi_cancel_async_work` | 1 | node_api.h | implemented | api.test.ts, async.test.ts |  |
 | `napi_create_async_work` | 1 | node_api.h | implemented | api.test.ts, async.test.ts |  |
-| `napi_create_buffer` | 1 | node_api.h | implemented | full.test.ts | a `Uint8Array` |
-| `napi_create_buffer_copy` | 1 | node_api.h | implemented | full.test.ts | a `Uint8Array` |
+| `napi_create_buffer` | 1 | node_api.h | implemented | full.test.ts |  |
+| `napi_create_buffer_copy` | 1 | node_api.h | implemented | full.test.ts |  |
 | `napi_create_external_buffer` | 1 | node_api.h | implemented | api.test.ts, full.test.ts | the addon's memory, not copied; NULL data gets zero-filled memory of its own |
 | `napi_delete_async_work` | 1 | node_api.h | implemented | async.test.ts |  |
 | `napi_fatal_error` | 1 | node_api.h | implemented | `fatal_error_aborts_the_process` | prints `FATAL ERROR: <location> <message>` and aborts (no native stack trace) |
@@ -196,4 +196,4 @@ Version: the first `NAPI_VERSION` that declares the function. Tests: the specs u
 | `node_api_create_property_key_latin1` | 10 | js_native_api.h | implemented | api.test.ts |  |
 | `node_api_create_property_key_utf16` | 10 | js_native_api.h | implemented | api.test.ts |  |
 | `node_api_create_property_key_utf8` | 10 | js_native_api.h | implemented | api.test.ts |  |
-| `node_api_create_buffer_from_arraybuffer` | 10 | node_api.h | implemented | api.test.ts | a `Uint8Array` over the ArrayBuffer |
+| `node_api_create_buffer_from_arraybuffer` | 10 | node_api.h | implemented | api.test.ts | a Buffer over the ArrayBuffer |
