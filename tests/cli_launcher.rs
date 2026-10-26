@@ -414,3 +414,78 @@ fn coverage_flags_and_config_thresholds() {
     );
     assert_eq!(r.code, Some(0), "{}", r.all());
 }
+
+/// turbo-test#45: a directory argument is a filter, as vitest's: every test file under it that
+/// discovery would run, with the results of the same files passed one by one; a nested
+/// directory works; a directory without test files is vitest's "No test files found, exiting
+/// with code 1" (0 with --passWithNoTests). Checked against vitest 4.1.12.
+#[test]
+fn a_directory_argument_runs_the_test_files_under_it() {
+    let p = Project::new("launch-dir-arg");
+    let fail = "test('f', () => { expect(1).toBe(2) })\n";
+    p.file("suite/a.test.ts", PASS);
+    p.file("suite/b.spec.js", fail);
+    p.file("suite/nested/c.test.ts", PASS);
+    p.file("suite/nested/deeper/d.test.ts", PASS);
+    p.file("suite/nested/helper.ts", "export const h = 1\n");
+    p.file("elsewhere/e.test.ts", PASS);
+    p.file("empty/sub/helper.ts", "export const h = 1\n");
+    let results = |args: &[&str]| {
+        let mut a = vec!["--reporter", "json"];
+        a.extend(args);
+        let r = tt(&p, &a);
+        let j = json_report(&r);
+        let mut files: Vec<(String, String)> = j["testResults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                (
+                    t["name"].as_str().unwrap().to_string(),
+                    t["status"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        files.sort();
+        (r.code, files)
+    };
+    let explicit = results(&[
+        "suite/a.test.ts",
+        "suite/b.spec.js",
+        "suite/nested/c.test.ts",
+        "suite/nested/deeper/d.test.ts",
+    ]);
+    assert_eq!(explicit.1.len(), 4);
+    assert_eq!(results(&["suite"]), explicit);
+    assert_eq!(results(&["./suite/"]), explicit);
+    let nested = results(&["suite/nested"]);
+    assert_eq!(
+        nested,
+        (
+            Some(0),
+            vec![
+                ("suite/nested/c.test.ts".to_string(), "passed".to_string()),
+                (
+                    "suite/nested/deeper/d.test.ts".to_string(),
+                    "passed".to_string()
+                ),
+            ]
+        )
+    );
+    // a directory and a file together
+    assert_eq!(results(&["suite/nested", "elsewhere/e.test.ts"]).1.len(), 3);
+    let r = tt(&p, &["empty"]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert_eq!(
+        r.stderr,
+        "No test files found, exiting with code 1\n\nfilter: empty\n"
+    );
+    let r = tt(&p, &["empty", "--passWithNoTests"]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(
+        r.stderr
+            .starts_with("No test files found, exiting with code 0\n"),
+        "{}",
+        r.all()
+    );
+}

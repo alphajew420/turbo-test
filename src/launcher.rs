@@ -1361,7 +1361,41 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         }
         discovered
     } else {
-        files.iter().map(PathBuf::from).collect()
+        // a directory argument is a filter, as vitest's: the test files under it that discovery
+        // would run (the config's include / exclude, else the default names)
+        let mut out = Vec::new();
+        let mut discovered: Option<Vec<PathBuf>> = None;
+        let mut only_dirs = true;
+        for f in &files {
+            let abs = absolute_in(proc_cwd, Path::new(f));
+            if !abs.is_dir() {
+                only_dirs = false;
+                out.push(PathBuf::from(f));
+                continue;
+            }
+            let all = discovered.get_or_insert_with(|| discover(&cwd, forced.as_deref()));
+            let dir = abs.canonicalize().unwrap_or(abs);
+            for t in all.iter() {
+                let canon = t.canonicalize().unwrap_or_else(|_| t.clone());
+                if canon.starts_with(&dir) && !out.contains(t) {
+                    out.push(t.strip_prefix(proc_cwd).unwrap_or(t).to_path_buf());
+                }
+            }
+        }
+        if out.is_empty() && only_dirs {
+            // vitest: "No test files found, exiting with code 1" (0 with --passWithNoTests)
+            let code = i32::from(!opts.pass_with_no_tests);
+            messages.push(format!(
+                "No test files found, exiting with code {code}\n\nfilter: {}",
+                files.join(", ")
+            ));
+            return Plan {
+                env,
+                messages,
+                outcome: Err(code),
+            };
+        }
+        out
     };
 
     // `--changed [since]`: keep only discovered test files git reports changed. Direct changed-file
