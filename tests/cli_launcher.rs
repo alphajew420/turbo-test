@@ -570,3 +570,73 @@ fn root_names_files_relative_to_the_root() {
         r.all()
     );
 }
+
+#[test]
+#[ignore = "turbo-test#63: fails until the fix"]
+fn node_modules_and_git_are_skipped_only_by_the_effective_exclude() {
+    // turbo-test#63 item 3: node_modules and .git were never searched, even when a config
+    // `test.exclude` replaces vitest's default exclude. vitest 4.1.12 skips only what the
+    // effective exclude lists (the files below are what it runs for each config).
+    let p = Project::new("launch-exclude");
+    for f in [
+        "node_modules/foo/x.test.js",
+        ".git/hooks/g.test.js",
+        "src/s.test.js",
+        "skip/k.test.js",
+    ] {
+        p.file(f, PASS);
+    }
+    let cases: [(Option<&str>, &[&str]); 5] = [
+        (None, &["skip/k.test.js", "src/s.test.js"]),
+        (
+            Some("export default { test: { exclude: ['**/skip/**'] } }"),
+            &[
+                ".git/hooks/g.test.js",
+                "node_modules/foo/x.test.js",
+                "src/s.test.js",
+            ],
+        ),
+        (
+            Some("export default { test: { exclude: [] } }"),
+            &[
+                ".git/hooks/g.test.js",
+                "node_modules/foo/x.test.js",
+                "skip/k.test.js",
+                "src/s.test.js",
+            ],
+        ),
+        (
+            Some("export default { test: { include: ['**/*.test.js'], exclude: ['**/skip/**'] } }"),
+            &[
+                ".git/hooks/g.test.js",
+                "node_modules/foo/x.test.js",
+                "src/s.test.js",
+            ],
+        ),
+        (
+            Some("export default { test: { include: ['**/*.test.js'] } }"),
+            &["skip/k.test.js", "src/s.test.js"],
+        ),
+    ];
+    let root = format!("{}/", p.dir.display());
+    for (config, want) in cases {
+        match config {
+            Some(c) => {
+                p.file("vitest.config.js", &format!("{c}\n"));
+            }
+            None => {
+                let _ = std::fs::remove_file(p.path("vitest.config.js"));
+            }
+        }
+        let r = tt(&p, &["--reporter", "json"]);
+        assert_eq!(r.code, Some(0), "{config:?}: {}", r.all());
+        let mut got: Vec<String> = json_report(&r)["testResults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().replace(&root, ""))
+            .collect();
+        got.sort();
+        assert_eq!(got, want, "{config:?}: {}", r.all());
+    }
+}
