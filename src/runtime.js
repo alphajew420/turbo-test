@@ -42,7 +42,7 @@ globalThis.process = {
   // napi: the Node-API version the native host implements (src/napi_host.rs NAPI_VERSION)
   versions: { node: '24.0.0', v8: '12.0.0', modules: '127', napi: '10' },
   argv: ['node', 'turbo-test'],
-  cwd: () => globalThis.__cwd || '/',
+  cwd: () => globalThis.__ttProcessCwd || globalThis.__cwd || '/',
   nextTick: (fn, ...a) => __loop.nextTicks.push(() => fn(...a)),
   hrtime: Object.assign(() => [0, 0], { bigint: () => 0n }),
   exit: () => {},

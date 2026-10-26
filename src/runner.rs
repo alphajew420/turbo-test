@@ -4550,6 +4550,12 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "__fs_rmSync", fs_rm_sync);
     bind_fn(scope, global, "__fs_readdirSync", fs_readdir_sync);
     bind_fn(scope, global, "__fs_symlinkSync", fs_symlink_sync);
+    // process.cwd(): the process's working directory, as vitest's workers report it
+    if let Ok(cwd) = std::env::current_dir() {
+        let key = v8::String::new(scope, "__ttProcessCwd").unwrap();
+        let value = v8::String::new(scope, &cwd.to_string_lossy()).unwrap();
+        global.set(scope, key.into(), value.into());
+    }
     bind_fn(scope, global, "__ttStructuredClone", crate::structured_clone::native_structured_clone);
     if std::env::var("TURBO_STACK").is_ok() {
         if let Some(code) = v8::String::new(scope, "globalThis.__TT_STACK=true") {

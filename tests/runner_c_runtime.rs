@@ -457,3 +457,24 @@ fn fs_symlink_creates_links() {
     let r = turbo_test(&p.dir, &[], &[]);
     assert_passes(&r, 1);
 }
+
+/// turbo-test#54: process.cwd() is the process's working directory (vitest 4.1.12: the
+/// directory it was started in, also below the project root), not the package root.
+#[test]
+fn process_cwd_is_the_working_directory() {
+    let p = Project::new("rc-cwd");
+    p.file("package.json", "{}");
+    p.file(
+        "sub/cwd.test.ts",
+        "import { test } from 'vitest';\ntest('cwd', () => { console.log('CWD=' + process.cwd()); });\n",
+    );
+    let sub = p.dir.join("sub");
+    let r = turbo_test(&sub, &[], &[]);
+    assert_passes(&r, 1);
+    let want = format!("CWD={}", sub.canonicalize().unwrap().display());
+    let got = r.all();
+    assert!(
+        got.contains(&want) || got.contains(&format!("CWD={}", sub.display())),
+        "{want}\n{got}"
+    );
+}
