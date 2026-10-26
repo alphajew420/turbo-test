@@ -1380,41 +1380,41 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         }
     }
 
-    // Resolve the test file set.
-    let mut test_files: Vec<PathBuf> = if files.is_empty() {
-        let discovered = discover(&cwd, forced.as_deref());
-        if discovered.is_empty() {
-            if opts.pass_with_no_tests {
-                messages.push("turbo-test: no test files found — exiting 0 (--passWithNoTests).".to_string());
-                return Plan { env, messages, outcome: Err(0) };
-            }
-            messages.push("turbo-test: no test files found (looked for *.test.* / *.spec.*).".to_string());
-            return Plan { env, messages, outcome: Err(1) };
+    // Resolve the test file set: the discovered files, named relative to the process cwd as
+    // vitest's (root-relative) names. Positional arguments are filters, as vitest's: the
+    // discovered files whose root-relative path contains one (directories and file paths alike).
+    let mut test_files: Vec<PathBuf> = discover(&cwd, forced.as_deref())
+        .into_iter()
+        .filter(|t| files.is_empty() || files.iter().any(|f| filter_matches(&cwd, proc_cwd, f, t)))
+        .map(|t| t.strip_prefix(proc_cwd).map(Path::to_path_buf).unwrap_or(t))
+        .collect();
+    if test_files.is_empty() {
+        // vitest: exit 1 (0 with --passWithNoTests), the filters, include and exclude
+        let code = i32::from(!opts.pass_with_no_tests);
+        let mut msg = format!("No test files found, exiting with code {code}\n\n");
+        if !files.is_empty() {
+            msg.push_str(&format!("filter: {}\n", files.join(", ")));
         }
-        discovered
-    } else {
-        // positional arguments are filters, as vitest's: the discovered files whose root-relative
-        // path contains one (directories and file paths alike)
-        let matched: Vec<PathBuf> = discover(&cwd, forced.as_deref())
-            .into_iter()
-            .filter(|t| files.iter().any(|f| filter_matches(&cwd, proc_cwd, f, t)))
-            .map(|t| t.strip_prefix(proc_cwd).map(Path::to_path_buf).unwrap_or(t))
-            .collect();
-        if matched.is_empty() {
-            // vitest: "No test files found, exiting with code 1" (0 with --passWithNoTests)
-            let code = i32::from(!opts.pass_with_no_tests);
-            messages.push(format!(
-                "No test files found, exiting with code {code}\n\nfilter: {}",
-                files.join(", ")
-            ));
-            return Plan {
-                env,
-                messages,
-                outcome: Err(code),
-            };
-        }
-        matched
-    };
+        let pats = vitest_patterns(&cwd, forced.as_deref());
+        let list = |l: Option<&Vec<String>>, default: &str| {
+            l.map_or(default.to_string(), |l| l.join(", "))
+        };
+        let include = list(
+            pats.as_ref().and_then(|p| p.include.as_ref()),
+            DEFAULT_INCLUDE,
+        );
+        let exclude = list(
+            pats.as_ref().and_then(|p| p.exclude.as_ref()),
+            DEFAULT_EXCLUDE,
+        );
+        msg.push_str(&format!("include: {include}\nexclude:  {exclude}"));
+        messages.push(msg);
+        return Plan {
+            env,
+            messages,
+            outcome: Err(code),
+        };
+    }
 
     // `--changed [since]`: keep only discovered test files git reports changed. Direct changed-file
     // filter (no import graph). Nothing changed → running zero tests is expected → exit 0.

@@ -162,7 +162,7 @@ fn esm_graph_reuse_reports_load_errors_and_retries_fresh() {
         let line = |f: &str| {
             r.stdout
                 .lines()
-                .find(|l| l.contains(&format!("/{f}  ")))
+                .find(|l| l.contains(&format!(" {f}  ")))
                 .unwrap_or_else(|| panic!("{f}\n{}", r.all()))
                 .to_string()
         };
@@ -181,7 +181,7 @@ fn esm_graph_reuse_reports_load_errors_and_retries_fresh() {
             "{}",
             r.all()
         );
-        for f in ["b1.test.js", "er/b2.test.js", "b3.test.js"] {
+        for f in ["b1.test.js", "deep/er/b2.test.js", "b3.test.js"] {
             assert!(line(f).starts_with("PASS"), "{}", r.all());
         }
         assert_eq!(seen(&r.stdout), vec![1, 2, 3], "{}", r.all());

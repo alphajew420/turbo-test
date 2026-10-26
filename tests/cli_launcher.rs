@@ -15,23 +15,26 @@ fn tt(p: &Project, args: &[&str]) -> Run {
 
 const PASS: &str = "test('p', () => { expect(1).toBe(1) })\n";
 
+/// vitest 4.1.12's "No test files found" lines with the default include / exclude (`filter`:
+/// its `filter: …` line, or empty).
+fn no_test_files(code: i32, filter: &str) -> String {
+    format!(
+        "No test files found, exiting with code {code}\n\n{filter}include: **/*.{{test,spec}}.?(c|m)[jt]s?(x)\nexclude:  **/node_modules/**, **/.git/**\n"
+    )
+}
+
 #[test]
 fn no_test_files_exit_codes() {
     let p = Project::new("launch-empty");
     p.file("src/util.ts", "export const x = 1\n");
     let r = tt(&p, &[]);
     assert_eq!(r.code, Some(1), "{}", r.all());
-    assert_eq!(
-        r.stderr,
-        "turbo-test: no test files found (looked for *.test.* / *.spec.*).\n"
-    );
+    // vitest 4.1.12's message (turbo-test#59)
+    assert_eq!(r.stderr, no_test_files(1, ""));
     assert_eq!(r.stdout, "");
     let r = tt(&p, &["run", "--passWithNoTests"]);
     assert_eq!(r.code, Some(0), "{}", r.all());
-    assert_eq!(
-        r.stderr,
-        "turbo-test: no test files found — exiting 0 (--passWithNoTests).\n"
-    );
+    assert_eq!(r.stderr, no_test_files(0, ""));
 }
 
 #[test]
@@ -60,7 +63,7 @@ fn positional_arguments_are_filters() {
     assert_eq!(r.code, Some(1), "{}", r.all());
     assert_eq!(
         r.stderr,
-        "No test files found, exiting with code 1\n\nfilter: gone.test.ts, also-gone.test.ts\n"
+        no_test_files(1, "filter: gone.test.ts, also-gone.test.ts\n")
     );
 }
 
@@ -435,6 +438,7 @@ fn a_directory_argument_runs_the_test_files_under_it() {
     p.file("suite/nested/helper.ts", "export const h = 1\n");
     p.file("elsewhere/e.test.ts", PASS);
     p.file("empty/sub/helper.ts", "export const h = 1\n");
+    let root = format!("{}/", p.dir.display());
     let results = |args: &[&str]| {
         let mut a = vec!["--reporter", "json"];
         a.extend(args);
@@ -445,10 +449,10 @@ fn a_directory_argument_runs_the_test_files_under_it() {
             .unwrap()
             .iter()
             .map(|t| {
-                (
-                    t["name"].as_str().unwrap().to_string(),
-                    t["status"].as_str().unwrap().to_string(),
-                )
+                // the JSON report names files by absolute path, as vitest's
+                let name = t["name"].as_str().unwrap();
+                let rel = name.strip_prefix(&root).unwrap_or(name);
+                (rel.to_string(), t["status"].as_str().unwrap().to_string())
             })
             .collect();
         files.sort();
@@ -481,10 +485,7 @@ fn a_directory_argument_runs_the_test_files_under_it() {
     assert_eq!(results(&["suite/nested", "elsewhere/e.test.ts"]).1.len(), 3);
     let r = tt(&p, &["empty"]);
     assert_eq!(r.code, Some(1), "{}", r.all());
-    assert_eq!(
-        r.stderr,
-        "No test files found, exiting with code 1\n\nfilter: empty\n"
-    );
+    assert_eq!(r.stderr, no_test_files(1, "filter: empty\n"));
     let r = tt(&p, &["empty", "--passWithNoTests"]);
     assert_eq!(r.code, Some(0), "{}", r.all());
     assert!(

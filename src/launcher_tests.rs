@@ -883,14 +883,11 @@ fn git_changed_sets() {
 fn plan_changed_filters_discovered_files() {
     let t = git_fixture("plan-git");
     let p = run_plan(&t, &["--changed"]);
-    assert_eq!(
-        argv(&p),
-        vec![t.p("a.test.ts"), t.p("c.test.ts"), t.p("d.test.ts")]
-    );
+    assert_eq!(argv(&p), vec!["a.test.ts", "c.test.ts", "d.test.ts"]);
     assert!(p.messages.is_empty());
     // since-ref forms (space + inline)
     let p = run_plan(&t, &["--changed", "no-such-ref"]);
-    assert_eq!(argv(&p), vec![t.p("c.test.ts")]);
+    assert_eq!(argv(&p), vec!["c.test.ts"]);
     let p = run_plan(&t, &["--changed=HEAD", "b.test.ts", "a.test.ts"]);
     assert_eq!(argv(&p), args(&["a.test.ts"]));
     // nothing changed among the candidates → exit 0
@@ -907,7 +904,7 @@ fn plan_changed_outside_a_repo_runs_everything() {
     let t = Tmp::new("plan-nogit");
     t.file("a.test.ts", T);
     let p = run_plan(&t, &["--changed"]);
-    assert_eq!(argv(&p), vec![t.p("a.test.ts")]);
+    assert_eq!(argv(&p), vec!["a.test.ts"]);
     assert_eq!(
         p.messages,
         vec!["turbo-test: --changed: git unavailable / not a repo — running all discovered tests."]
@@ -921,7 +918,7 @@ fn plan_discovers_and_strips_subcommands() {
     let t = Tmp::new("plan-sub");
     t.file("a.test.ts", T);
     t.file("b.spec.ts", T);
-    let all = vec![t.p("a.test.ts"), t.p("b.spec.ts")];
+    let all = vec!["a.test.ts", "b.spec.ts"];
     let subs: [&[&str]; 4] = [&[], &["run"], &["watch"], &["dev"]];
     for sub in subs {
         let p = run_plan(&t, sub);
@@ -946,7 +943,6 @@ fn no_test_files(code: i32, filter: &str) -> String {
 /// directory, as filtered ones are; nothing to run prints vitest's lines (the filters, then
 /// the include and exclude in effect).
 #[test]
-#[ignore = "turbo-test#59: fails until the fix"]
 fn discovery_names_and_no_files_message_follow_vitest() {
     let t = Tmp::new("plan-vitest-names");
     t.file("src/u.ts", T);
@@ -979,16 +975,10 @@ fn plan_no_files_found() {
     let t = Tmp::new("plan-empty");
     let p = run_plan(&t, &[]);
     assert_eq!(p.outcome, Err(1));
-    assert_eq!(
-        p.messages,
-        vec!["turbo-test: no test files found (looked for *.test.* / *.spec.*)."]
-    );
+    assert_eq!(p.messages, vec![no_test_files(1, "")]);
     let p = run_plan(&t, &["--passWithNoTests"]);
     assert_eq!(p.outcome, Err(0));
-    assert_eq!(
-        p.messages,
-        vec!["turbo-test: no test files found — exiting 0 (--passWithNoTests)."]
-    );
+    assert_eq!(p.messages, vec![no_test_files(0, "")]);
     // with files, --passWithNoTests reaches the runtime: a file with no tests then passes
     // (turbo-test#32 item 7, vitest semantics)
     let f = t.file("a.test.ts", T).display().to_string();
@@ -1033,10 +1023,7 @@ fn plan_filters_like_vitest() {
         assert_eq!(p.outcome, Err(1));
         assert_eq!(
             p.messages,
-            vec![format!(
-                "No test files found, exiting with code 1\n\nfilter: {}",
-                none[0]
-            )]
+            vec![no_test_files(1, &format!("filter: {}\n", none[0]))]
         );
     }
     let p = run_plan(&t, &["gone.test.ts", "--passWithNoTests"]);
@@ -1183,7 +1170,7 @@ fn plan_isolate_environment_and_root_flags() {
         "proj/vitest.config.ts",
         "export default { test: { environment: 'jsdom', testTimeout: 1234 } }",
     );
-    let a = t.p("proj/a.test.ts");
+    let a = "proj/a.test.ts";
     let p = run_plan(&t, &["--no-isolate", "--root", "proj"]);
     assert_eq!(
         p.env,
@@ -1229,7 +1216,7 @@ fn plan_isolate_environment_and_root_flags() {
     t.file("plain/b.test.ts", T);
     let p = run_plan(&t, &["--root", "plain"]);
     assert!(p.env.is_empty());
-    assert_eq!(argv(&p), vec![t.p("plain/b.test.ts")]);
+    assert_eq!(argv(&p), vec!["plain/b.test.ts"]);
     // `--root ""` is an empty discovery root (nothing found), like the original
     assert_eq!(run_plan(&t, &["--root="]).outcome, Err(1));
     // a value-less trailing --testTimeout is dropped (turbo-test#32 item 3), so it no longer
@@ -1251,10 +1238,7 @@ fn plan_forced_config() {
     t.file("cfg/c.spec.ts", T);
     // the forced config's dir is the include root (its include drops c.spec.ts)
     let p = run_plan(&t, &["-c", "cfg/my.config.ts"]);
-    assert_eq!(
-        argv(&p),
-        vec![t.p("cfg/a.test.ts"), t.p("cfg/sub/b.test.ts")]
-    );
+    assert_eq!(argv(&p), vec!["cfg/a.test.ts", "cfg/sub/b.test.ts"]);
     assert_eq!(env_of(&p, "TURBO_ENV"), Some("jsdom"));
     assert_eq!(
         env_of(&p, "TURBO_ALIAS").unwrap(),
@@ -1270,11 +1254,7 @@ fn plan_forced_config() {
     let p = run_plan(&t, &["--config", "missing.ts"]);
     assert_eq!(
         argv(&p),
-        vec![
-            t.p("cfg/a.test.ts"),
-            t.p("cfg/c.spec.ts"),
-            t.p("cfg/sub/b.test.ts")
-        ]
+        vec!["cfg/a.test.ts", "cfg/c.spec.ts", "cfg/sub/b.test.ts"]
     );
     assert!(p.env.is_empty());
     // -c with no value
