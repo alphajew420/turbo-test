@@ -309,7 +309,7 @@ fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -
 
     // TS/JSX strip IN PLACE (original spans preserved → the codegen map points at the .ts source).
     if crate::transform::needs_transform(path) {
-        let scoping0 = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping0 = crate::transform::semantic_scoping(&program);
         let mut opts = TransformOptions::default();
         if legacy_decorators {
             // Mirror `transform::transform_decorators_with_metadata` so output is identical to the
@@ -327,7 +327,8 @@ fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -
         }
     }
 
-    // Rebuild semantic on the now-plain-JS AST for the ESM→CJS reference rewriting.
+    // Rebuild semantic on the now-plain-JS AST for the ESM→CJS reference rewriting (no TS enums
+    // remain, so no `with_enum_eval` here or in `transform_to_parts`).
     let sem = SemanticBuilder::new().build(&program);
     if !sem.errors.is_empty() {
         return None;

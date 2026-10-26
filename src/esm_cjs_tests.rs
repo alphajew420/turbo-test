@@ -315,6 +315,39 @@ fn script_without_module_syntax_is_returned_unwrapped() {
 // ---- TS / JSX / decorators -----------------------------------------------------------------
 
 #[test]
+fn enums_lower_like_tsc_in_both_decorator_modes() {
+    // Member lines are tsc 5.9.3's output for this source (`tsc --target es2022`): string
+    // members get no reverse mapping, member references are folded to constants. Runs in a
+    // debug build, so it would also trip oxc's `with_enum_eval` debug_assert.
+    let src = "enum S { A = 'a', B = A }\n\
+               enum N { A, B = A + 2, C }\n\
+               const enum CE { P = 1 }\n\
+               export enum X { One = 1, Two = One + 1 }\n\
+               export const v = [S.B, N.C, CE.P];\n";
+    for legacy in [false, true] {
+        let o = emit_with(Path::new("e.ts"), src, legacy).unwrap();
+        for line in [
+            "S[\"A\"] = \"a\";",
+            "S[\"B\"] = \"a\";",
+            "N[N[\"A\"] = 0] = \"A\";",
+            "N[N[\"B\"] = 2] = \"B\";",
+            "N[N[\"C\"] = 3] = \"C\";",
+            "X[X[\"One\"] = 1] = \"One\";",
+            "X[X[\"Two\"] = 2] = \"Two\";",
+        ] {
+            assert!(o.contains(line), "legacy={legacy}: missing {line}:\n{o}");
+        }
+        assert!(!o.contains("S[S["), "legacy={legacy}: {o}");
+        assert!(o.contains("  X: () => X,\n"), "legacy={legacy}: {o}");
+        assert!(o.contains("  v: () => v,\n"), "legacy={legacy}: {o}");
+        assert!(
+            o.contains("CE[CE[\"P\"] = 1] = \"P\";"),
+            "legacy={legacy}: {o}"
+        );
+    }
+}
+
+#[test]
 fn tsx_lowers_jsx_to_the_automatic_runtime() {
     let o = emit(
         Path::new("c.tsx"),

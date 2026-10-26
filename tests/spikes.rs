@@ -518,13 +518,12 @@ fn m1_cjs_throwing_export_getter_is_left_unset() {
 
 #[test]
 fn m1_transform_default_path_passes() {
-    // The repo's fixtures/ts/sample.ts declares an enum, which trips an oxc debug assertion in
-    // debug builds (see the report); run the default path against an enum-free copy instead.
+    // The repo's own fixtures/ts/sample.ts, whose `enum Color` used to trip oxc's
+    // `with_enum_eval` debug_assert in this (debug) binary (turbo-test#35 item 1).
     let p = Project::new("m1t");
     p.file(
         "fixtures/ts/sample.ts",
-        "interface P { name: string }\ntype Greeting = string;\n\
-         export const msg: Greeting = ((p: P): Greeting => `hi ${p.name}`)({ name: 'ts' });\n",
+        include_str!("../fixtures/ts/sample.ts"),
     );
     let r = m1_transform(&p.dir, &[]);
     assert_eq!(r.code, Some(0), "{}", r.all());
@@ -533,12 +532,15 @@ fn m1_transform_default_path_passes() {
         "{}",
         r.all()
     );
-    assert!(
-        r.stdout
-            .contains("export const msg = ((p) => `hi ${p.name}`)({ name: \"ts\" });"),
-        "{}",
-        r.all()
-    );
+    for line in [
+        "\tColor[Color[\"Red\"] = 0] = \"Red\";\n",
+        "\tColor[Color[\"Green\"] = 1] = \"Green\";\n",
+        "\tColor[Color[\"Blue\"] = 2] = \"Blue\";\n",
+        "const greet = (p) => `hi ${p.name}, ${Color[Color.Green]}`;\n",
+        "export const msg = identity(greet({\n",
+    ] {
+        assert!(r.stdout.contains(line), "{line}: {}", r.all());
+    }
     assert!(
         r.stdout
             .ends_with("--- check ---\n==> M1.4 TRANSFORM PASS\n"),
