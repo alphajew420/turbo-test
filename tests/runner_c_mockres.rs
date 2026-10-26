@@ -1,5 +1,6 @@
 //! Mock resolution that follows vitest: a `vi.doMock` applies to a later `import()` on every
-//! loader path, and a mock whose specifier has a `?query` is a module id of its own.
+//! loader path, and a mock whose specifier has a `?query` is a module id of its own; a
+//! specifier with escaped quotes is read whole.
 #![cfg(unix)]
 
 mod common;
@@ -96,6 +97,54 @@ test('query ids are separate modules', async () => {
   // the query id itself gets its own mock
   expect((await import('./rel.js?raw')).default).toBe('raw');
   expect((await import('./other.js?inline')).default).toBe('inline');
+});
+"#,
+        );
+        let envs: &[&[(&str, &str)]] = if esbuild {
+            &[&[], &[("TURBO_NO_MR", "1")]]
+        } else {
+            &[&[]]
+        };
+        for env in envs {
+            assert_passes(&turbo_test(&p.dir, &["a.test.js"], env), 1);
+        }
+    }
+}
+
+#[test]
+fn a_specifier_with_escaped_quotes_is_mocked() {
+    // turbo-test#42 item 4: the mock-hoisting string scanners stopped at the first quote, so an
+    // escaped quote (`"./w\"x.js"`, or esbuild's `require("./q\"a'b.js")` and template-literal
+    // `vi.mock(`./q"a'b.js`)` for a specifier holding both quotes) truncated the specifier and
+    // the mock missed its module. Expected values are vitest 4.1.12's for the same files.
+    for esbuild in [true, false] {
+        let p = if esbuild {
+            let p = Project::new("rc-quoted-spec");
+            p.with_esbuild();
+            p.file("package.json", r#"{"name":"r42"}"#);
+            p
+        } else {
+            esm_graph_project("rc-quoted-spec-esm")
+        };
+        p.file("q\"a'b.js", "export const f = () => 'real';\n");
+        p.file("w\"x.js", "export const g = () => 'real-g';\n");
+        p.file("w\"y.js", "export const h = () => 'real-h';\n");
+        p.file(
+            "a.test.js",
+            r#"import { f } from './q"a\'b.js';
+import { g } from "./w\"x.js";
+import { h } from "./w\"y.js";
+vi.mock('./q"a\'b.js', () => ({ f: () => 'mocked-f' }));
+vi.mock("./w\"x.js", () => ({ g: () => 'mocked-g' }));
+const mf = vi.mocked(f);
+const mg = vi.mocked(g);
+test('a mocked specifier with escaped quotes', () => {
+  expect(mf()).toBe('mocked-f');
+  expect(f()).toBe('mocked-f');
+  expect(mg()).toBe('mocked-g');
+  expect(g()).toBe('mocked-g');
+  // a module whose specifier shares the mocked one's prefix up to the quote stays real
+  expect(h()).toBe('real-h');
 });
 "#,
         );

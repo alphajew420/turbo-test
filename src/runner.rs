@@ -2238,24 +2238,72 @@ fn hoist_mock_setup(code: &str) -> String {
     out.join("\n")
 }
 
-/// Extract the first string literal ("..." or '...') from `s`.
+/// The value of the first string literal (`"..."`, `'...'` or `` `...` ``) in `s`, escape
+/// sequences decoded (an unterminated one runs to the end of `s`).
 fn extract_first_string_literal(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if c == b'"' || c == b'\'' {
-            let quote = c;
-            let start = i + 1;
-            let mut j = start;
-            while j < bytes.len() && bytes[j] != quote {
-                j += 1;
-            }
-            return s.get(start..j).map(|x| x.to_string());
+    let at = s.find(['"', '\'', '`'])?;
+    Some(js_string_literal_at(&s[at..])?.0)
+}
+
+/// The JS string literal `s` starts with (`"..."`, `'...'`, or a template literal, read
+/// verbatim apart from its escapes): its value with the escape sequences decoded (`\"`, `\\`,
+/// `\n`, `\x41`, `\u0041`, `\u{1F600}`, line continuations; any other escaped character stands for
+/// itself), and its length in bytes through the closing quote, None when unterminated. None
+/// when `s` does not start with a quote.
+fn js_string_literal_at(s: &str) -> Option<(String, Option<usize>)> {
+    let quote = s.chars().next().filter(|c| matches!(c, '"' | '\'' | '`'))?;
+    let mut out = String::new();
+    let mut i = 1;
+    while let Some(c) = s[i..].chars().next() {
+        i += c.len_utf8();
+        if c == quote {
+            return Some((out, Some(i)));
         }
-        i += 1;
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let Some(e) = s[i..].chars().next() else {
+            break;
+        };
+        i += e.len_utf8();
+        // \xHH, \uHHHH, \u{H...}: the code point (a malformed one stands for its letter)
+        let hex = |digits: &str| {
+            let valid = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_hexdigit());
+            valid
+                .then(|| u32::from_str_radix(digits, 16).ok())
+                .flatten()
+                .and_then(char::from_u32)
+        };
+        let escaped = match e {
+            'n' => Some('\n'),
+            't' => Some('\t'),
+            'r' => Some('\r'),
+            'b' => Some('\u{8}'),
+            'f' => Some('\u{c}'),
+            'v' => Some('\u{b}'),
+            '0' => Some('\0'),
+            'x' => s.get(i..i + 2).and_then(hex).inspect(|_| i += 2),
+            'u' if s[i..].starts_with('{') => s[i + 1..].find('}').and_then(|n| {
+                let c = hex(&s[i + 1..i + 1 + n]);
+                c.inspect(|_| i += n + 2)
+            }),
+            'u' => s.get(i..i + 4).and_then(hex).inspect(|_| i += 4),
+            // a line continuation stands for nothing (\r\n is one line terminator)
+            '\r' => {
+                i += usize::from(s[i..].starts_with('\n'));
+                None
+            }
+            '\n' | '\u{2028}' | '\u{2029}' => None,
+            _ => Some(e),
+        };
+        match escaped {
+            Some(c) => out.push(c),
+            None if matches!(e, 'x' | 'u') => out.push(e),
+            None => {}
+        }
     }
-    None
+    Some((out, None))
 }
 
 /// From `var import_X = require("SPEC");` or `... = __toESM(require("SPEC"), 1);` -> "SPEC".
@@ -2799,16 +2847,17 @@ fn extract_mock_calls(src: &str, needles: [&str; 2]) -> Vec<(String, String)> {
         let rest = src.get(start..).unwrap_or("");
         let q = rest.trim_start();
         let lead = rest.len() - q.len();
-        let Some(quote) = q.chars().next() else { break };
-        if quote != '"' && quote != '\'' && quote != '`' {
+        if q.is_empty() {
+            break;
+        }
+        // (escapes decoded: an escaped quote does not end the specifier, turbo-test#42 item 4)
+        let Some((spec, len)) = js_string_literal_at(q) else {
             i = start;
             continue;
-        }
-        let after_q = &q[1..];
-        let Some(end_q) = after_q.find(quote) else { break };
-        let spec = after_q[..end_q].to_string();
+        };
+        let Some(len) = len else { break };
         // find factory: from after the spec's closing quote to the balanced ')'
-        let mut j = start + lead + 1 + end_q + 1;
+        let mut j = start + lead + len;
         // the next token after the specifier decides: ',' -> a factory follows, anything else
         // (normally ')') -> no factory. A ',' further on belongs to later code (another call's
         // factory, a test callback), never to this call.
