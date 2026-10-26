@@ -21,6 +21,8 @@ pub type napi_status = i32;
 pub const napi_ok: napi_status = 0;
 pub const napi_invalid_arg: napi_status = 1;
 pub const napi_string_expected: napi_status = 3;
+pub const napi_number_expected: napi_status = 6;
+pub const napi_boolean_expected: napi_status = 7;
 pub const napi_generic_failure: napi_status = 9;
 pub const napi_pending_exception: napi_status = 10;
 
@@ -239,16 +241,35 @@ pub unsafe extern "C" fn napi_create_double(
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_value_uint32(
-    env: napi_env,
+    _env: napi_env,
     v: napi_value,
     out: *mut u32,
 ) -> napi_status {
-    let s = scope(env);
-    let n = to_local(v).number_value(s).unwrap_or(0.0) as u32;
+    let Some(n) = number_of(v) else {
+        return napi_number_expected;
+    };
     if !out.is_null() {
-        *out = n;
+        *out = to_uint32(n);
     }
     napi_ok
+}
+
+/// The value of a JS number, `None` for anything else: Node's number getters never coerce
+/// (they return napi_number_expected).
+unsafe fn number_of(v: napi_value) -> Option<f64> {
+    v8::Local::<v8::Number>::try_from(to_local(v))
+        .ok()
+        .map(|n| n.value())
+}
+
+/// ECMAScript ToUint32, what V8's Uint32Value (Node's napi_get_value_uint32) computes: NaN and
+/// the infinities are 0, anything else is truncated and wrapped modulo 2^32.
+fn to_uint32(n: f64) -> u32 {
+    if n.is_finite() {
+        n.trunc().rem_euclid(4294967296.0) as u32
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -796,32 +817,42 @@ pub unsafe extern "C" fn napi_get_value_bool(
     v: napi_value,
     out: *mut bool,
 ) -> napi_status {
+    // as Node: only a JS boolean, no ToBoolean coercion
+    let Ok(b) = v8::Local::<v8::Boolean>::try_from(to_local(v)) else {
+        return napi_boolean_expected;
+    };
     if !out.is_null() {
-        *out = to_local(v).boolean_value(&mut *((*_env).scope as *mut v8::PinScope<'static, 'static>));
+        *out = b.is_true();
     }
     napi_ok
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_value_double(
-    env: napi_env,
+    _env: napi_env,
     v: napi_value,
     out: *mut f64,
 ) -> napi_status {
-    let s = scope(env);
+    let Some(n) = number_of(v) else {
+        return napi_number_expected;
+    };
     if !out.is_null() {
-        *out = to_local(v).number_value(s).unwrap_or(0.0);
+        *out = n;
     }
     napi_ok
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_value_int64(
-    env: napi_env,
+    _env: napi_env,
     v: napi_value,
     out: *mut i64,
 ) -> napi_status {
-    let s = scope(env);
+    let Some(n) = number_of(v) else {
+        return napi_number_expected;
+    };
     if !out.is_null() {
-        *out = to_local(v).number_value(s).unwrap_or(0.0) as i64;
+        // as Node: NaN and the infinities are 0; finite values truncate, saturating at the
+        // int64 range (V8's IntegerValue)
+        *out = if n.is_finite() { n as i64 } else { 0 };
     }
     napi_ok
 }

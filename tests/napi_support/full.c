@@ -169,6 +169,8 @@ static napi_value f_coerce(napi_env env, napi_callback_info info) {
     return or_undef(env, out);
 }
 
+/* num(v) -> [uint32, double, int64, bool, then the four getters' statuses]; outputs a getter
+ * leaves untouched stay 99 (false for the bool). */
 static napi_value f_num(napi_env env, napi_callback_info info) {
     Args a = args(env, info);
     napi_value v = arg(env, &a, 0);
@@ -176,11 +178,13 @@ static napi_value f_num(napi_env env, napi_callback_info info) {
     double d = 99;
     int64_t i = 99;
     bool b = false;
-    int acc = napi_get_value_uint32(env, v, &u) | napi_get_value_double(env, v, &d) |
-              napi_get_value_int64(env, v, &i) | napi_get_value_bool(env, v, &b);
-    napi_value it[5] = {dbl(env, u), dbl(env, d), dbl(env, (double)i), boolv(env, b),
-                        dbl(env, acc)};
-    return list(env, 5, it);
+    int su = napi_get_value_uint32(env, v, &u);
+    int sd = napi_get_value_double(env, v, &d);
+    int si = napi_get_value_int64(env, v, &i);
+    int sb = napi_get_value_bool(env, v, &b);
+    napi_value it[8] = {dbl(env, u),  dbl(env, d),  dbl(env, (double)i), boolv(env, b),
+                        dbl(env, su), dbl(env, sd), dbl(env, si),        dbl(env, sb)};
+    return list(env, 8, it);
 }
 
 static napi_value f_set_named(napi_env env, napi_callback_info info) {

@@ -7,6 +7,8 @@ const a = require('./full.node');
 const OK = 0;
 const INVALID_ARG = 1;
 const STRING_EXPECTED = 3;
+const NUMBER_EXPECTED = 6;
+const BOOLEAN_EXPECTED = 7;
 const GENERIC_FAILURE = 9;
 const PENDING_EXCEPTION = 10;
 
@@ -116,12 +118,28 @@ describe('values', () => {
   });
 
   test('number / bool getters', () => {
-    expect(a.num(7.9)).toEqual([7, 7.9, 7, true, OK]);
-    expect(a.num(0)).toEqual([0, 0, 0, false, OK]);
-    expect(a.num(4294967295)).toEqual([4294967295, 4294967295, 4294967295, true, OK]);
-    expect(a.num(NaN)).toEqual([0, NaN, 0, false, OK]);
-    expect(a.num(-3.5).slice(1)).toEqual([-3.5, -3, true, OK]);
-    expect(a.num(1e10).slice(1)).toEqual([1e10, 1e10, true, OK]);
+    const NUM = NUMBER_EXPECTED;
+    // [uint32, double, int64, bool, then the four statuses]
+    expect(a.num(7.9)).toEqual([7, 7.9, 7, false, OK, OK, OK, BOOLEAN_EXPECTED]);
+    expect(a.num(0)).toEqual([0, 0, 0, false, OK, OK, OK, BOOLEAN_EXPECTED]);
+    expect(a.num(4294967295).slice(0, 3)).toEqual([4294967295, 4294967295, 4294967295]);
+    // uint32 is ToUint32 (wraps modulo 2^32), as V8's Uint32Value
+    expect(a.num(-1).slice(0, 3)).toEqual([4294967295, -1, -1]);
+    expect(a.num(-3.5).slice(0, 3)).toEqual([4294967293, -3.5, -3]);
+    expect(a.num(4294967296 + 5)[0]).toBe(5);
+    expect(a.num(1e10).slice(0, 3)).toEqual([1410065408, 1e10, 1e10]);
+    // non-finite numbers are 0 as uint32 and int64; int64 saturates otherwise
+    expect(a.num(NaN).slice(0, 3)).toEqual([0, NaN, 0]);
+    expect(a.num(Infinity).slice(0, 3)).toEqual([0, Infinity, 0]);
+    expect(a.num(-Infinity).slice(0, 3)).toEqual([0, -Infinity, 0]);
+    expect(a.num(2 ** 63)[2]).toBe(2 ** 63);
+    expect(a.num(-(2 ** 64))[2]).toBe(-(2 ** 63));
+    // no coercion: other types are napi_number_expected / napi_boolean_expected, outputs untouched
+    for (const v of ['5', null, undefined, 10n, {}, new Number(1)]) {
+      expect(a.num(v)).toEqual([99, 99, 99, false, NUM, NUM, NUM, BOOLEAN_EXPECTED]);
+    }
+    expect(a.num(true)).toEqual([99, 99, 99, true, NUM, NUM, NUM, OK]);
+    expect(a.num(false)).toEqual([99, 99, 99, false, NUM, NUM, NUM, OK]);
   });
 });
 
