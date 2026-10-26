@@ -1395,3 +1395,22 @@ fn prepare_returns_argv_for_runnable_input() {
         args(&["--reporter", "dot", &f])
     );
 }
+
+#[test]
+fn config_true_reads_a_boolean_key() {
+    // test.includeTaskLocation (turbo-test#63 item 1)
+    assert!(config_true(
+        "{ test: { includeTaskLocation : true } }",
+        "includeTaskLocation"
+    ));
+    assert!(!config_true(
+        "{ test: { includeTaskLocation: false } }",
+        "includeTaskLocation"
+    ));
+    // a mention that is not a key is skipped; no key at all is false
+    assert!(config_true(
+        "// includeTaskLocation\n{ includeTaskLocation: true }",
+        "includeTaskLocation"
+    ));
+    assert!(!config_true("{ test: {} }", "includeTaskLocation"));
+}

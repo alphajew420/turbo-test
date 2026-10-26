@@ -5194,27 +5194,22 @@ fn native_call_site(
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let Some(trace) = v8::StackTrace::current_stack_trace(scope, 64) else {
-        return;
-    };
-    for i in 0..trace.get_frame_count() {
-        let Some(frame) = trace.get_frame(scope, i) else {
-            continue;
-        };
-        let name = frame
-            .get_script_name(scope)
-            .map(|n| n.to_rust_string_lossy(scope))
-            .unwrap_or_default();
-        if let Some((line, col)) =
+    let site = v8::StackTrace::current_stack_trace(scope, 64).and_then(|trace| {
+        (0..trace.get_frame_count()).find_map(|i| {
+            let frame = trace.get_frame(scope, i)?;
+            let name = frame
+                .get_script_name(scope)
+                .map(|n| n.to_rust_string_lossy(scope))
+                .unwrap_or_default();
             crate::location::resolve(&name, frame.get_line_number(), frame.get_column())
-        {
-            let items = [
-                v8::Integer::new(scope, line as i32).into(),
-                v8::Integer::new(scope, col as i32).into(),
-            ];
-            rv.set(v8::Array::new_with_elements(scope, &items).into());
-            return;
-        }
+        })
+    });
+    if let Some((line, col)) = site {
+        let items = [
+            v8::Integer::new(scope, line as i32).into(),
+            v8::Integer::new(scope, col as i32).into(),
+        ];
+        rv.set(v8::Array::new_with_elements(scope, &items).into());
     }
 }
 
@@ -6480,16 +6475,15 @@ fn string_array<'s>(
     key: &str,
 ) -> Vec<String> {
     let k = v8::String::new(scope, key).unwrap();
-    let Some(arr) = obj
-        .get(scope, k.into())
+    obj.get(scope, k.into())
         .and_then(|v| v8::Local::<v8::Array>::try_from(v).ok())
-    else {
-        return Vec::new();
-    };
-    (0..arr.length())
-        .filter_map(|i| arr.get_index(scope, i))
-        .map(|v| v.to_rust_string_lossy(scope))
-        .collect()
+        .map(|arr| {
+            (0..arr.length())
+                .filter_map(|i| arr.get_index(scope, i))
+                .map(|v| v.to_rust_string_lossy(scope))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Call a no-arg global JS function and coerce its result to bool.
