@@ -1,5 +1,5 @@
 //! Runtime semantics that follow Node/vitest: the `URL` polyfill resolves relative references
-//! like Node's WHATWG `URL`.
+//! like Node's WHATWG `URL`; an entry file's hoisted mock factory runs once.
 #![cfg(unix)]
 
 mod common;
@@ -64,5 +64,59 @@ fn url_resolves_relative_references_like_node() {
         }
         p.file("a.test.js", URL_TEST);
         assert_passes(&turbo_test(&p.dir, &["a.test.js"], &[]), 1);
+    }
+}
+
+#[test]
+fn an_entry_mock_factory_runs_once() {
+    // turbo-test#38 item 2: the entry's hoisted factories ran in the mock prepass AND again in
+    // the module body; vitest calls a factory once. Sync, async and jest.mock factories, on the
+    // module-runner, legacy-bundle (TURBO_NO_MR) and ESM-graph (no esbuild) paths.
+    for esbuild in [true, false] {
+        let p = Project::new("rc-factory-once");
+        if esbuild {
+            p.with_esbuild();
+            p.file("package.json", r#"{"name":"r38b"}"#);
+            p.file(
+                "node_modules/react/package.json",
+                r#"{"name":"react","main":"index.js"}"#,
+            );
+            p.file(
+                "node_modules/react/index.js",
+                "exports.createElement = () => null;\n",
+            );
+        } else {
+            p.file("package.json", r#"{"name":"r38b","type":"module"}"#);
+        }
+        p.file("m.js", "export const v = 'real';\n");
+        p.file("n.js", "export const w = 'real-n';\n");
+        p.file("j.js", "export const j = 'real-j';\n");
+        // async factories without esbuild are turbo-test#38 item 5
+        let n_factory = if esbuild { "async () =>" } else { "() =>" };
+        p.file(
+            "a.test.js",
+            &format!(
+                r#"import {{ v }} from './m.js';
+import {{ w }} from './n.js';
+import {{ j }} from './j.js';
+vi.mock('./m.js', () => {{ globalThis.M = (globalThis.M || 0) + 1; return {{ v: 'mock' }}; }});
+vi.mock('./n.js', {n_factory} {{ globalThis.N = (globalThis.N || 0) + 1; return {{ w: 'mock-n' }}; }});
+jest.mock('./j.js', () => {{ globalThis.J = (globalThis.J || 0) + 1; return {{ j: 'mock-j' }}; }});
+test('each factory ran once', () => {{
+  expect([v, w, j]).toEqual(['mock', 'mock-n', 'mock-j']);
+  expect([globalThis.M, globalThis.N, globalThis.J]).toEqual([1, 1, 1]);
+}});
+"#
+            ),
+        );
+        let envs: &[&[(&str, &str)]] = if esbuild {
+            &[&[], &[("TURBO_NO_MR", "1")]]
+        } else {
+            &[&[]]
+        };
+        for env in envs {
+            let r = turbo_test(&p.dir, &["a.test.js"], env);
+            assert_passes(&r, 1);
+        }
     }
 }

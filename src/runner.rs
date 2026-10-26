@@ -1475,17 +1475,28 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
         return;
     }
     let dir = entry.parent().unwrap_or(Path::new("."));
+    // the entry's own (hoisted) vi.mock calls resolve their prepass keys from here when the
+    // module has no __ttDir (ESM graph); see runtime.js __ttPrepassMocks
+    let entry_dir = js_string_literal(&dir.to_string_lossy());
+    run_js(scope, &format!("globalThis.__ttEntryDir = {entry_dir};"));
     let Some(root) = project_root(entry) else {
         // No esbuild project (e.g. standalone fixtures): register self-contained factories
-        // directly (no JSX/transform available here).
+        // directly (no JSX/transform available here). These registrations are this file's
+        // prepass: the module's own vi.mock call keeps them instead of re-running the factory.
         for (spec, factory) in &mocks {
+            let Some(abs) = resolve_spec(spec, dir) else {
+                continue;
+            };
+            let key = js_string_literal(&abs.to_string_lossy());
             if factory.is_empty() {
                 // factory-less vi.mock: the runtime's automock of the real module (the same
                 // __automock the module-runner prepass's `vi.mock(spec)` uses).
                 let d = js_string_literal(&dir.to_string_lossy());
                 let s = js_string_literal(spec);
-                let js =
-                    format!("__ttRegisterMock({d}, {s}, __automock(__ttImportActual({d}, {s})))");
+                let js = format!(
+                    "__ttRegisterMock({d}, {s}, __automock(__ttImportActual({d}, {s}))); \
+                     __ttPrepassMocks.add({key});"
+                );
                 let tc = std::pin::pin!(v8::TryCatch::new(scope));
                 let tc = &mut tc.init();
                 let code = v8::String::new(tc, &js).unwrap();
@@ -1494,8 +1505,8 @@ fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
                 }
                 continue;
             }
-            if let Some(abs) = resolve_spec(spec, dir) {
-                register_mock(scope, &abs, factory);
+            if register_mock(scope, &abs, factory).is_some() {
+                run_js(scope, &format!("__ttPrepassMocks.add({key});"));
             }
         }
         return;
@@ -3803,6 +3814,22 @@ fn native_import_actual(
     }
 }
 
+/// __ttResolveSpec(dir, spec): the absolute path `spec` resolves to from `dir` (undefined when
+/// it does not resolve). runtime.js keys the entry prepass's once-only factories by it.
+fn native_resolve_spec(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let dir = args.get(0).to_rust_string_lossy(scope);
+    let spec = args.get(1).to_rust_string_lossy(scope);
+    if let Some(abs) = resolve_spec(&spec, Path::new(&dir)) {
+        if let Some(v) = v8::String::new(scope, &abs.to_string_lossy()) {
+            rv.set(v.into());
+        }
+    }
+}
+
 /// __ttUnmock(dir, spec): vi.unmock()/doUnmock() — remove a registered mock + its loaded module
 /// so the next import loads the REAL module.
 fn native_unmock(
@@ -4317,6 +4344,7 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "__ttImportActual", native_import_actual);
     bind_fn(scope, global, "__ttResetModules", native_reset_modules);
     bind_fn(scope, global, "__ttUnmock", native_unmock);
+    bind_fn(scope, global, "__ttResolveSpec", native_resolve_spec);
     bind_fn(scope, global, "__fs_existsSync", fs_exists_sync);
     bind_fn(scope, global, "__fs_readFileSync", fs_read_file_sync);
     bind_fn(scope, global, "__fs_writeFileSync", fs_write_file_sync);

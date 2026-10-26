@@ -2254,11 +2254,22 @@ function __ttStrictMock(mod, key, spec) {
     },
   });
 }
+// Modules (resolved absolute paths) the entry's mock prepass registered for the current file.
+// vitest calls a hoisted factory ONCE; the module's own hoisted vi.mock call for such a module
+// keeps the prepass registration instead of running the factory a second time. Consumed by
+// that call (a later vi.mock/doMock of the module runs normally) and cleared between files.
+const __ttPrepassMocks = new Set();
+globalThis.__ttPrepassMocks = __ttPrepassMocks;
+function __ttPrepassKey(spec) {
+  const dir = globalThis.__ttDir || globalThis.__ttEntryDir;
+  return (dir && globalThis.__ttResolveSpec(dir, String(spec))) || '\0' + String(spec);
+}
 function __ttMock(spec, factory, vitest) {
   let exports;
   const key = (globalThis.__ttDir || '') + '\0' + String(spec);
   if (!globalThis.__ttMockPrepass) {
     if (vitest) __ttLenientMockKeys.delete(key); else __ttLenientMockKeys.add(key);
+    if (__ttPrepassMocks.size && __ttPrepassMocks.delete(__ttPrepassKey(spec))) return;
   }
   // vitest passes `importOriginal` (a fn returning the real module, as a Promise) as the
   // factory's first arg — `vi.mock('x', async (importOriginal) => ({...await importOriginal(), y}))`.
@@ -2281,6 +2292,7 @@ function __ttMock(spec, factory, vitest) {
   // the module's consumer requires, so the mock is in place before they load — and the factory
   // ran in THIS module's scope, so it shares the test's bindings). Async (Promise) factory:
   // queue for __resolvePendingMocks (run_entry_mocks prepass / drain).
+  if (globalThis.__ttMockPrepass) __ttPrepassMocks.add(__ttPrepassKey(spec));
   if (exports && typeof exports.then === 'function') {
     (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest, key });
     return;
@@ -2797,6 +2809,7 @@ globalThis.__ttResetForNextFile = () => {
   globalThis.__tt.skippedSuites = 0;
   // mock-prepass scratch (turbo-test specific) — must be empty before the next file hoists.
   globalThis.__pendingMocks = [];
+  __ttPrepassMocks.clear();
   globalThis.__hoistedCache = [];
   globalThis.__hoistedIdx = 0;
   // Bump the timer generation: the prior file's leaked timers (now gen < __loop.gen) get dropped,
