@@ -99,6 +99,17 @@ fn extract_mocks_skips_dynamic_specifiers_and_stops_on_truncated_input() {
 }
 
 #[test]
+fn extract_do_mocks_reads_only_do_mock_calls() {
+    let src = "vi.mock('./a', () => 1);\nvi.doMock('./b', () => 2);\njest.doMock(\"./c\");\nvi.doMock(dyn, f);";
+    assert_eq!(
+        extract_do_mocks(src),
+        pairs(&[("./b", "() => 2"), ("./c", "")])
+    );
+    // vi.doMock is not a hoisted vi.mock
+    assert_eq!(extract_mocks(src), pairs(&[("./a", "() => 1")]));
+}
+
+#[test]
 fn extract_mocks_factory_less_call_does_not_take_a_later_factory() {
     // turbo-test#31 item 4: the factory search ran to the next ',' anywhere in the source, so a
     // factory-less mock took the next call's factory and that call was dropped

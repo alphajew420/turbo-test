@@ -2271,13 +2271,17 @@ function __ttMock(spec, factory, vitest) {
     if (vitest) __ttLenientMockKeys.delete(key); else __ttLenientMockKeys.add(key);
     if (__ttPrepassMocks.size && __ttPrepassMocks.delete(__ttPrepassKey(spec))) return;
   }
+  // The calling module's dir: the module-runner's __ttDir, else (ESM graph, where modules have
+  // none) the entry file's dir, so a runtime vi.doMock registers immediately and a later import()
+  // of the module sees it.
+  const dir = globalThis.__ttDir || globalThis.__ttEntryDir;
   // vitest passes `importOriginal` (a fn returning the real module, as a Promise) as the
   // factory's first arg — `vi.mock('x', async (importOriginal) => ({...await importOriginal(), y}))`.
-  const importOriginal = () => Promise.resolve(globalThis.__ttImportActual(globalThis.__ttDir, String(spec)));
+  const importOriginal = () => Promise.resolve(globalThis.__ttImportActual(dir, String(spec)));
   if (factory === undefined) {
     // AUTOMOCK: no factory -> auto-generate a mock from the real module (functions -> vi.fn()).
     // A real module that fails to load is left unmocked: importing it reports its own error.
-    try { exports = __automock(globalThis.__ttImportActual(globalThis.__ttDir, String(spec))); }
+    try { exports = __automock(globalThis.__ttImportActual(dir, String(spec))); }
     catch (e) { return; }
   } else {
     try { exports = typeof factory === 'function' ? factory(importOriginal) : factory; }
@@ -2298,14 +2302,14 @@ function __ttMock(spec, factory, vitest) {
     return;
   }
   if (factory !== undefined) exports = __ttStrictMock(exports, key, String(spec));
-  if (globalThis.__ttRegisterMock && globalThis.__ttDir) {
+  if (globalThis.__ttRegisterMock && dir) {
     // An error stand-in replaces (never merges into) a module already registered under this
     // isolate; a later working factory for the same spec replaces the stand-in the same way.
     if (__ttMockErrors.has(exports) || __ttMockErrorSpecs.has(key)) {
       globalThis.vi.unmock(spec);
       if (__ttMockErrors.has(exports)) __ttMockErrorSpecs.add(key); else __ttMockErrorSpecs.delete(key);
     }
-    try { globalThis.__ttRegisterMock(globalThis.__ttDir, String(spec), exports); return; } catch (e) {}
+    try { globalThis.__ttRegisterMock(dir, String(spec), exports); return; } catch (e) {}
   }
   (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest, key });
 }

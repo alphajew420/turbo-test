@@ -1497,15 +1497,16 @@ fn extract_hoisted(src: &str) -> Vec<String> {
 /// the entry dir. This is how hoisted entry mocks work with bundling.
 fn run_entry_mocks(scope: &mut v8::PinScope, entry: &Path) {
     let src = std::fs::read_to_string(entry).unwrap_or_default();
+    let dir = entry.parent().unwrap_or(Path::new("."));
+    // The dir the entry's runtime vi.mock / vi.doMock calls resolve from when the module has no
+    // __ttDir (ESM graph): its hoisted calls' prepass keys (runtime.js __ttPrepassMocks) and
+    // immediate registration of a vi.doMock. Set for every entry (also one without vi.mock).
+    let entry_dir = js_string_literal(&dir.to_string_lossy());
+    run_js(scope, &format!("globalThis.__ttEntryDir = {entry_dir};"));
     let mocks = extract_mocks(&src);
     if mocks.is_empty() {
         return;
     }
-    let dir = entry.parent().unwrap_or(Path::new("."));
-    // the entry's own (hoisted) vi.mock calls resolve their prepass keys from here when the
-    // module has no __ttDir (ESM graph); see runtime.js __ttPrepassMocks
-    let entry_dir = js_string_literal(&dir.to_string_lossy());
-    run_js(scope, &format!("globalThis.__ttEntryDir = {entry_dir};"));
     let Some(root) = project_root(entry) else {
         // No esbuild project (ESM graph): the runtime runs this file's prepass like the esbuild
         // one, just untransformed — one script that replays the file's vi.hoisted declarations
@@ -2771,19 +2772,27 @@ fn read_transformed(abs: &Path, as_cjs: bool, prefer_metadata: bool) -> Option<S
 /// Returns (specifier, factory_source). Models vitest's hoisting: mocks are registered
 /// before the module graph instantiates. Dynamic specifiers/automock: M-later.
 fn extract_mocks(src: &str) -> Vec<(String, String)> {
+    // Match both `vi.mock(` (vitest) and `jest.mock(` (jest) — same hoisting semantics.
+    extract_mock_calls(src, ["vi.mock(", "jest.mock("])
+}
+
+/// The literal-specifier `vi.doMock` / `jest.doMock` calls of a file (not hoisted; they apply to
+/// later imports), as (spec, factory) like extract_mocks.
+fn extract_do_mocks(src: &str) -> Vec<(String, String)> {
+    extract_mock_calls(src, ["vi.doMock(", "jest.doMock("])
+}
+
+/// `(spec, factory)` of every call to either needle with a string-literal first argument, in
+/// source order.
+fn extract_mock_calls(src: &str, needles: [&str; 2]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let bytes = src.as_bytes();
     let mut i = 0;
-    // Match both `vi.mock(` (vitest) and `jest.mock(` (jest) — same hoisting semantics.
     while let Some((rel, needle_len)) = src.get(i..).and_then(|s| {
-        let a = s.find("vi.mock(").map(|p| (p, "vi.mock(".len()));
-        let b = s.find("jest.mock(").map(|p| (p, "jest.mock(".len()));
-        match (a, b) {
-            (Some(x), Some(y)) => Some(if x.0 <= y.0 { x } else { y }),
-            (Some(x), None) => Some(x),
-            (None, Some(y)) => Some(y),
-            (None, None) => None,
-        }
+        needles
+            .iter()
+            .filter_map(|n| s.find(n).map(|p| (p, n.len())))
+            .min_by_key(|&(p, _)| p)
     }) {
         let start = i + rel + needle_len;
         // parse first arg: a string literal
@@ -4227,12 +4236,17 @@ fn dynamic_import_callback<'s>(
                 return None;
             }
         }
+        // A mocked module's synthetic wins over a real ES module record of the same path (one
+        // imported before a vi.doMock): import() returns the mock (vitest).
         let module = REGISTRY.with(|r| {
             let reg = r.borrow();
-            reg.esm_by_path
-                .get(&abs)
-                .or_else(|| reg.cjs_synth_by_path.get(&abs))
-                .cloned()
+            let mocked = reg.mocks.contains_key(&abs);
+            let synth = reg.cjs_synth_by_path.get(&abs);
+            if mocked && synth.is_some() {
+                synth.cloned()
+            } else {
+                reg.esm_by_path.get(&abs).or(synth).cloned()
+            }
         })?;
         let module = v8::Local::new(scope, &module);
         if module.get_status() == v8::ModuleStatus::Uninstantiated {
@@ -4849,7 +4863,12 @@ pub fn run_test_file(entry: &Path) -> Result<TestReport, String> {
     if !mr_enabled() {
         let entry_dir = entry_abs.parent().unwrap_or(Path::new("."));
         let entry_src = std::fs::read_to_string(&entry_abs).unwrap_or_default();
-        for (s, factory) in extract_mocks(&entry_src) {
+        // vi.doMock targets too: a later `import()` of one must reach the registry, not a copy
+        // esbuild bundled into the entry (turbo-test#39 item 1)
+        let calls = extract_mocks(&entry_src)
+            .into_iter()
+            .chain(extract_do_mocks(&entry_src));
+        for (s, factory) in calls {
             if s.contains('*') || s.contains('?') || !mock_externalizable(&factory) {
                 continue;
             }
