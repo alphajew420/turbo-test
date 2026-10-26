@@ -99,6 +99,96 @@ fn extract_mocks_skips_dynamic_specifiers_and_stops_on_truncated_input() {
 }
 
 #[test]
+fn extract_do_mocks_reads_only_do_mock_calls() {
+    let src = "vi.mock('./a', () => 1);\nvi.doMock('./b', () => 2);\njest.doMock(\"./c\");\nvi.doMock(dyn, f);";
+    assert_eq!(
+        extract_do_mocks(src),
+        pairs(&[("./b", "() => 2"), ("./c", "")])
+    );
+    // vi.doMock is not a hoisted vi.mock
+    assert_eq!(extract_mocks(src), pairs(&[("./a", "() => 1")]));
+}
+
+#[test]
+fn extract_mocks_factory_less_call_does_not_take_a_later_factory() {
+    // turbo-test#31 item 4: the factory search ran to the next ',' anywhere in the source, so a
+    // factory-less mock took the next call's factory and that call was dropped
+    assert_eq!(
+        extract_mocks("vi.mock('./a');\nvi.mock('./b', () => 1);"),
+        pairs(&[("./a", ""), ("./b", "() => 1")])
+    );
+    // a test callback after a factory-less mock is not its factory either
+    assert_eq!(
+        extract_mocks("vi.mock('./m.js'); test('t', () => { expect(1).toBe(1) });"),
+        pairs(&[("./m.js", "")])
+    );
+    // whitespace / a newline between the specifier and the comma still finds the factory
+    assert_eq!(
+        extract_mocks("jest.mock('./c'\n  , () => ({ c: 1 }));"),
+        pairs(&[("./c", "() => ({ c: 1 })")])
+    );
+    // a trailing comma with no factory is factory-less
+    assert_eq!(extract_mocks("vi.mock('./t', );"), pairs(&[("./t", "")]));
+}
+
+#[test]
+fn collect_named_imports_stays_inside_the_import_statement() {
+    // turbo-test#31 item 13: a default-only import took the previous import's `{...}` names
+    assert!(collect_named_imports(
+        "import { x } from \"./x\";\nimport d from \"./d\";\n",
+        "./d"
+    )
+    .is_empty());
+    assert!(collect_named_imports("import{x}from\"./x\";import d from\"./d\";", "./d").is_empty());
+    // a name that contains `import` does not end the look-back early
+    assert_eq!(
+        collect_named_imports(r#"import { importer, reimport as r } from "/p";"#, "/p"),
+        vec!["importer", "r"]
+    );
+    // a re-export from the path is a statement of its own (with or without an import before it)
+    assert_eq!(
+        collect_named_imports(r#"export { a, b as c } from "/p";"#, "/p"),
+        vec!["a", "c"]
+    );
+    assert_eq!(
+        collect_named_imports("import { x } from \"/x\";\nexport { a } from \"/p\";", "/p"),
+        vec!["a"]
+    );
+    // the statement's own clause is still read, also after a default binding
+    assert_eq!(
+        collect_named_imports(
+            "import { x } from \"./x\";\nimport d, { e as f } from \"./d\";",
+            "./d"
+        ),
+        vec!["f"]
+    );
+}
+
+#[test]
+fn mock_externalizable_skips_partial_and_react_factories_only() {
+    // externalized (the registry intercepts the import)
+    for f in [
+        "",
+        "() => ({ v: 1 })",
+        "() => ({ fn: (x) => (x + 1) })",
+        "factory",
+    ] {
+        assert!(mock_externalizable(f), "{f}");
+    }
+    // partial mocks and React-building factories stay bundled with the test's react
+    for f in [
+        "async (importOriginal) => ({ ...(await importOriginal()), x: 1 })",
+        "async () => ({ ...(await vi.importActual('./m')) })",
+        "() => ({ C: () => <div /> })",
+        "() => ({ C: () => (\n  <div />\n) })",
+        "() => ({ C: () => React.createElement('div') })",
+        "() => { const { jsx } = require('react/jsx-runtime'); return {}; }",
+    ] {
+        assert!(!mock_externalizable(f), "{f}");
+    }
+}
+
+#[test]
 fn collect_named_imports_reads_brace_clauses_for_the_path() {
     let text = r#"import { a, b as c, $d, _e } from "/abs/m.js";
 import{x}from"/abs/m.js";
@@ -150,15 +240,40 @@ fn builtin_and_test_api_module_names() {
 }
 
 #[test]
-fn test_report_ok_needs_a_pass_and_no_failures() {
+fn every_node_builtin_has_a_non_empty_shim() {
+    // each name (bare and `node:`-prefixed) resolves to a runtime.js shim with exports — no
+    // builtin imports as an empty module
+    with_context(|scope, _| {
+        for name in NODE_BUILTINS {
+            for spec in [name.to_string(), format!("node:{name}")] {
+                assert_eq!(ensure_node_builtin(scope, &spec), Some(()), "{spec}");
+                let key = PathBuf::from(format!("<node:{spec}>"));
+                let names = REGISTRY.with(|r| r.borrow().cjs_export_names.get(&key).cloned());
+                assert!(names.is_some_and(|n| !n.is_empty()), "{spec}: no exports");
+            }
+        }
+        // a name without a shim is refused, not served as `{}`
+        assert_eq!(ensure_node_builtin(scope, "missing-shim"), None);
+    });
+}
+
+#[test]
+fn test_report_ok_means_nothing_failed() {
     let r = |passed, failed| TestReport {
         passed,
         failed,
         ..Default::default()
     };
     assert!(r(1, 0).ok());
-    assert!(!r(0, 0).ok());
+    // only skipped / filtered tests: nothing failed (turbo-test#32 item 7)
+    assert!(r(0, 0).ok());
     assert!(!r(3, 1).ok());
+    // a file-level failure entry (e.g. "No test suite found in file …") is not ok
+    let empty = TestReport {
+        failures: vec!["No test suite found in file /x.test.js".into()],
+        ..r(0, 0)
+    };
+    assert!(!empty.ok());
 }
 
 #[test]

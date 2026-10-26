@@ -88,6 +88,29 @@ fn subcommands_and_noop_flags_are_stripped() {
 }
 
 #[test]
+fn trailing_value_flag_without_value_keeps_the_test_file() {
+    // turbo-test#32 item 3: `a.test.ts --reporter` printed the usage line (exit 2) because the
+    // runner took the file as --reporter's value; with `-t` the path became the name pattern.
+    let p = Project::new("launch-valueless");
+    p.file("a.test.ts", PASS);
+    for flag in ["--reporter", "-t", "--outputFile"] {
+        let r = tt(&p, &["a.test.ts", flag]);
+        assert_eq!(r.code, Some(0), "{flag}: {}", r.all());
+        assert!(
+            r.stdout.contains("PASS  a.test.ts  (1 passed, 0 failed)"),
+            "{flag}: {}",
+            r.all()
+        );
+        assert!(
+            r.stderr
+                .contains(&format!("turbo-test: ignoring '{flag}': missing value")),
+            "{flag}: {}",
+            r.all()
+        );
+    }
+}
+
+#[test]
 fn environment_flag_and_config() {
     let p = Project::new("launch-env");
     p.file(
@@ -126,6 +149,46 @@ fn config_aliases_reach_the_resolver() {
         "a.test.ts",
         "import { value } from '@/lib/value'\nimport { answer } from '#other/answer'\n\
          test('alias', () => { expect(value).toBe(42); expect(answer).toBe('yes') })\n",
+    );
+    let r = tt(&p, &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(r.stdout.contains("(1 passed, 0 failed)"), "{}", r.all());
+}
+
+#[test]
+fn concatenated_dirname_alias_resolves() {
+    // turbo-test#32 item 8a: `'@z': __dirname + '/z'` was dropped (`cannot resolve @z/m.js`)
+    let p = Project::new("launch-alias-concat");
+    p.file("z/m.js", "export const m = 'zed'\n");
+    p.file(
+        "vitest.config.js",
+        "export default { resolve: { alias: { '@z': __dirname + '/z' } } };\n",
+    );
+    p.file(
+        "a.test.js",
+        "import { m } from '@z/m.js'\ntest('alias', () => { expect(m).toBe('zed') })\n",
+    );
+    let r = tt(&p, &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(r.stdout.contains("(1 passed, 0 failed)"), "{}", r.all());
+}
+
+#[test]
+fn slash_led_string_find_alias_resolves() {
+    // turbo-test#32 item 8b: a quoted `find: '/@z'` was skipped as if it were a regex
+    let p = Project::new("launch-alias-slash");
+    p.file("z/m.js", "export const m = 'zed'\n");
+    p.file(
+        "vitest.config.js",
+        "import path from 'node:path'\n\
+         export default { resolve: { alias: [\n\
+           { find: /^nope$/, replacement: path.resolve(__dirname, 'nope') },\n\
+           { find: '/@z', replacement: path.resolve(__dirname, 'z') },\n\
+         ] } };\n",
+    );
+    p.file(
+        "a.test.js",
+        "import { m } from '/@z/m.js'\ntest('alias', () => { expect(m).toBe('zed') })\n",
     );
     let r = tt(&p, &[]);
     assert_eq!(r.code, Some(0), "{}", r.all());

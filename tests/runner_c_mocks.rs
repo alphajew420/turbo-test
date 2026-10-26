@@ -1,0 +1,422 @@
+//! Module-runner (esbuild project) semantics that follow vitest/Node: a module's own load error
+//! is the reported cause (entry import, `require()`, dynamic `import()`); `import.meta`
+//! (url/filename/dirname) and CSS-module class-name proxies; a mock factory that throws fails the
+//! import of the mocked module with that error; a setup file's `vi.mock` is hoisted above its own
+//! imports; reading an export a `vi.mock` factory did not return throws.
+#![cfg(unix)]
+
+mod common;
+use common::{turbo_test, Project};
+
+fn esbuild_project(name: &str) -> Project {
+    let p = Project::new(name);
+    p.with_esbuild();
+    p.file("package.json", &format!(r#"{{"name":"{name}"}}"#));
+    p
+}
+
+/// Assert a clean pass with exactly `n` passing tests.
+fn assert_passes(r: &common::Run, n: u32) {
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(
+        r.stdout.contains(&format!("Tests  {n} passed ({n})")),
+        "{}",
+        r.all()
+    );
+}
+
+/// The `ERROR <file>  (<msg>)` load-error line for `file`.
+fn load_error_line<'a>(r: &'a common::Run, file: &str) -> &'a str {
+    let suffix = format!("{file}  (");
+    r.stdout
+        .lines()
+        .find(|l| l.starts_with("ERROR") && l.contains(&suffix))
+        .unwrap_or_else(|| panic!("no load error for {file}\n{}", r.all()))
+}
+
+const FRESH_AND_REUSE: [&[(&str, &str)]; 2] = [&[], &[("TURBO_REUSE_ISOLATE", "1")]];
+
+#[test]
+fn module_runner_load_errors_keep_their_cause() {
+    let p = esbuild_project("rc-load-cause");
+    p.file("dep.js", "throw new Error('boom from dep');\n");
+    p.file("a.test.js", "import './dep.js';\ntest('x', () => {});\n");
+    p.file(
+        "e.mjs",
+        "export const a = 1;\nthrow new Error('esm body throws');\n",
+    );
+    p.file(
+        "b.test.js",
+        r#"test('require of a throwing ES module throws its error', () => {
+  expect(() => require('./e.mjs')).toThrow('esm body throws');
+});
+"#,
+    );
+    for env in FRESH_AND_REUSE {
+        let r = turbo_test(&p.dir, &["a.test.js"], env);
+        assert_eq!(r.code, Some(1), "{env:?}\n{}", r.all());
+        assert!(
+            load_error_line(&r, "a.test.js").ends_with("(Error: boom from dep)"),
+            "{env:?}\n{}",
+            r.all()
+        );
+        assert_passes(&turbo_test(&p.dir, &["b.test.js"], env), 1);
+    }
+}
+
+#[test]
+fn esm_graph_dynamic_import_rejects_with_the_module_error() {
+    // No esbuild: `import()` reaches the host callback, which loads the CJS module natively.
+    let p = Project::new("rc-dyn-cause");
+    p.file("package.json", r#"{"name":"rc-dyn-cause"}"#);
+    p.file("throws.cjs", "throw new Error('cjs body boom');\n");
+    // unreadable source: the load fails without an exception, so the rejection is generic
+    std::fs::write(p.path("badutf.mjs"), b"export const x = \"\xff\xfe\";\n").unwrap();
+    p.file(
+        "a.test.js",
+        "test('rejects with the body error', async () => {\n  \
+         await expect(import('./throws.cjs')).rejects.toThrow('cjs body boom');\n});\n\
+         test('a load without an exception', async () => {\n  \
+         await expect(import('./badutf.mjs')).rejects.toThrow('dynamic import failed: ./badutf.mjs');\n});\n",
+    );
+    assert_passes(&turbo_test(&p.dir, &[], &[]), 2);
+}
+
+#[test]
+fn module_runner_import_meta_is_the_files_own() {
+    let p = esbuild_project("rc-import-meta");
+    // the same source in two directories: each module sees its own location
+    let meta = "export const url = import.meta.url;\nexport const filename = import.meta.filename;\n\
+                export const dirname = import.meta.dirname;\nexport const kind = typeof import.meta;\n";
+    p.file("src/meta.ts", meta);
+    p.file("src/sub/meta.ts", meta);
+    let src = p.path("src/meta.ts");
+    let sub = p.path("src/sub/meta.ts");
+    let entry = p.path("a.test.ts");
+    p.file(
+        "a.test.ts",
+        &format!(
+            r#"import * as m from './src/meta';
+import * as s from './src/sub/meta';
+test('import.meta of an app module', () => {{
+  expect(m.url).toBe('file://{src}');
+  expect(m.filename).toBe('{src}');
+  expect(m.dirname).toBe('{src_dir}');
+  expect(m.kind).toBe('object');
+  expect(s.url).toBe('file://{sub}');
+  expect(s.dirname).toBe('{sub_dir}');
+}});
+test('import.meta of the test file', () => {{
+  expect(import.meta.url).toBe('file://{entry}');
+  expect(import.meta.dirname).toBe('{dir}');
+}});
+"#,
+            src = src.display(),
+            src_dir = src.parent().unwrap().display(),
+            sub = sub.display(),
+            sub_dir = sub.parent().unwrap().display(),
+            entry = entry.display(),
+            dir = p.dir.display(),
+        ),
+    );
+    for env in [
+        &[][..],
+        &[("TURBO_NATIVE_CJS", "0")][..],
+        &[("TURBO_REUSE_ISOLATE", "1")][..],
+    ] {
+        assert_passes(&turbo_test(&p.dir, &["a.test.ts"], env), 2);
+    }
+}
+
+#[test]
+fn esm_graph_import_meta_has_filename_and_dirname() {
+    // No esbuild: the entry is a native ES module and import.meta comes from the host callback.
+    let p = Project::new("rc-import-meta-esm");
+    p.file("package.json", r#"{"name":"rc-import-meta-esm"}"#);
+    let entry = p.path("a.test.js");
+    p.file(
+        "a.test.js",
+        &format!(
+            "test('import.meta', () => {{\n  expect(import.meta.url).toBe('file://{e}');\n  \
+             expect(import.meta.filename).toBe('{e}');\n  expect(import.meta.dirname).toBe('{d}');\n}});\n",
+            e = entry.display(),
+            d = p.dir.display(),
+        ),
+    );
+    assert_passes(&turbo_test(&p.dir, &[], &[]), 1);
+}
+
+#[test]
+fn import_meta_keeps_coverage_line_mapping() {
+    let p = esbuild_project("rc-import-meta-cov");
+    p.file(
+        "src/meta.ts",
+        "export const url = import.meta.url;\nexport function hit() {\n  return 'hit';\n}\n\
+         export function miss() {\n  return 'miss';\n}\n",
+    );
+    p.file(
+        "a.test.ts",
+        "import { url, hit } from './src/meta';\n\
+         test('t', () => { expect(url.startsWith('file://')).toBe(true); expect(hit()).toBe('hit'); });\n",
+    );
+    let r = turbo_test(
+        &p.dir,
+        &[
+            "--coverage",
+            "--coverage-reporter",
+            "lcov",
+            "--coverage-dir",
+            "cov",
+        ],
+        &[],
+    );
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    let lcov = std::fs::read_to_string(p.path("cov/lcov.info")).unwrap();
+    for da in ["DA:1,1", "DA:3,1", "DA:6,0"] {
+        assert!(lcov.lines().any(|l| l == da), "{da}\n{lcov}");
+    }
+}
+
+#[test]
+fn module_runner_css_modules_are_class_name_proxies() {
+    let p = esbuild_project("rc-css-modules");
+    p.file("s.module.css", ".foo { color: red }\n");
+    p.file("plain.css", "body { margin: 0 }\n");
+    p.file(
+        "a.test.ts",
+        r#"import s from './s.module.css';
+import './plain.css';
+test('css module default import maps class names to themselves', () => {
+  expect(s.foo).toBe('foo');
+  expect(s['btn-primary']).toBe('btn-primary');
+  expect(`${s.a} ${s.b}`).toBe('a b');
+});
+test('plain css is a side-effect import', () => {
+  expect(require('./plain.css')).toBeDefined();
+});
+"#,
+    );
+    for env in [
+        &[][..],
+        &[("TURBO_NATIVE_CJS", "0")][..],
+        &[("TURBO_REUSE_ISOLATE", "1")][..],
+    ] {
+        assert_passes(&turbo_test(&p.dir, &["a.test.ts"], env), 2);
+    }
+}
+
+/// vitest's wrapper for a factory error; the cause follows it.
+const MOCK_ERR: &str = "[vitest] There was an error when mocking a module.";
+
+#[test]
+fn module_runner_mock_factory_errors_fail_the_import() {
+    let p = esbuild_project("rc-factory-error");
+    p.file("m.js", "export const v = 'real';\n");
+    p.file("n.js", "export const n = 'real-n';\n");
+    p.file(
+        "hoisted.test.js",
+        "import { v } from './m.js';\n\
+         vi.mock('./m.js', () => { throw new Error('factory boom') });\n\
+         test('t', () => { expect(v).toBe('never'); });\n",
+    );
+    p.file(
+        "async.test.js",
+        "import { n } from './n.js';\n\
+         vi.mock('./n.js', async () => { throw new Error('async boom') });\n\
+         test('t', () => { expect(n).toBe('never'); });\n",
+    );
+    // jest semantics: the factory's own error propagates from the require
+    p.file(
+        "jest.test.js",
+        "import { v } from './m.js';\n\
+         jest.mock('./m.js', () => { throw new Error('jest boom') });\n\
+         test('t', () => { expect(v).toBe('never'); });\n",
+    );
+    p.file(
+        "domock.test.js",
+        r#"import { n } from './n.js';
+// the prepass runs factories outside the module scope (`local` is not defined there); the
+// module's own call, which sees it, is the one that counts
+const local = 'from-module-scope';
+vi.mock('./m.js', () => ({ v: local }));
+// a factory is only reached by importing its module: an unimported one never fails the file
+vi.mock('./unused.js', () => { throw new Error('never imported'); });
+test('module-scope factory', () => { expect(require('./m.js').v).toBe('from-module-scope'); });
+test('doMock factory error surfaces on the next import', () => {
+  expect(n).toBe('real-n');
+  vi.doMock('./n.js', () => { throw new Error('do boom'); });
+  expect(() => require('./n.js')).toThrow('Caused by: Error: do boom');
+  vi.doMock('./n.js', () => ({ n: 'fixed' }));
+  expect(require('./n.js').n).toBe('fixed');
+});
+"#,
+    );
+    for env in FRESH_AND_REUSE {
+        for (file, cause) in [
+            ("hoisted.test.js", "Error: factory boom"),
+            ("async.test.js", "Error: async boom"),
+        ] {
+            let r = turbo_test(&p.dir, &[file], env);
+            assert_eq!(r.code, Some(1), "{env:?}\n{}", r.all());
+            let line = load_error_line(&r, file);
+            assert!(
+                line.contains(MOCK_ERR) && line.ends_with(&format!(" Caused by: {cause})")),
+                "{env:?}\n{}",
+                r.all()
+            );
+        }
+        let r = turbo_test(&p.dir, &["jest.test.js"], env);
+        assert!(
+            load_error_line(&r, "jest.test.js").ends_with("(Error: jest boom)"),
+            "{env:?}\n{}",
+            r.all()
+        );
+        assert_passes(&turbo_test(&p.dir, &["domock.test.js"], env), 2);
+    }
+}
+
+#[test]
+fn esm_graph_mock_factory_error_fails_the_import() {
+    // No esbuild: the entry's factories are run natively before it links.
+    let p = Project::new("rc-factory-error-esm");
+    p.file("package.json", r#"{"name":"rc-factory-error-esm"}"#);
+    p.file("m.js", "export const v = 'real';\n");
+    p.file(
+        "a.test.js",
+        "import { v } from './m.js';\n\
+         vi.mock('./m.js', () => { throw new Error('factory boom') });\n\
+         test('t', () => { expect(v).toBe('never'); });\n",
+    );
+    p.file(
+        "dyn.test.js",
+        "vi.mock('./m.js', () => { throw new Error('dyn boom') });\n\
+         test('rejects', async () => {\n  \
+         await expect(import('./m.js')).rejects.toThrow('Caused by: Error: dyn boom');\n});\n",
+    );
+    let r = turbo_test(&p.dir, &["a.test.js"], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    let line = load_error_line(&r, "a.test.js");
+    assert!(
+        line.contains(MOCK_ERR) && line.ends_with(" Caused by: Error: factory boom)"),
+        "{}",
+        r.all()
+    );
+    assert_passes(&turbo_test(&p.dir, &["dyn.test.js"], &[]), 1);
+}
+
+#[test]
+fn setup_file_mocks_are_hoisted_above_its_own_imports() {
+    let p = esbuild_project("rc-setup-hoist");
+    p.file(
+        "vitest.config.js",
+        "export default { test: { setupFiles: ['./setup.js'] } };\n",
+    );
+    p.file(
+        "m.js",
+        "export const v = 'real';\nexport const f = () => 'real-f';\n",
+    );
+    p.file(
+        "setup.js",
+        r#"import { v, f } from './m.js';
+const { spy } = vi.hoisted(() => ({ spy: vi.fn(() => 'mocked-f') }));
+vi.mock('./m.js', () => ({ v: 'mocked', f: spy }));
+globalThis.SETUP_SAW = v;
+globalThis.SETUP_F = f;
+"#,
+    );
+    p.file(
+        "a.test.js",
+        r#"import { v, f } from './m.js';
+const own = vi.hoisted(() => 'entry-hoisted');
+test('the setup file saw its own mock', () => {
+  expect(globalThis.SETUP_SAW).toBe('mocked');
+});
+test('setup and test file share one mock', () => {
+  expect(v).toBe('mocked');
+  expect(f).toBe(globalThis.SETUP_F);
+  expect(f()).toBe('mocked-f');
+});
+test("the setup's vi.hoisted values do not leak into the test file's", () => {
+  expect(own).toBe('entry-hoisted');
+});
+"#,
+    );
+    for env in FRESH_AND_REUSE {
+        assert_passes(&turbo_test(&p.dir, &[], env), 3);
+    }
+}
+
+/// vitest's error for reading a name the factory did not return.
+fn no_export(name: &str, spec: &str) -> String {
+    format!(
+        "[vitest] No \"{name}\" export is defined on the \"{spec}\" mock. \
+         Did you want to return the actual module?"
+    )
+}
+
+#[test]
+fn module_runner_missing_mock_exports_throw_on_access() {
+    let p = esbuild_project("rc-strict-mock");
+    p.file(
+        "vitest.config.js",
+        "export default { test: { setupFiles: ['./setup.js'] } };\n",
+    );
+    p.file(
+        "m.js",
+        "export const v = 'real';\nexport const w = 'real-w';\n",
+    );
+    p.file(
+        "n.js",
+        "export const a = 'real-a';\nexport const b = 'real-b';\n",
+    );
+    p.file(
+        "j.js",
+        "export const a = 'real-a';\nexport const b = 'real-b';\n",
+    );
+    p.file(
+        "o.js",
+        "export const o = 'real-o';\nexport const p = 'real-p';\n",
+    );
+    p.file(
+        "setup.js",
+        "import { v } from './m.js';\nvi.mock('./m.js', () => ({ v: 'mocked' }));\n\
+         globalThis.SETUP_SAW = v;\n",
+    );
+    p.file(
+        "a.test.js",
+        &format!(
+            r#"import {{ w }} from './m.js';
+import * as n from './n.js';
+import {{ b as jb }} from './j.js';
+import {{ p }} from './o.js';
+vi.mock('./n.js', () => ({{ a: 'mock-a' }}));
+jest.mock('./j.js', () => ({{ a: 'mock-a' }}));
+vi.mock('./o.js', async () => ({{ o: 'mock-o' }}));
+test('a setup mock: present names read, missing ones throw', () => {{
+  expect(globalThis.SETUP_SAW).toBe('mocked');
+  expect(() => w).toThrow('{w}');
+}});
+test('a test-file mock', () => {{
+  expect(n.a).toBe('mock-a');
+  expect(() => n.b).toThrow('{b}');
+  // interop probes, symbols and inherited members never throw
+  expect(n.then).toBe(undefined);
+  expect(n.__esModule).toBe(undefined);
+  expect(typeof n.hasOwnProperty).toBe('function');
+  expect(n[Symbol.toStringTag]).toBe(undefined);
+  expect(Object.keys(n)).toEqual(['a']);
+}});
+test('an async factory', () => {{ expect(() => p).toThrow('{p}'); }});
+test('jest.mock keeps jest semantics: a missing name reads undefined', () => {{
+  expect(jb).toBe(undefined);
+}});
+"#,
+            w = no_export("w", "./m.js"),
+            b = no_export("b", "./n.js"),
+            p = no_export("p", "./o.js"),
+        ),
+    );
+    for env in FRESH_AND_REUSE {
+        assert_passes(&turbo_test(&p.dir, &[], env), 4);
+    }
+}

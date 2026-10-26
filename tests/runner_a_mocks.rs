@@ -131,7 +131,7 @@ fn legacy_prepass_bundles_and_runs_entry_mock_factories() {
     p.file("dep.ts", "export const dep = () => 'real';\n");
     p.file(
         "a.test.ts",
-        "import { dep } from './dep';\nvi.mock('./dep', () => { globalThis.FACTORY_RAN = (globalThis.FACTORY_RAN || 0) + 1; return { dep: () => 'mocked' }; });\ntest('the prepass factory ran', () => { expect(globalThis.FACTORY_RAN).toBeGreaterThan(0); expect(typeof dep).toBe('function'); });\n",
+        "import { dep } from './dep';\nvi.mock('./dep', () => { globalThis.FACTORY_RAN = (globalThis.FACTORY_RAN || 0) + 1; return { dep: () => 'mocked' }; });\ntest('the prepass factory ran and its mock intercepts', () => { expect(globalThis.FACTORY_RAN).toBeGreaterThan(0); expect(dep()).toBe('mocked'); });\n",
     );
     let r = turbo_test(&p.dir, &["--reporter", "json"], &[("TURBO_NO_MR", "1")]);
     assert_eq!(counts(&r), (1, 0), "{}", r.all());

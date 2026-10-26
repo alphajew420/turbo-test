@@ -88,6 +88,135 @@ fn native_emit_keeps_bindings_live_and_bundles_cyclic_deps() {
     }
 }
 
+/// Names of the `.tt-cache` files starting with `prefix` (`ntv-` = native app transform,
+/// `mr-` = esbuild app transform, which the compile-failure retry also writes).
+fn cached(p: &Project, prefix: &str) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(p.path(".tt-cache"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(prefix))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Run `files` of the project under the native emitter in strict mode with a fresh cache, then
+/// under the esbuild baseline; both must pass `passed` tests. Under native, every app file must load from
+/// the native emitter's output: the only esbuild app transform (`mr-*.cjs`) may be the runner's
+/// probe of the test entry, so a second one means a module's native output failed to compile and
+/// was silently re-transformed by esbuild.
+fn native_and_esbuild_agree(p: &Project, files: &[&str], passed: u64) {
+    for env in [
+        &[("TURBO_NATIVE_CJS_STRICT", "1")][..],
+        &[("TURBO_NATIVE_CJS", "0"), ("TURBO_NATIVE_DEPS", "0")][..],
+    ] {
+        let _ = std::fs::remove_dir_all(p.path(".tt-cache"));
+        let args = [&["--reporter", "json"][..], files].concat();
+        let r = turbo_test(&p.dir, &args, env);
+        assert_eq!(r.code, Some(0), "{env:?}: {}", r.all());
+        let j = json_report(&r);
+        assert_eq!(j["numPassedTests"], passed, "{env:?}: {}", r.all());
+        if env.len() == 1 {
+            assert!(!cached(p, "ntv-").is_empty(), "native emitter used");
+            assert_eq!(
+                cached(p, "mr-").len(),
+                1,
+                "only the entry probe, no esbuild retry"
+            );
+        }
+    }
+}
+
+#[test]
+fn dynamic_import_in_a_module_without_static_imports() {
+    // turbo-test#37 item 1: a test file whose only import is `import()` is a script to the
+    // emitter, which declared `__toESM` only in the module preamble → "__toESM is not defined".
+    let p = mr_project("xform-dynonly");
+    p.file("m.js", "export const v = 7;\n");
+    p.file(
+        "a.test.js",
+        "test('dyn', async () => { const m = await import('./m.js'); expect(m.v).toBe(7); });\n",
+    );
+    native_and_esbuild_agree(&p, &[], 1);
+}
+
+#[test]
+fn dynamic_import_defers_the_load_and_rejects() {
+    // turbo-test#37 item 2: the lowered `import()` required the module synchronously, so a
+    // module that throws made `import()` throw instead of returning a rejected promise.
+    let p = mr_project("xform-dynreject");
+    p.file("t.js", "throw new Error('boom');\n");
+    p.file("m.js", "export const v = 7;\n");
+    p.file(
+        "node_modules/ddep/package.json",
+        "{\"name\":\"ddep\",\"main\":\"index.js\"}",
+    );
+    p.file("node_modules/ddep/n.js", "export const n = 1;\n");
+    p.file(
+        "node_modules/ddep/index.js",
+        "import * as ns from './n.js';\nexport { ns };\nexport const load = () => import('./n.js');\n",
+    );
+    p.file(
+        "a.test.js",
+        r#"import { ns, load } from 'ddep';
+test('rej', async () => {
+  const p = (() => { try { return import('./t.js'); } catch (e) { return 'sync:' + e.message; } })();
+  expect(typeof p).toBe('object');
+  await expect(p).rejects.toThrow('boom');
+});
+test('bundled dep import() reads the bundled instance', async () => {
+  expect(await load()).toBe(ns);
+});
+test('doMock before import() is seen', async () => {
+  vi.doMock('./m.js', () => ({ v: 'mocked' }));
+  expect((await import('./m.js')).v).toBe('mocked');
+  vi.doUnmock('./m.js');
+});
+"#,
+    );
+    native_and_esbuild_agree(&p, &["a.test.js"], 3);
+    // Node / vitest evaluate the specifier at the `import()` call; only the load is deferred.
+    // (esbuild's lowering, the TURBO_NATIVE_CJS=0 baseline, evaluates it lazily inside `.then`.)
+    p.file(
+        "eager.test.js",
+        "test('specifier is evaluated at the call', async () => {\n\
+         let s = './m.js';\nconst p = import(s);\ns = './t.js';\nexpect((await p).v).toBe(7);\n});\n",
+    );
+    let r = turbo_test(
+        &p.dir,
+        &["eager.test.js"],
+        &[("TURBO_NATIVE_CJS_STRICT", "1")],
+    );
+    assert_eq!(r.code, Some(0), "{}", r.all());
+}
+
+#[test]
+fn specifiers_with_quotes_and_backslashes_compile_natively() {
+    // turbo-test#37 item 3: `require("{src}")` interpolated the specifier raw, so `./q"x.js`
+    // emitted `require("./q"x.js")` (and `\\x` a bad hex escape). The module still loaded only
+    // because the runner silently retried the compile failure through esbuild.
+    let p = mr_project("xform-specesc");
+    p.file(
+        "q\"x.js",
+        "export const q = 'Q';\nglobalThis.__sideEffect = 'S';\n",
+    );
+    p.file("b\\x.js", "export default 'B';\nexport const n = 'N';\n");
+    p.file(
+        "lib.js",
+        "import './q\"x.js';\nimport { q } from './q\"x.js';\nimport B, * as ns from './b\\\\x.js';\n\
+         export { n as reN } from './b\\\\x.js';\nexport * from './q\"x.js';\nexport * as all from './b\\\\x.js';\n\
+         export const got = [q, B, ns.n];\n",
+    );
+    p.file(
+        "a.test.js",
+        "import { got, reN, q, all } from './lib.js';\n\
+         test('escaped specifiers', () => {\n\
+         expect(got).toEqual(['Q', 'B', 'N']); expect(reN).toBe('N'); expect(q).toBe('Q');\n\
+         expect(all.n).toBe('N'); expect(globalThis.__sideEffect).toBe('S');\n});\n",
+    );
+    native_and_esbuild_agree(&p, &[], 1);
+}
+
 /// App file + dep package the native path can't lower (JSX namespace names) but esbuild can.
 fn namespace_jsx_project() -> Project {
     let p = mr_project("xform-strict");
@@ -186,4 +315,49 @@ fn native_failures_fall_back_to_esbuild_unless_strict() {
     );
     assert!(r.stderr.contains(&app_err), "{}", r.all());
     assert!(!r.stderr.contains(&dep_err), "{}", r.all());
+}
+
+#[test]
+fn non_identifier_string_names_import_and_reexport() {
+    // turbo-test#35 item 2: the native emitter wrote `import_s.a-b()` (= `import_s.a - b()`,
+    // "b is not defined") for string-named imports/re-exports that aren't identifiers.
+    let p = mr_project("xform-strnames");
+    let s = "const f = () => 7;\nexport { f as \"a-b\", f as 'it\"s\\\\' };\n";
+    p.file("s.js", s);
+    p.file("re.js", "export { \"a-b\" as c } from \"./s.js\";\n");
+    p.file(
+        "star.js",
+        "export * as \"n-s\" from \"./s.js\";\nimport { \"a-b\" as f } from \"./s.js\";\n\
+         export { f as \"q-r\" };\n",
+    );
+    p.file(
+        "node_modules/sdep/package.json",
+        "{\"name\":\"sdep\",\"main\":\"index.js\"}",
+    );
+    p.file("node_modules/sdep/s.js", s);
+    p.file(
+        "node_modules/sdep/index.js",
+        "import { \"a-b\" as ab } from './s.js';\nexport { ab as \"x-y\" };\n\
+         export { \"a-b\" as viaRe } from './s.js';\nexport * as \"ns-x\" from './s.js';\n",
+    );
+    p.file(
+        "a.test.js",
+        "import { \"a-b\" as ab, 'it\"s\\\\' as its } from './s.js';\nimport { c } from './re.js';\n\
+         import { \"n-s\" as ns, \"q-r\" as qr } from './star.js';\n\
+         import { \"x-y\" as xy, viaRe, \"ns-x\" as depNs } from 'sdep';\n\
+         test('string-named import', () => { expect(ab()).toBe(7); expect(its()).toBe(7); });\n\
+         test('string-named re-export', () => { expect(c()).toBe(7); });\n\
+         test('export * as / local re-export', () => { expect(ns['a-b']()).toBe(7); expect(qr()).toBe(7); });\n\
+         test('bundled dep', () => { expect(xy()).toBe(7); expect(viaRe()).toBe(7); expect(depNs['a-b']()).toBe(7); });\n",
+    );
+    // native strict (no esbuild fallback can mask the emitter) and the esbuild baseline agree
+    for env in [
+        &[("TURBO_NATIVE_CJS_STRICT", "1")][..],
+        &[("TURBO_NATIVE_CJS", "0"), ("TURBO_NATIVE_DEPS", "0")][..],
+    ] {
+        let r = turbo_test(&p.dir, &["--reporter", "json"], env);
+        assert_eq!(r.code, Some(0), "{env:?}: {}", r.all());
+        let j = json_report(&r);
+        assert_eq!(j["numPassedTests"], 4, "{env:?}: {}", r.all());
+    }
 }

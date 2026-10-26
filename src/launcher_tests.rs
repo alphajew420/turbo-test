@@ -515,6 +515,20 @@ fn strip_regex_literals_but_not_division() {
     assert_eq!(strip_comments("/re/ x"), "     x");
     // punctuation after a space clears the keyword memory: `in . / 2` is division
     assert_eq!(strip_comments("in . / 2"), "in . / 2");
+    // turbo-test#32 item 8c: a keyword reached by `.` property access is a member NAME, so a
+    // `/` after it is division — it blanked the rest of the line as a "regex"
+    for src in [
+        "x = obj.in / 2, y = 'k'",
+        "x = obj?.return / 2",
+        "x = a.b.typeof/2",
+        "x = obj. in / 2",
+        "x = obj.\n  of / 2",
+    ] {
+        assert_eq!(strip_comments(src), src, "{src}");
+    }
+    // ... while the same keyword as an operator still opens a regex, even right after a member
+    assert_eq!(strip_comments("a.b in /x/"), "a.b in    ");
+    assert_eq!(strip_comments("o.in\nreturn /'/"), "o.in\nreturn    ");
 }
 
 #[test]
@@ -579,11 +593,20 @@ fn alias_target_resolution() {
         alias_target(d, "new URL('./y', import.meta.url).pathname").as_deref(),
         Some("/proj/cfg/y")
     );
+    // turbo-test#32 item 8a: a bare dir-name base concatenated with a literal is that dir
+    // (`__dirname + '/z'` ≡ `path.resolve(__dirname, 'z')`); it used to be dropped
     assert_eq!(
         alias_target(d, "__dirname + '/z'").as_deref(),
-        None,
-        "marker base with no literal"
+        Some("/proj/cfg/z")
     );
+    assert_eq!(
+        alias_target(d, " import.meta.dirname+\"/w/\"").as_deref(),
+        Some("/proj/cfg/w/")
+    );
+    assert_eq!(alias_target(d, "__dirname").as_deref(), Some("/proj/cfg"));
+    // any other literal-free base is still unknown
+    assert_eq!(alias_target(d, "root + '/z'"), None);
+    assert_eq!(alias_target(d, "path.resolve(root) + '/z'"), None);
     assert_eq!(
         alias_target(d, "path.resolve(__dirname, 'src') + '/sub' + '/'").as_deref(),
         Some("/proj/cfg/src/sub/")
@@ -632,6 +655,35 @@ fn alias_inner_forms() {
         ]
     );
     assert!(parse_alias_inner("", d).is_empty());
+    // turbo-test#32 item 8b: a QUOTED find is a prefix string whatever its first char — only a
+    // regex literal find is skipped (unquoted; config_aliases has blanked it by then)
+    let arr = parse_alias_inner(
+        " { find: '/@z', replacement: './z' }, { find: \"/x\", replacement: './x' }, \
+         { find: /^\\/re/, replacement: './r' }, { find:      , replacement: './b' } ",
+        d,
+    );
+    assert_eq!(
+        arr,
+        vec![
+            ("/@z".to_string(), "/r/z".to_string()),
+            ("/x".into(), "/r/x".into())
+        ]
+    );
+}
+
+#[test]
+fn alias_on_a_line_with_member_keyword_division() {
+    // turbo-test#32 item 8c: `obj.in / 2` read as a regex start and blanked the rest of the line
+    let t = Tmp::new("alias-in");
+    t.file(
+        "vitest.config.ts",
+        "const obj = { in: 4 }\n\
+         export default { half: obj.in / 2, resolve: { alias: { '@h': './half' } } }\n",
+    );
+    assert_eq!(
+        config_aliases(&t.0, None),
+        vec![("@h".to_string(), format!("{}/half", t.0.display()))]
+    );
 }
 
 #[test]
@@ -823,6 +875,12 @@ fn plan_no_files_found() {
         p.messages,
         vec!["turbo-test: no test files found — exiting 0 (--passWithNoTests)."]
     );
+    // with files, --passWithNoTests reaches the runtime: a file with no tests then passes
+    // (turbo-test#32 item 7, vitest semantics)
+    let f = t.file("a.test.ts", T).display().to_string();
+    let p = run_plan(&t, &["--passWithNoTests", &f]);
+    assert_eq!(argv(&p), vec![f]);
+    assert_eq!(p.env, vec![("TURBO_PASS_WITH_NO_TESTS", "1".to_string())]);
 }
 
 #[test]
@@ -862,14 +920,13 @@ fn plan_forwards_runner_flags() {
             "json",
             "-j",
             "2",
-            "--bail",
             "--retry",
             "1",
             "--frob",
             &fs,
             "--silent",
             "-t",
-            "-x",
+            "adds",
             "--no-file-parallelism",
         ],
     );
@@ -880,22 +937,49 @@ fn plan_forwards_runner_flags() {
             "json",
             "-j",
             "2",
-            "--bail",
             "--retry",
             "1",
             "--frob",
             "--silent",
             "-t",
-            "-x",
+            "adds",
             "--no-file-parallelism",
             &fs
         ])
     );
-    // a value-flag at the very end forwards alone
+    assert!(p.messages.is_empty(), "{:?}", p.messages);
+    // turbo-test#32 item 3: a value flag with NO value (the last token, or followed by another
+    // flag) is dropped with a warning. Forwarded alone it sat right before the appended files,
+    // so the runner took the first test file as its value (`a.test.js --reporter` → usage
+    // error; `-t` → the path became the name pattern).
+    for flag in [
+        "--outputFile",
+        "--reporter",
+        "-t",
+        "--testNamePattern",
+        "--shard",
+    ] {
+        let p = run_plan(&t, &[&fs, flag]);
+        assert_eq!(argv(&p), vec![fs.clone()], "{flag}");
+        assert_eq!(
+            p.messages,
+            vec![format!("turbo-test: ignoring '{flag}': missing value")],
+            "{flag}"
+        );
+    }
+    let p = run_plan(&t, &["--bail", "--retry", "1", "-t", "-x", &fs]);
+    assert_eq!(argv(&p), args(&["--retry", "1", "-x", &fs]));
     assert_eq!(
-        argv(&run_plan(&t, &[&fs, "--outputFile"])),
-        args(&["--outputFile", &fs])
+        p.messages,
+        vec![
+            "turbo-test: ignoring '--bail': missing value".to_string(),
+            "turbo-test: ignoring '-t': missing value".to_string(),
+        ]
     );
+    // a value-less `--coverage-*` value flag still implies --coverage (as in the runner)
+    let p = run_plan(&t, &[&fs, "--coverage-dir"]);
+    assert_eq!(argv(&p), args(&["--coverage", &fs]));
+    assert_eq!(p.messages.len(), 1);
     // inline value forms are forwarded as one token
     assert_eq!(
         argv(&run_plan(&t, &["--reporter=tap", &fs])),
@@ -1007,6 +1091,10 @@ fn plan_isolate_environment_and_root_flags() {
     assert_eq!(argv(&p), vec![t.p("plain/b.test.ts")]);
     // `--root ""` is an empty discovery root (nothing found), like the original
     assert_eq!(run_plan(&t, &["--root="]).outcome, Err(1));
+    // a value-less trailing --testTimeout is dropped (turbo-test#32 item 3), so it no longer
+    // counts as passed: the config's value is injected
+    let p = run_plan(&t, &["--root", "proj", "--testTimeout"]);
+    assert_eq!(argv(&p), args(&["--testTimeout", "1234", &a]));
 }
 
 #[test]

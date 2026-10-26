@@ -1,5 +1,6 @@
-//! Setup files and isolate reuse through the real CLI: vitest `setupFiles` (bundled, with their
-//! vi.mock specifiers externalized and rewritten to absolute paths), setup-mock snapshot/restore
+//! Setup files and isolate reuse through the real CLI: vitest `setupFiles` (module-runner: loaded
+//! like a test file; otherwise bundled, with their vi.mock specifiers externalized and rewritten to
+//! absolute paths), setup-mock snapshot/restore
 //! and importer invalidation across files on a reused isolate (`isolate: false`,
 //! TURBO_REUSE_ISOLATE, TURBO_NO_REUSE), and setup files that fail to bundle.
 #![cfg(unix)]
@@ -255,7 +256,9 @@ fn setup_mocks_without_the_module_runner_use_the_legacy_bundle() {
 }
 
 #[test]
-fn a_setup_file_that_fails_to_bundle_is_loaded_unbundled() {
+fn a_setup_file_that_fails_to_bundle_fails_the_test_file() {
+    // A setup file that does not compile fails the test file with its error (vitest;
+    // turbo-test#38 item 3 — it used to be ignored and the test ran without it).
     let p = Project::new("sa-setup-broken");
     p.with_esbuild();
     p.file("package.json", r#"{ "name": "broken" }"#);
@@ -265,16 +268,22 @@ fn a_setup_file_that_fails_to_bundle_is_loaded_unbundled() {
     );
     p.file("good.ts", "globalThis.GOOD_SETUP = 'yes';\n");
     p.file("broken.ts", "globalThis.BROKEN_SETUP = ;\n");
-    p.file(
-        "a.test.ts",
-        "test('good setup ran, broken did not', () => {\n  expect(globalThis.GOOD_SETUP).toBe('yes');\n  expect(globalThis.BROKEN_SETUP).toBe(undefined);\n});\n",
-    );
+    p.file("a.test.ts", "test('never runs', () => {});\n");
     let r = turbo_test(&p.dir, &["--reporter", "json"], &[]);
     assert_eq!(
         files(&r),
-        vec![f("a.test.ts", "passed", 1, 0)],
+        vec![f("a.test.ts", "error", 0, 0)],
         "{}",
         r.all()
+    );
+    let text = turbo_test(&p.dir, &[], &[]);
+    assert!(
+        text.stdout.lines().any(|l| l.starts_with("ERROR")
+            && l.contains("setup file")
+            && l.contains("broken.ts")
+            && l.contains("graph load failed")),
+        "{}",
+        text.all()
     );
     // no half-written temp bundle is left behind in the cache
     let leftovers: Vec<_> = std::fs::read_dir(p.path(".tt-cache"))

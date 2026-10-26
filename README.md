@@ -123,7 +123,10 @@ default, and only a decorator file that actually *throws* at load (a missing-met
 re-transformed through the project's own TypeScript (`ts.transpileModule`, exact ts-jest parity —
 local type aliases like `type Percentage = number` resolve to `Number`, not `Object`), falling back
 to oxc's metadata transform when the project ships no `typescript`. The common path never pays the
-cost and never regresses.
+cost and never regresses. A plain `import { SomeInterface }` used as a decorated member's type
+needs no `import type`: imports used only as types are read through a namespace import (TypeScript's
+own fix for TS1272), so their `design:type` is `Object` and ES-module linking never looks for the
+missing export. (The oxc fallback has no type information and still needs `import type` there.)
 
 ```bash
 npx turbo-test            # discovers *.spec.* too; reads jest config when no vitest config exists
@@ -218,9 +221,13 @@ coverage and a per-worker speedup for `isolate: false` projects are tracked in
 near-free — but it measures compiled bytecode mapped back through source maps, where Istanbul
 instruments the source AST directly. At the **line** level the two are comparable (our esbuild maps
 are clean). For **branches**, turbo-test pairs oxc decision points with V8 block counts for real
-per-arm data — including braceless early-return `if (c) return x;` (the implicit-else arm is
-derived from the block/continuation counts, not stuck at 0). Istanbul still resolves a few exotic
-shapes more finely; if you need that exhaustive gate, keep an Istanbul/vitest job alongside.
+per-arm data — including braceless early-return `if (c) return x;` and an `if` with no `else`
+(the then-count is sampled at the consequent like vitest's v8 provider does, where V8 drops the
+range of a consequent that always ran; the implicit-else arm is the `if`'s count minus it, not
+stuck at 0). Top-level module code is counted (statements and branches), esbuild's ESM export
+getters are not reported as functions, and lines of switch cases that never ran read 0. Istanbul
+still resolves a few exotic shapes more finely; if you need that exhaustive gate, keep an
+Istanbul/vitest job alongside.
 
 ## CLI
 
@@ -235,7 +242,8 @@ turbo-test [files...] [--jobs N] [--shard i/n] [--reporter json]
 No file args → discovers test files. If a `vitest.config.*` is found, turbo-test honors its
 **`test.include` / `test.exclude`** globs (so e.g. Playwright `*.spec.ts` under `e2e/` are skipped
 exactly like vitest); otherwise it falls back to `**/*.{test,spec}.{ts,tsx,js,jsx,mts,cts}`
-(skipping `node_modules`, `dist`, `build`, etc.). Flags pass through to the native binary.
+(skipping `node_modules`, `dist`, `build`, etc.). Flags pass through to the native binary. Every
+value flag takes either form, `--reporter json` or `--reporter=json`.
 
 ## Programmatic
 
@@ -307,10 +315,12 @@ export default defineConfig({
 });
 ```
 
-`@/foo` resolves to `src/foo` (and never captures `@scope/pkg` node_modules imports). A regex `find`
-is skipped (alias keys are strings); the alias target is taken from the last string literal in the
-value, which covers `path.resolve(__dirname, '…')`, `fileURLToPath(new URL('…', import.meta.url))`,
-and bare literals.
+`@/foo` resolves to `src/foo` (and never captures `@scope/pkg` node_modules imports). A regex-literal
+`find` is skipped; a quoted `find` is a prefix match whatever its first character (`'/@z'` included).
+The alias target is derived from the value's string literals, which covers
+`path.resolve(__dirname, '…')` / `path.join(…)` (all segments joined), `fileURLToPath(new URL('…',
+import.meta.url))`, string concatenation (`__dirname + '/z'`, `path.resolve(__dirname, 'src') +
+'/sub'`) and bare literals.
 
 ## Compatibility notes
 
@@ -319,6 +329,9 @@ and bare literals.
   stubbed so the file still runs.
 - `Date.now()` reflects a real base + the virtual event-loop clock, so `setTimeout`-driven elapsed
   assertions pass deterministically.
+- Node built-in modules (`node:buffer`, `fs/promises`, `assert/strict`, `timers/promises`,
+  `querystring`, `string_decoder`, `vm`, `worker_threads`, …) are runtime shims; what each one
+  provides is listed in [vitest.compat.md](vitest.compat.md#node-built-in-modules).
 
 ## Requirements
 
@@ -336,11 +349,11 @@ projects and spawn the real `turbo-test` binary against them.
 npm ci
 cargo test --locked          # unit + CLI integration tests
 npm test                     # node --test test/*.mjs (CLI compat + tsc type checks)
-cargo tarpaulin              # line-coverage gate (tarpaulin.toml), fails below 99%
+cargo tarpaulin              # line-coverage gate (tarpaulin.toml), fails below 99.98%
 ```
 
-The Rust crate is gated at **>= 99% line coverage** (cargo-tarpaulin, Llvm engine; CI job
-`coverage`). Subprocess runs of the instrumented binaries are attributed through
+The Rust crate is gated at **>= 99.98% line coverage** (6578/6579 lines; cargo-tarpaulin,
+Llvm engine; CI job `coverage`). Subprocess runs of the instrumented binaries are attributed through
 `tarpaulin.toml`'s `objects`; the `#[path]` unit-test modules are excluded from the figure.
 
 ## License

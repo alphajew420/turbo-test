@@ -46,7 +46,7 @@ describe('g', () => {
     const p = await import('node:path'); expect(typeof p.join).toBe('function');
     const v = await import('vitest'); expect(typeof v.vi.fn).toBe('function');
     await expect(import('./missing.mjs')).rejects.toThrow('dynamic import cannot resolve ./missing.mjs');
-    await expect(import('./bad.mjs')).rejects.toThrow('dynamic import failed: ./bad.mjs');
+    await expect(import('./bad.mjs')).rejects.toThrow("Unexpected token '='");
   });
 });
 "#,
@@ -106,25 +106,31 @@ fn entry_mocks_register_without_an_esbuild_prepass() {
         p.file(&format!("{n}.cjs"), &format!("exports.v = '{n}-real';\n"));
     }
     p.file("c.cjs", "exports.fn = () => 'c-real';\n");
+    p.file("e.mjs", "export default 'e-real';\nexport const n = 0;\n");
     p.file(
         "m.test.js",
         r#"import a from './a.cjs';
+import e, { n } from './e.mjs';
 import b from './b.cjs';
 import c from './c.cjs';
-import d from './d.cjs';
 vi.mock('./a.cjs', () => ({ v: 'a-mock' }));
 jest.mock('./b.cjs', () => ({ v: 'b-mock' }));
-// a throwing factory must not break the registration of the others
+// a factory's `default` key is the mock's default export
+vi.mock('./e.mjs', () => ({ default: 'e-mock', n: 1 }));
+// a throwing factory does not break the registration of the others (and, its module never
+// being imported, does not fail the file: vitest only calls a factory on import)
 vi.mock('./d.cjs', () => { throw new Error('factory boom'); });
 vi.mock('./not-there.cjs', () => ({ v: 1 }));
 test('mocks', () => {
   expect(a.v).toBe('a-mock');
   expect(b.v).toBe('b-mock');
-  // no factory: the real implementation must not be reachable
-  expect(c.fn?.()).toBe(undefined);
-  expect(typeof d).toBe('object');
+  expect(e).toBe('e-mock');
+  expect(n).toBe(1);
+  // no factory: an automock (the real implementation is not reachable)
+  expect(vi.isMockFunction(c.fn)).toBe(true);
+  expect(c.fn()).toBe(undefined);
 });
-// factory-less form last: nothing may follow it (see the extract_mocks note)
+// factory-less form (code may follow it since turbo-test#31 item 4)
 vi.mock('./c.cjs');
 "#,
     );
@@ -132,6 +138,68 @@ vi.mock('./c.cjs');
         let r = turbo_test(&p.dir, &[], env);
         assert_eq!(r.code, Some(0), "{env:?}\n{}", r.all());
     }
+}
+
+#[test]
+fn factory_less_entry_mock_is_an_automock() {
+    // vitest's automocking algorithm: functions (and default exports) become vi.fn() mocks that
+    // return undefined, classes get mocked statics + prototype methods, objects and class
+    // instances are mocked deeply, primitives are kept and arrays emptied. Same result without
+    // esbuild (ESM graph) and with it (module runner).
+    let p = Project::new("rb-esm-automock");
+    p.file(
+        "package.json",
+        r#"{"name":"rb-esm-automock","type":"module"}"#,
+    );
+    p.file(
+        "m.js",
+        r#"export function f() { return 1; }
+export default function d() { return 8; }
+class Base { base() { return 'b'; } }
+export class C extends Base { constructor() { super(); this.x = 1; } m() { return 2; } static s() { return 3; } }
+class Svc { call() { return 'real'; } }
+export const svc = new Svc();
+export const obj = { g: () => 4, nested: { h: () => 5, n: 6 } };
+export const num = 7;
+export const str = 's';
+export const arr = [1, 2];
+"#,
+    );
+    p.file(
+        "a.test.js",
+        r#"import d, { f, C, svc, obj, num, str, arr } from './m.js';
+test('automock', () => {
+  expect(vi.isMockFunction(f)).toBe(true);
+  expect(f()).toBe(undefined);
+  f.mockReturnValue(9);
+  expect(f()).toBe(9);
+  expect(vi.isMockFunction(d)).toBe(true);
+  expect(d()).toBe(undefined);
+  expect(vi.isMockFunction(C)).toBe(true);
+  expect(vi.isMockFunction(C.s)).toBe(true);
+  const c = new C();
+  expect(c.x).toBe(undefined);
+  expect(vi.isMockFunction(c.m)).toBe(true);
+  expect(c.m()).toBe(undefined);
+  expect(vi.isMockFunction(c.base)).toBe(true);
+  expect(vi.isMockFunction(svc.call)).toBe(true);
+  expect(svc.call()).toBe(undefined);
+  expect(vi.isMockFunction(obj.g)).toBe(true);
+  expect(vi.isMockFunction(obj.nested.h)).toBe(true);
+  expect(obj.nested.n).toBe(6);
+  expect(num).toBe(7);
+  expect(str).toBe('s');
+  expect(arr).toEqual([]);
+});
+// factory-less form (code may follow it since turbo-test#31 item 4)
+vi.mock('./m.js');
+"#,
+    );
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_eq!(r.code, Some(0), "no esbuild\n{}", r.all());
+    p.with_esbuild();
+    let r = turbo_test(&p.dir, &[], &[]);
+    assert_eq!(r.code, Some(0), "module runner\n{}", r.all());
 }
 
 #[test]
@@ -256,7 +324,7 @@ fn drive_loop_rejects_a_broken_runtime_contract() {
 }
 
 #[test]
-fn synthetic_modules_for_shared_assets_defaults_and_unshimmed_builtins() {
+fn synthetic_modules_for_shared_assets_defaults_and_builtins() {
     let p = Project::new("rb-esm-synth");
     p.file("package.json", r#"{"name":"rb-esm-synth"}"#);
     p.file("shared.json", r#"{"n": 1}"#);
@@ -282,7 +350,7 @@ test('synthetic modules', () => {
   expect(fromA).toBe('1:k');
   expect(def.default).toBe('dflt');
   expect(named).toBe('n');
-  expect(typeof vm).toBe('object');
+  expect(vm.runInThisContext('1 + 1')).toBe(2);
 });
 "#,
     );

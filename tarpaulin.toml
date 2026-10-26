@@ -8,12 +8,12 @@
 # tarpaulin load the coverage maps of those executables so bin-only code is attributed.
 #
 # The gate measures production code only: the #[path] unit-test modules under src/ are
-# excluded. Known uncovered lines (see CHANGELOG [Unreleased]): runner.rs jest_setup_files'
-# package.json "jest" branch, register_mock's "mocked but no exports" fallback and the
-# lazy-stub dynamic-import resolve are reachable only through pre-existing bugs (filed
-# separately; covering them means fixing them), and coverage_accumulate's "script with no
-# ranges" skip never sees such input from V8 (precise coverage always reports a script's
-# top-level function).
+# excluded. 6578/6579 lines (99.98%) are covered. The one known uncovered line is
+# coverage_accumulate's "script with no ranges" skip in runner.rs: V8 never sends such input
+# (precise coverage always reports a script's top-level function), and the guard stays so a
+# malformed inspector payload is skipped rather than mapped as all-zero. The lines that were
+# reachable only through pre-existing bugs (turbo-test#31 items 1-3) are covered since those
+# fixes; the "mocked but no exports" fallbacks they guarded were removed.
 [turbo-test]
 engine = "Llvm"
 target-dir = "target/cov"
@@ -29,5 +29,5 @@ objects = [
 ]
 out = ["Stdout", "Json"]
 output-dir = "target/cov/report"
-fail-under = 99
+fail-under = 99.98
 exclude-files = ["src/*_tests.rs", "src/runner_tests_*.rs", "src/bin/spike_tests/*"]

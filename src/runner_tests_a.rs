@@ -184,11 +184,7 @@ fn nearest_pkg_type_reads_the_closest_package_json() {
 }
 
 #[test]
-fn kind_of_and_detect_kind() {
-    assert_eq!(kind_of(Path::new("/x/a.cjs")), Kind::Cjs);
-    assert_eq!(kind_of(Path::new("/x/a.js")), Kind::Esm);
-    assert_eq!(kind_of(Path::new("/x/noext")), Kind::Esm);
-
+fn detect_kind_by_extension_and_package_type() {
     let d = tmp("kind");
     assert_eq!(detect_kind(&d.join("a.cjs")), Kind::Cjs);
     for f in ["a.mjs", "a.mts", "a.ts", "a.tsx", "a.jsx"] {
@@ -263,7 +259,33 @@ fn cjs_first_project_detection() {
             "{env}"
         );
     }
-    // (A package.json "jest" block is not detected: see the JSON-key note on jest_setup_files.)
+    // a package.json "jest" block is a jest config too (turbo-test#31 item 1); its own
+    // testEnvironment decides, not a same-named key elsewhere in package.json
+    put(
+        &d,
+        "pj/package.json",
+        r#"{"name":"p","jest":{"testEnvironment":"node"}}"#,
+    );
+    assert!(cjs_first_project_uncached(&d.join("pj/a.test.ts")));
+    put(
+        &d,
+        "pjdom/package.json",
+        r#"{"name":"p","jest":{"testEnvironment":"jsdom"}}"#,
+    );
+    assert!(!cjs_first_project_uncached(&d.join("pjdom/a.test.ts")));
+    put(
+        &d,
+        "pjo/package.json",
+        r#"{"name":"p","x":{"testEnvironment":"jsdom"},"jest":{}}"#,
+    );
+    assert!(cjs_first_project_uncached(&d.join("pjo/a.test.ts")));
+    // a package.json without a jest block is not a jest config
+    put(
+        &d,
+        "plain/package.json",
+        r#"{"name":"p","scripts":{"jest":"jest"}}"#,
+    );
+    assert!(!cjs_first_project_uncached(&d.join("plain/a.test.ts")));
     // memoized wrapper: miss then hit, same answer
     assert!(cjs_first_project(&d.join("j/b.test.ts")));
     assert!(cjs_first_project(&d.join("j/c.test.ts")));
@@ -494,20 +516,6 @@ fn project_root_and_tsc_root_find_their_markers() {
 }
 
 #[test]
-fn mock_specifiers_collects_unique_literal_specs() {
-    let d = tmp("mockspecs");
-    let f = put(
-        &d,
-        "a.test.ts",
-        "vi.mock('./a', () => ({}));\nvi.doMock(\"b\");\njest.mock(`c`);\njest.doMock( './a');\nvi.mock(dynamic);\nvi.mock('unterminated",
-    );
-    assert_eq!(mock_specifiers(&f), vec!["./a", "b", "c"]);
-    assert!(mock_specifiers(&d.join("missing.ts")).is_empty());
-    let empty = put(&d, "e.ts", "vi.mock(");
-    assert!(mock_specifiers(&empty).is_empty());
-}
-
-#[test]
 fn spec_basename_takes_the_last_segment() {
     assert_eq!(spec_basename("../../x/analytics"), "analytics");
     assert_eq!(spec_basename("pkg/"), "pkg");
@@ -649,15 +657,57 @@ fn find_config_key_skips_comments_and_non_keys() {
 }
 
 #[test]
+fn find_config_key_reads_quoted_json_keys() {
+    // turbo-test#31 item 1: JSON keys are quoted, so the quote sits between key and ':'
+    let s = "{\"jest\":{\"setupFiles\":[]}}";
+    assert_eq!(find_config_key(s, "jest"), Some(2));
+    assert_eq!(find_config_key(s, "setupFiles"), Some(10));
+    assert_eq!(find_config_key("{ 'jest' : {} }", "jest"), Some(3));
+    // mismatched or one-sided quotes, a longer key, or a key that is only a suffix: no match
+    assert_eq!(find_config_key("{\"jest': {}}", "jest"), None);
+    assert_eq!(find_config_key("{jest\": {}}", "jest"), None);
+    assert_eq!(find_config_key("{\"jestx\": {}}", "jest"), None);
+    assert_eq!(find_config_key("{ myjest: {} }", "jest"), None);
+    assert_eq!(find_config_key("{\"myjest\": {}}", "jest"), None);
+}
+
+#[test]
+fn package_json_jest_block_is_the_top_level_jest_object_only() {
+    assert_eq!(
+        package_json_jest_block(
+            r#"{"scripts":{"jest":"jest"},"name":"x","jest":{"a":{"b":"}"},"c":1},"z":{"setupFiles":[]}}"#
+        )
+        .as_deref(),
+        Some(r#"{"a":{"b":"}"},"c":1}"#)
+    );
+    assert_eq!(
+        package_json_jest_block(r#"{ "jest" : { } }"#).as_deref(),
+        Some("{}")
+    );
+    // no block, a nested-only `jest` key, a non-object value, or invalid JSON
+    assert_eq!(package_json_jest_block(r#"{"name":"x"}"#), None);
+    assert_eq!(package_json_jest_block(r#"{"scripts":{"jest":{}}}"#), None);
+    assert_eq!(
+        package_json_jest_block(r#"{"jest":"./jest.config.js"}"#),
+        None
+    );
+    assert_eq!(package_json_jest_block(r#"{"jest":{"a":1"#), None);
+}
+
+#[test]
 fn config_string_value_quotes() {
     assert_eq!(
         config_string_value("rootDir: '<x>'", "rootDir").as_deref(),
         Some("<x>")
     );
+    // JSON (quoted) keys, double or single quoted (turbo-test#31 item 1)
     assert_eq!(
-        config_string_value("\"rootDir\" : \"src\"", "rootDir"),
-        None,
-        "the quote after the key name means `rootDir\"` is not followed by ':'"
+        config_string_value("\"rootDir\" : \"src\"", "rootDir").as_deref(),
+        Some("src")
+    );
+    assert_eq!(
+        config_string_value("{ 'rootDir': 'lib' }", "rootDir").as_deref(),
+        Some("lib")
     );
     assert_eq!(
         config_string_value("{ rootDir: \"src\" }", "rootDir").as_deref(),
@@ -766,9 +816,33 @@ fn jest_setup_files_root_dir_absolute_and_resolution() {
     );
     assert_eq!(jest_setup_files(&d), Some(vec![a, b, abs, c]));
 
-    // NOTE: JSON-form jest config (package.json "jest" block / jest.config.json) is not parsed
-    // today: find_config_key needs `key:` but JSON keys are quoted (`"jest":`). Reported as a
-    // pre-existing bug; not asserted here.
+    // JSON-form jest configs (turbo-test#31 item 1): a package.json "jest" block and
+    // jest.config.json, with <rootDir>, a JSON rootDir and both setup keys
+    let pj = tmp("jest-pkg-json");
+    let ps = put(&pj, "setup.js", "");
+    let pa = put(&pj, "after.js", "");
+    put(
+        &pj,
+        "package.json",
+        r#"{"name":"p","jest":{"setupFiles":["<rootDir>/setup.js"],"setupFilesAfterEnv":["./after.js"]}}"#,
+    );
+    assert_eq!(jest_setup_files(&pj), Some(vec![ps, pa]));
+    let jj = tmp("jest-config-json");
+    let js = put(&jj, "src/s.js", "");
+    put(
+        &jj,
+        "jest.config.json",
+        "{\n  \"rootDir\": \"src\",\n  \"setupFiles\": [\"<rootDir>/s.js\"]\n}\n",
+    );
+    assert_eq!(jest_setup_files(&jj), Some(vec![js]));
+    // a package.json "jest" block with no setup keys is still a jest config (stop walking)
+    let pe = tmp("jest-pkg-empty");
+    put(
+        &pe,
+        "package.json",
+        r#"{"name":"p","jest":{"testEnvironment":"node"}}"#,
+    );
+    assert_eq!(jest_setup_files(&pe), Some(vec![]));
     // package.json without jest / no config at all -> None (keep walking)
     let r = tmp("jest-none");
     assert_eq!(jest_setup_files(&r), None);
@@ -800,12 +874,37 @@ fn extract_hoisted_statements() {
         extract_hoisted(src),
         vec![
             "const { a } = vi.hoisted(() => ({ a: fn(1) }));".to_string(),
-            // no `;`: the whitespace scanned while looking for one is kept
-            "let b = vi.hoisted(() => 2)\n".to_string(),
+            // no `;`: the statement ends at the call's closing paren
+            "let b = vi.hoisted(() => 2)".to_string(),
         ]
     );
-    // no declaring keyword before it -> skipped
-    assert!(extract_hoisted("vi.hoisted(() => 1);").is_empty());
+    // a bare call is hoisted too (vitest hoists every vi.hoisted)
+    assert_eq!(
+        extract_hoisted("vi.hoisted(() => 1);"),
+        vec!["vi.hoisted(() => 1);".to_string()]
+    );
+    // turbo-test#31 item 7: a bare call after a declared one starts at the call, not at the
+    // previous statement's `let` (which declared `b` twice in the prepass)
+    assert_eq!(
+        extract_hoisted("let b = vi.hoisted(() => 2)\nvi.hoisted(() => 3);"),
+        vec![
+            "let b = vi.hoisted(() => 2)".to_string(),
+            "vi.hoisted(() => 3);".to_string()
+        ]
+    );
+    // `await vi.hoisted(async ...)`, declared and bare
+    assert_eq!(
+        extract_hoisted("const { m } = await vi.hoisted(async () => ({ m: 1 }));\nawait vi.hoisted(async () => {});"),
+        vec![
+            "const { m } = await vi.hoisted(async () => ({ m: 1 }));".to_string(),
+            "await vi.hoisted(async () => {});".to_string()
+        ]
+    );
+    // a keyword that only ends an identifier (`outlet `) is not a declaration
+    assert_eq!(
+        extract_hoisted("outlet = vi.hoisted(() => 4);"),
+        vec!["vi.hoisted(() => 4);".to_string()]
+    );
     // unbalanced: runs to the end of the source
     assert_eq!(
         extract_hoisted("var h = vi.hoisted(() => (1"),
@@ -1100,24 +1199,6 @@ fn feature_switches_default_on() {
     // the unit-test process never sets TURBO_NO_MR / TURBO_NO_E12
     assert!(mr_enabled());
     assert!(e12_enabled());
-}
-
-#[test]
-fn is_react_family_cases() {
-    for s in [
-        "react",
-        "/p/node_modules/react",
-        "/p/node_modules/react/index.js",
-        "react-dom/client",
-        "react/jsx-runtime",
-        "scheduler",
-        "/p/node_modules/scheduler",
-    ] {
-        assert!(is_react_family(s), "{s}");
-    }
-    for s in ["preact", "reactive", "/p/node_modules/lodash/index.js"] {
-        assert!(!is_react_family(s), "{s}");
-    }
 }
 
 #[test]

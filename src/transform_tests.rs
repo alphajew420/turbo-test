@@ -147,3 +147,69 @@ fn maybe_transform_passes_plain_js_through() {
         .unwrap_err()
         .starts_with("parse errors: "));
 }
+
+/// Numeric, string, member-referencing, computed, cross-enum, exported, `const` and `declare`
+/// enums. The member lines asserted below are tsc 5.9.3's output for the same source
+/// (`tsc --target es2022 --module esnext`), the oracle for enum lowering.
+const ENUMS: &str = "enum N { A, B, C = 10, D }\n\
+    enum S { A = 'a', B = A, C = `${A}c` }\n\
+    enum M { X = 1, Y = X * 2, Z = Y | 4, W = N.D }\n\
+    enum C { K = 'k'.length, L = 5 }\n\
+    const enum CE { P = 1, Q = 'q' }\n\
+    export const v = [CE.P, CE.Q, N.D, S.B, M.Z, C.L];\n\
+    declare enum D { Z }\n\
+    export enum X { One = 1, Two = One + 1 }\n";
+
+/// tsc's member assignments for `ENUMS`: string members get no reverse mapping, and members
+/// that reference other members are folded to their constant value.
+const TSC_ENUM_MEMBERS: &[&str] = &[
+    "N[N[\"A\"] = 0] = \"A\";",
+    "N[N[\"B\"] = 1] = \"B\";",
+    "N[N[\"C\"] = 10] = \"C\";",
+    "N[N[\"D\"] = 11] = \"D\";",
+    "S[\"A\"] = \"a\";",
+    "S[\"B\"] = \"a\";",
+    "S[\"C\"] = \"ac\";",
+    "M[M[\"X\"] = 1] = \"X\";",
+    "M[M[\"Y\"] = 2] = \"Y\";",
+    "M[M[\"Z\"] = 6] = \"Z\";",
+    "M[M[\"W\"] = 11] = \"W\";",
+    "C[C[\"K\"] = \"k\".length] = \"K\";",
+    "C[C[\"L\"] = 5] = \"L\";",
+    "X[X[\"One\"] = 1] = \"One\";",
+    "X[X[\"Two\"] = 2] = \"Two\";",
+];
+
+/// Assert `out` lowers `ENUMS` with tsc's member values and no reverse mapping for strings.
+fn assert_enums_like_tsc(out: &str) {
+    for line in TSC_ENUM_MEMBERS {
+        assert!(out.contains(line), "missing tsc line {line}:\n{out}");
+    }
+    assert!(
+        !out.contains("S[S["),
+        "string member got a reverse mapping:\n{out}"
+    );
+    assert!(!out.contains("var D"), "declare enum emitted:\n{out}");
+}
+
+#[test]
+fn enums_lower_like_tsc() {
+    // Runs in a debug build, so it would also trip oxc's `with_enum_eval` debug_assert.
+    let out = transform(Path::new("e.ts"), ENUMS).unwrap();
+    assert_enums_like_tsc(&out);
+    // A `const enum` keeps a runtime object with tsc's member values and its accesses read
+    // it (oxc's default `optimize_const_enums = false`, the `isolatedModules` behaviour);
+    // tsc would inline `1 /* CE.P */`, which evaluates to the same value.
+    assert!(out.contains("CE[CE[\"P\"] = 1] = \"P\";"), "{out}");
+    assert!(out.contains("CE[\"Q\"] = \"q\";"), "{out}");
+    assert!(
+        out.contains("export const v = [\n\tCE.P,\n\tCE.Q,"),
+        "{out}"
+    );
+}
+
+#[test]
+fn enums_lower_like_tsc_with_legacy_decorators() {
+    assert_enums_like_tsc(&transform_with(Path::new("e.ts"), ENUMS, true).unwrap());
+    assert_enums_like_tsc(&transform_decorators_with_metadata(Path::new("e.ts"), ENUMS).unwrap());
+}

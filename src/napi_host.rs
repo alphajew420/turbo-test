@@ -4,11 +4,18 @@
 //! This is what Node/Deno/Bun each provide; here it is scoped to the surface turbo-dom's
 //! parser addon needs (enumerated from `nm -u` on the .node):
 //!   value/object/string/number, arrays, functions + cb_info, arraybuffer/typedarray,
-//!   errors/exceptions, references, threadsafe-fn (stubbed).
+//!   errors/exceptions, references, napi_wrap / unwrap / remove_wrap, threadsafe-fn (stubbed).
 //!
 //! Bridge: `napi_value` IS a `v8::Local<Value>` (Local is `NonNull<T>` — pointer-sized),
 //! so they transmute. Handles are created in the scope stored on the env for the current
-//! native call (set by the function trampoline / loader before calling into the addon).
+//! native call (set by the function trampoline / loader before calling into the addon, and
+//! restored when a nested call returns).
+//!
+//! Semantics follow Node's js_native_api_v8.cc (the status codes, the checks and coercions):
+//! every loaded addon gets its own env, owned by its isolate; callbacks may re-enter (native ->
+//! JS -> native); calls that can run JS honour a pending exception (NAPI_PREAMBLE) and park
+//! what JS throws on the env (`js_call`), from where napi_get_and_clear_last_exception can take
+//! it or the trampoline throws it to the JS caller. No entrypoint panics across the FFI boundary.
 
 #![allow(non_camel_case_types, non_upper_case_globals, dead_code, clippy::missing_safety_doc)]
 
@@ -20,6 +27,11 @@ use std::ptr::NonNull;
 pub type napi_status = i32;
 pub const napi_ok: napi_status = 0;
 pub const napi_invalid_arg: napi_status = 1;
+pub const napi_object_expected: napi_status = 2;
+pub const napi_string_expected: napi_status = 3;
+pub const napi_number_expected: napi_status = 6;
+pub const napi_boolean_expected: napi_status = 7;
+pub const napi_array_expected: napi_status = 8;
 pub const napi_generic_failure: napi_status = 9;
 pub const napi_pending_exception: napi_status = 10;
 
@@ -44,16 +56,91 @@ pub enum napi_valuetype {
     Bigint = 9,
 }
 
-/// Per-thread napi environment. `scope` points at the live rusty_v8 scope for the current
+/// One loaded addon's napi environment (Node creates one `napi_env` per addon instance), owned
+/// by its isolate (`AddonEnvs`). `scope` points at the live rusty_v8 scope for the current
 /// native call (the only window during which napi value calls happen).
 pub struct Env {
     pub isolate: *mut v8::Isolate,
     pub scope: *mut c_void, // *mut v8::PinScope<'static,'static>, valid only during a call
-    pub context: Option<v8::Global<v8::Context>>,
+    pub context: v8::Global<v8::Context>,
     pub last_exception: Option<v8::Global<v8::Value>>,
-    /// registered (callback, data) for functions created via napi_create_function
-    pub fns: Vec<(napi_callback, *mut c_void)>,
-    pub refs: Vec<Option<v8::Global<v8::Value>>>,
+    /// One record per napi_create_function; each function's data is an External pointing at
+    /// its record, so a function always dispatches into the env (addon) that created it.
+    pub fns: Vec<*mut Callback>,
+    pub refs: Vec<Option<Ref>>,
+    /// The live napi_wrap records of this env, by creation order.
+    pub wraps: std::collections::BTreeMap<u64, *mut Wrap>,
+    pub next_wrap: u64,
+}
+
+impl Drop for Env {
+    /// Env teardown (the isolate is being disposed). As Node's napi_env__::DeleteMe, the
+    /// finalizers of the objects still wrapped run now, newest first. No JS can run any more:
+    /// there is no scope, so a call that could run JS is napi_pending_exception (`js_call`), and
+    /// only the scope-free calls (references, napi_delete_reference) are usable.
+    fn drop(&mut self) {
+        let env: napi_env = self;
+        unsafe {
+            (*env).scope = std::ptr::null_mut();
+            while let Some((_, wrap)) = (*env).wraps.pop_last() {
+                finalize_wrap(env, &Box::from_raw(wrap));
+            }
+        }
+        for &f in &self.fns {
+            drop(unsafe { Box::from_raw(f) });
+        }
+    }
+}
+
+/// A napi_ref: napi_create_reference holds its value strongly; the reference napi_wrap hands
+/// back is weak (as Node's, refcount 0), so it does not keep the wrapped object alive.
+pub enum Ref {
+    Strong(v8::Global<v8::Value>),
+    Weak(v8::Weak<v8::Value>),
+}
+
+/// One napi_wrap: the native pointer stored on a JS object (an External under the isolate's
+/// wrap private key points here) and its optional finalizer, which runs once, when the object is
+/// collected or at env teardown, unless napi_remove_wrap drops the wrap first.
+pub struct Wrap {
+    env: napi_env,
+    id: u64,
+    native: *mut c_void,
+    finalize: Option<napi_finalize>,
+    hint: *mut c_void,
+    /// Weak handle on the wrapped object; its GC finalizer (`wrap_collected`) frees this record.
+    weak: Option<v8::Weak<v8::Object>>,
+}
+
+/// Run `wrap`'s finalizer (if any) in the env's current scope: addon code, so under the lock.
+/// The env's pending exception is set aside for it, and what the finalizer leaves pending is
+/// dropped (Node reports it as an uncaught exception; there is no JS caller to throw it to).
+unsafe fn finalize_wrap(env: napi_env, wrap: &Wrap) {
+    if let Some(cb) = wrap.finalize {
+        let pending = (*env).last_exception.take();
+        let _ = call_addon(|| cb(env, wrap.native, wrap.hint));
+        (*env).last_exception = pending;
+    }
+}
+
+/// What a napi-created function calls: the addon callback, its data, and the env it belongs to.
+#[derive(Clone, Copy)]
+pub struct Callback {
+    env: napi_env,
+    cb: napi_callback,
+    data: *mut c_void,
+}
+
+/// The envs of every addon loaded into an isolate, kept in an isolate slot so they are freed
+/// with the isolate: the functions pointing into them cannot outlive it either.
+struct AddonEnvs(Vec<napi_env>);
+
+impl Drop for AddonEnvs {
+    fn drop(&mut self) {
+        for &env in &self.0 {
+            drop(unsafe { Box::from_raw(env) });
+        }
+    }
 }
 
 /// Process-global lock serializing native `.node` addon entry across worker threads (the shared
@@ -61,7 +148,6 @@ pub struct Env {
 static ADDON_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 thread_local! {
     static IN_ADDON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static ENV: std::cell::RefCell<Option<Box<Env>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[inline]
@@ -84,6 +170,52 @@ unsafe fn put(out: *mut napi_value, l: v8::Local<v8::Value>) {
     if !out.is_null() {
         *out = to_napi(l);
     }
+}
+
+/// A napi call's outcome; `Err(status)` carries a non-`napi_ok` status, so `?` returns it.
+type NapiResult = Result<(), napi_status>;
+
+/// Run `f` the way Node runs a napi call that can execute JS (`NAPI_PREAMBLE` plus its
+/// `v8impl::TryCatch`): while an exception is pending, or when JS cannot run (env teardown), it
+/// returns `napi_pending_exception` without running `f`; otherwise it runs `f` under `catching`.
+unsafe fn js_call(
+    env: napi_env,
+    f: impl FnOnce(&mut v8::PinScope<'static, 'static>) -> NapiResult,
+) -> napi_status {
+    // no scope: the env is being torn down and JS cannot run (Node's !can_call_into_js(), which
+    // is napi_pending_exception for an addon without a declared module API version)
+    if (*env).last_exception.is_some() || (*env).scope.is_null() {
+        return napi_pending_exception;
+    }
+    catching(env, f)
+}
+
+/// Run `f` in a TryCatch: a JS exception thrown inside it is caught and parked on the env as
+/// its pending exception. `napi_is_exception_pending` / `napi_get_and_clear_last_exception`
+/// see it, and the trampoline (or the module loader) throws it to JS when the addon returns
+/// to its caller. A termination is not caught: it keeps unwinding.
+unsafe fn catching(
+    env: napi_env,
+    f: impl FnOnce(&mut v8::PinScope<'static, 'static>) -> NapiResult,
+) -> napi_status {
+    let tc = std::pin::pin!(v8::TryCatch::new(scope(env)));
+    let tc = &mut tc.init();
+    let result = f(tc);
+    if !tc.has_terminated() {
+        if let Some(exc) = tc.exception() {
+            (*env).last_exception = Some(v8::Global::new(tc, exc));
+        }
+    }
+    result.err().unwrap_or(napi_ok)
+}
+
+/// ToObject of an object argument, as Node's CHECK_TO_OBJECT: primitives become their wrapper
+/// objects; null / undefined throw a TypeError and the call is napi_object_expected.
+unsafe fn to_object(
+    s: &mut v8::PinScope<'static, 'static>,
+    obj: napi_value,
+) -> Result<v8::Local<'static, v8::Object>, napi_status> {
+    to_local(obj).to_object(s).ok_or(napi_object_expected)
 }
 
 /// Callback info passed to a napi_callback during a function call.
@@ -142,10 +274,12 @@ pub unsafe extern "C" fn napi_typeof(
         napi_valuetype::Number
     } else if val.is_string() {
         napi_valuetype::String
+    } else if val.is_symbol() {
+        napi_valuetype::Symbol
+    } else if val.is_big_int() {
+        napi_valuetype::Bigint
     } else if val.is_function() {
         napi_valuetype::Function
-    } else if val.is_object() {
-        napi_valuetype::Object
     } else {
         napi_valuetype::Object
     };
@@ -180,16 +314,35 @@ pub unsafe extern "C" fn napi_create_double(
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_value_uint32(
-    env: napi_env,
+    _env: napi_env,
     v: napi_value,
     out: *mut u32,
 ) -> napi_status {
-    let s = scope(env);
-    let n = to_local(v).number_value(s).unwrap_or(0.0) as u32;
+    let Some(n) = number_of(v) else {
+        return napi_number_expected;
+    };
     if !out.is_null() {
-        *out = n;
+        *out = to_uint32(n);
     }
     napi_ok
+}
+
+/// The value of a JS number, `None` for anything else: Node's number getters never coerce
+/// (they return napi_number_expected).
+unsafe fn number_of(v: napi_value) -> Option<f64> {
+    v8::Local::<v8::Number>::try_from(to_local(v))
+        .ok()
+        .map(|n| n.value())
+}
+
+/// ECMAScript ToUint32, what V8's Uint32Value (Node's napi_get_value_uint32) computes: NaN and
+/// the infinities are 0, anything else is truncated and wrapped modulo 2^32.
+fn to_uint32(n: f64) -> u32 {
+    if n.is_finite() {
+        n.trunc().rem_euclid(4294967296.0) as u32
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -200,18 +353,23 @@ pub unsafe extern "C" fn napi_create_string_utf8(
     out: *mut napi_value,
 ) -> napi_status {
     let s = scope(env);
-    let bytes = if len == usize::MAX {
-        std::ffi::CStr::from_ptr(str_).to_bytes()
-    } else {
-        std::slice::from_raw_parts(str_ as *const u8, len)
-    };
-    let text = std::str::from_utf8(bytes).unwrap_or("");
-    match v8::String::new(s, text) {
+    let bytes = utf8_arg(str_, len);
+    // V8's String::NewFromUtf8 (what Node uses) replaces invalid sequences with U+FFFD.
+    match v8::String::new_from_utf8(s, bytes, v8::NewStringType::Normal) {
         Some(v) => {
             put(out, v.into());
             napi_ok
         }
         None => napi_generic_failure,
+    }
+}
+
+/// The bytes of a `(const char*, size_t)` string argument; NAPI_AUTO_LENGTH means NUL-terminated.
+unsafe fn utf8_arg<'a>(str_: *const c_char, len: usize) -> &'a [u8] {
+    if len == usize::MAX {
+        std::ffi::CStr::from_ptr(str_).to_bytes()
+    } else {
+        std::slice::from_raw_parts(str_ as *const u8, len)
     }
 }
 
@@ -224,17 +382,27 @@ pub unsafe extern "C" fn napi_get_value_string_utf8(
     result: *mut usize,
 ) -> napi_status {
     let s = scope(env);
-    let str_val = to_local(v).to_rust_string_lossy(s);
-    let bytes = str_val.as_bytes();
+    let Ok(str_val) = v8::Local::<v8::String>::try_from(to_local(v)) else {
+        return napi_string_expected;
+    };
+    // as Node: a NULL buf is a length query, which needs `result` (CHECK_ARG(env, result))
     if buf.is_null() {
-        if !result.is_null() {
-            *result = bytes.len();
+        if result.is_null() {
+            return napi_invalid_arg;
         }
+        *result = str_val.utf8_length(s);
         return napi_ok;
     }
-    let n = bytes.len().min(bufsize.saturating_sub(1));
-    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
-    *(buf.add(n)) = 0;
+    // As Node: bufsize 0 writes nothing; otherwise at most bufsize - 1 bytes of whole UTF-8
+    // characters (never a split sequence; lone surrogates become U+FFFD) plus the NUL.
+    let n = if bufsize == 0 {
+        0
+    } else {
+        let dst = std::slice::from_raw_parts_mut(buf as *mut u8, bufsize - 1);
+        let n = str_val.write_utf8_v2(s, dst, v8::WriteFlags::kReplaceInvalidUtf8, None);
+        *buf.add(n) = 0;
+        n
+    };
     if !result.is_null() {
         *result = n;
     }
@@ -247,14 +415,12 @@ pub unsafe extern "C" fn napi_coerce_to_string(
     v: napi_value,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    match to_local(v).to_string(s) {
-        Some(str_) => {
-            put(out, str_.into());
-            napi_ok
-        }
-        None => napi_generic_failure,
-    }
+    js_call(env, |s| {
+        // as Node's CHECK_TO_STRING: a ToString that throws is napi_string_expected
+        let str_ = to_local(v).to_string(s).ok_or(napi_string_expected)?;
+        put(out, str_.into());
+        Ok(())
+    })
 }
 
 // ---- objects / arrays -----------------------------------------------------
@@ -283,17 +449,15 @@ pub unsafe extern "C" fn napi_set_named_property(
     name: *const c_char,
     value: napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let key = std::ffi::CStr::from_ptr(name).to_string_lossy();
-    let Some(k) = v8::String::new(s, &key) else {
-        return napi_generic_failure;
-    };
-    let o: v8::Local<v8::Object> = match to_local(obj).try_into() {
-        Ok(o) => o,
-        Err(_) => return napi_invalid_arg,
-    };
-    o.set(s, k.into(), to_local(value));
-    napi_ok
+    js_call(env, |s| {
+        let key = std::ffi::CStr::from_ptr(name).to_string_lossy();
+        let k = v8::String::new(s, &key).ok_or(napi_generic_failure)?;
+        let o = to_object(s, obj)?;
+        // V8's Object::Set is Nothing only when it threw (a throwing setter or proxy trap)
+        o.set(s, k.into(), to_local(value))
+            .ok_or(napi_pending_exception)?;
+        Ok(())
+    })
 }
 
 #[no_mangle]
@@ -303,22 +467,13 @@ pub unsafe extern "C" fn napi_get_named_property(
     name: *const c_char,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let key = std::ffi::CStr::from_ptr(name).to_string_lossy();
-    let Some(k) = v8::String::new(s, &key) else {
-        return napi_generic_failure;
-    };
-    let o: v8::Local<v8::Object> = match to_local(obj).try_into() {
-        Ok(o) => o,
-        Err(_) => return napi_invalid_arg,
-    };
-    match o.get(s, k.into()) {
-        Some(v) => {
-            put(out, v);
-            napi_ok
-        }
-        None => napi_generic_failure,
-    }
+    js_call(env, |s| {
+        let key = std::ffi::CStr::from_ptr(name).to_string_lossy();
+        let k = v8::String::new(s, &key).ok_or(napi_generic_failure)?;
+        let o = to_object(s, obj)?;
+        put(out, o.get(s, k.into()).ok_or(napi_pending_exception)?);
+        Ok(())
+    })
 }
 
 #[no_mangle]
@@ -328,61 +483,62 @@ pub unsafe extern "C" fn napi_set_element(
     index: u32,
     value: napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let o: v8::Local<v8::Object> = match to_local(obj).try_into() {
-        Ok(o) => o,
-        Err(_) => return napi_invalid_arg,
-    };
-    o.set_index(s, index, to_local(value));
-    napi_ok
+    js_call(env, |s| {
+        let o = to_object(s, obj)?;
+        o.set_index(s, index, to_local(value))
+            .ok_or(napi_pending_exception)?;
+        Ok(())
+    })
 }
 
 // ---- functions ------------------------------------------------------------
 
-/// Trampoline: every napi function shares this rusty_v8 callback. It recovers the
-/// (napi_callback, data) by the index stored as the function's data Integer, packages
-/// CbInfo, points the env scope at the current scope, and calls the addon callback.
+/// Trampoline: every napi function shares this rusty_v8 callback. It recovers the function's
+/// `Callback` record from the External stored as its data, packages CbInfo, points the
+/// owning env's scope at the current scope, and calls the addon callback.
 fn napi_fn_trampoline(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let idx = args
-        .data()
-        .to_integer(scope)
-        .map(|i| i.value() as usize)
-        .unwrap_or(usize::MAX);
-    ENV.with(|e| {
-        let mut b = e.borrow_mut();
-        let Some(env) = b.as_mut() else { return };
-        let Some(&(cb, data)) = env.fns.get(idx) else { return };
-        let argv: Vec<napi_value> =
-            (0..args.length()).map(|i| unsafe { to_napi(args.get(i)) }).collect();
-        let mut info = CbInfo {
-            args: argv,
-            this: unsafe { to_napi(args.this().into()) },
-            data,
-        };
-        let env_ptr: napi_env = env.as_mut() as *mut Env;
-        (env.as_mut()).scope = scope as *mut v8::PinScope as *mut c_void;
-        // The .node addon (turbo-dom parser) is one shared library across all worker threads, so
-        // its internal (C/Rust) state is process-global and NOT thread-safe — concurrent calls
-        // race (intermittent "document is not defined" / load flakiness). Serialize native addon
-        // entry across threads with a global lock; a thread-local guard allows same-thread
-        // re-entry (the addon calling a JS callback that re-enters) without self-deadlock.
-        let (reentrant, _guard) = enter_addon();
-        // Calling the addon's native callback crosses the FFI boundary. A panic there is UB and
-        // can crash the process; catch_unwind converts it into a thrown JS error instead.
-        let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            cb(env_ptr, &mut info as *mut CbInfo)
-        }));
-        if !reentrant {
-            IN_ADDON.with(|f| f.set(false));
-        }
-        if let Some(ret) = callback_return(scope, ret) {
-            rv.set(unsafe { to_local(ret) });
-        }
-    });
+    let Ok(record) = v8::Local::<v8::External>::try_from(args.data()) else {
+        return;
+    };
+    let Callback {
+        env: env_ptr,
+        cb,
+        data,
+    } = unsafe { *(record.value() as *const Callback) };
+    let argv: Vec<napi_value> = (0..args.length())
+        .map(|i| unsafe { to_napi(args.get(i)) })
+        .collect();
+    let mut info = CbInfo {
+        args: argv,
+        this: unsafe { to_napi(args.this().into()) },
+        data,
+    };
+    // Point the env at this call's scope for the callback's duration and restore it after: a
+    // nested call (the addon calling JS that calls the addon again) must not leave the outer
+    // callback with the inner, already-dead scope.
+    let here = scope as *mut v8::PinScope as *mut c_void;
+    let outer = unsafe { std::mem::replace(&mut (*env_ptr).scope, here) };
+    // The .node addon (turbo-dom parser) is one shared library across all worker threads, so
+    // its internal (C/Rust) state is process-global and NOT thread-safe — concurrent calls
+    // race (intermittent "document is not defined" / load flakiness). Serialize native addon
+    // entry across threads with a global lock; a thread-local guard allows same-thread
+    // re-entry (the addon calling a JS callback that re-enters) without self-deadlock.
+    // Calling the addon's native callback crosses the FFI boundary. A panic there is UB and
+    // can crash the process; call_addon converts it into a thrown JS error instead.
+    let ret = call_addon(|| unsafe { cb(env_ptr, &mut info as *mut CbInfo) });
+    unsafe { (*env_ptr).scope = outer };
+    // As Node's CallIntoModule: an exception the callback left pending is thrown to its caller.
+    if let Some(exc) = unsafe { (*env_ptr).last_exception.take() } {
+        let exc = v8::Local::new(scope, &exc);
+        scope.throw_exception(exc);
+    }
+    if let Some(ret) = callback_return(scope, ret) {
+        rv.set(unsafe { to_local(ret) });
+    }
 }
 
 /// Enter native addon code on this thread: `(reentrant, guard)`. The outermost entry marks the
@@ -397,6 +553,17 @@ fn enter_addon() -> (bool, Option<std::sync::MutexGuard<'static, ()>>) {
         Some(ADDON_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
     };
     (reentrant, guard)
+}
+
+/// Run native addon code (a callback, a module init) under `enter_addon`, catching a Rust panic
+/// out of it (one crossing the `extern "C"` boundary is UB) as an `Err`.
+fn call_addon<R>(f: impl FnOnce() -> R) -> std::thread::Result<R> {
+    let (reentrant, _guard) = enter_addon();
+    let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    if !reentrant {
+        IN_ADDON.with(|f| f.set(false));
+    }
+    ret
 }
 
 /// The JS-visible outcome of a native callback: a non-null `napi_value` is the return value,
@@ -426,30 +593,36 @@ fn init_outcome(result: std::thread::Result<napi_value>, path: &Path) -> Result<
 #[no_mangle]
 pub unsafe extern "C" fn napi_create_function(
     env: napi_env,
-    _name: *const c_char,
-    _len: usize,
+    name: *const c_char,
+    len: usize,
     cb: napi_callback,
     data: *mut c_void,
     out: *mut napi_value,
 ) -> napi_status {
-    let idx = {
-        let e = &mut *env;
-        e.fns.push((cb, data));
-        e.fns.len() - 1
-    };
-    let s = scope(env);
-    let data_val = v8::Integer::new(s, idx as i32);
-    let tmpl = v8::FunctionTemplate::builder(napi_fn_trampoline)
-        .data(data_val.into())
-        .build(s);
-    let f = tmpl.get_function(s).unwrap();
-    put(out, f.into());
-    napi_ok
+    js_call(env, |s| {
+        let record = Box::into_raw(Box::new(Callback { env, cb, data }));
+        (*env).fns.push(record);
+        let data_val = v8::External::new(s, record as *mut c_void);
+        let tmpl = v8::FunctionTemplate::builder(napi_fn_trampoline)
+            .data(data_val.into())
+            .build(s);
+        let f = tmpl.get_function(s).ok_or(napi_generic_failure)?;
+        // as Node: a non-NULL name becomes the function's `name` (a name V8 cannot hold is
+        // napi_generic_failure)
+        if !name.is_null() {
+            let name = utf8_arg(name, len);
+            let name = v8::String::new_from_utf8(s, name, v8::NewStringType::Internalized)
+                .ok_or(napi_generic_failure)?;
+            f.set_name(name);
+        }
+        put(out, f.into());
+        Ok(())
+    })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_cb_info(
-    _env: napi_env,
+    env: napi_env,
     info: napi_callback_info,
     argc: *mut usize,
     argv: *mut napi_value,
@@ -465,9 +638,10 @@ pub unsafe extern "C" fn napi_get_cb_info(
             for i in 0..n {
                 *argv.add(i) = cb.args[i];
             }
-            // pad remaining with undefined-ish (null ptr treated as undefined by caller)
+            // as in Node, slots past the actual arguments are filled with `undefined`
+            let undefined = to_napi(v8::undefined(scope(env)).into());
             for i in n..want {
-                *argv.add(i) = std::ptr::null_mut();
+                *argv.add(i) = undefined;
             }
         }
         *argc = have;
@@ -490,25 +664,21 @@ pub unsafe extern "C" fn napi_call_function(
     argv: *const napi_value,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let f: v8::Local<v8::Function> = match to_local(func).try_into() {
-        Ok(f) => f,
-        Err(_) => return napi_invalid_arg,
-    };
-    let args: Vec<v8::Local<v8::Value>> =
-        (0..argc).map(|i| to_local(*argv.add(i))).collect();
-    let recv_local = if recv.is_null() {
-        v8::undefined(s).into()
-    } else {
-        to_local(recv)
-    };
-    match f.call(s, recv_local, &args) {
-        Some(v) => {
-            put(out, v);
-            napi_ok
+    js_call(env, |s| {
+        // as Node (CHECK_ARG(env, recv)): a receiver is required; an addon passes `undefined`.
+        // So is argv when argc > 0 (CHECK_ARG(env, argv)): nothing is called.
+        if recv.is_null() || (argc > 0 && argv.is_null()) {
+            return Err(napi_invalid_arg);
         }
-        None => napi_pending_exception,
-    }
+        let f: v8::Local<v8::Function> = to_local(func).try_into().map_err(|_| napi_invalid_arg)?;
+        let args: Vec<v8::Local<v8::Value>> = (0..argc).map(|i| to_local(*argv.add(i))).collect();
+        put(
+            out,
+            f.call(s, to_local(recv), &args)
+                .ok_or(napi_pending_exception)?,
+        );
+        Ok(())
+    })
 }
 
 // ---- arraybuffer / typedarray (for the parser's SoA buffer) ----------------
@@ -520,14 +690,18 @@ pub unsafe extern "C" fn napi_create_arraybuffer(
     data: *mut *mut c_void,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let ab = v8::ArrayBuffer::new(s, len);
-    if !data.is_null() {
-        let store = ab.get_backing_store();
-        *data = store.data().map(|p| p.as_ptr()).unwrap_or(std::ptr::null_mut());
-    }
-    put(out, ab.into());
-    napi_ok
+    js_call(env, |s| {
+        let ab = v8::ArrayBuffer::new(s, len);
+        if !data.is_null() {
+            let store = ab.get_backing_store();
+            *data = store
+                .data()
+                .map(|p| p.as_ptr())
+                .unwrap_or(std::ptr::null_mut());
+        }
+        put(out, ab.into());
+        Ok(())
+    })
 }
 
 #[no_mangle]
@@ -539,28 +713,75 @@ pub unsafe extern "C" fn napi_create_typedarray(
     byte_offset: usize,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let ab: v8::Local<v8::ArrayBuffer> = match to_local(arraybuffer).try_into() {
-        Ok(a) => a,
-        Err(_) => return napi_invalid_arg,
-    };
-    // napi typedarray type codes -> matching v8 typed array. `length` is in ELEMENTS.
-    let ta: v8::Local<v8::Value> = match type_ {
-        0 => v8::Int8Array::new(s, ab, byte_offset, length).unwrap().into(),
-        1 => v8::Uint8Array::new(s, ab, byte_offset, length).unwrap().into(),
-        2 => v8::Uint8ClampedArray::new(s, ab, byte_offset, length).unwrap().into(),
-        3 => v8::Int16Array::new(s, ab, byte_offset, length).unwrap().into(),
-        4 => v8::Uint16Array::new(s, ab, byte_offset, length).unwrap().into(),
-        5 => v8::Int32Array::new(s, ab, byte_offset, length).unwrap().into(),
-        6 => v8::Uint32Array::new(s, ab, byte_offset, length).unwrap().into(),
-        7 => v8::Float32Array::new(s, ab, byte_offset, length).unwrap().into(),
-        8 => v8::Float64Array::new(s, ab, byte_offset, length).unwrap().into(),
-        9 => v8::BigInt64Array::new(s, ab, byte_offset, length).unwrap().into(),
-        10 => v8::BigUint64Array::new(s, ab, byte_offset, length).unwrap().into(),
-        _ => v8::Uint8Array::new(s, ab, byte_offset, length).unwrap().into(),
-    };
-    put(out, ta);
-    napi_ok
+    js_call(env, |s| {
+        let ab: v8::Local<v8::ArrayBuffer> = to_local(arraybuffer)
+            .try_into()
+            .map_err(|_| napi_invalid_arg)?;
+        // napi_typedarray_type codes (Node 26: 0..=11): element size and constructor name.
+        let (size, name) = match type_ {
+            0 => (1, "Int8Array"),
+            1 => (1, "Uint8Array"),
+            2 => (1, "Uint8ClampedArray"),
+            3 => (2, "Int16Array"),
+            4 => (2, "Uint16Array"),
+            5 => (4, "Int32Array"),
+            6 => (4, "Uint32Array"),
+            7 => (4, "Float32Array"),
+            8 => (8, "Float64Array"),
+            9 => (8, "BigInt64Array"),
+            10 => (8, "BigUint64Array"),
+            11 => (2, "Float16Array"),
+            // as Node: an unknown napi_typedarray_type is napi_invalid_arg
+            _ => return Err(napi_invalid_arg),
+        };
+        // As Node (THROW_RANGE_ERROR_IF_FALSE): a misaligned offset or a view running past the
+        // buffer throws a RangeError; V8's constructors would not check (or abort). `length` is
+        // in ELEMENTS; a product overflowing usize is a length error too.
+        if !byte_offset.is_multiple_of(size) {
+            let msg = format!("start offset of {name} should be a multiple of {size}");
+            return throw_range_error(s, "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT", &msg);
+        }
+        let end = length
+            .checked_mul(size)
+            .and_then(|n| n.checked_add(byte_offset));
+        if end.is_none_or(|end| end > ab.byte_length()) {
+            let code = "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH";
+            return throw_range_error(s, code, "Invalid typed array length");
+        }
+        let (o, n) = (byte_offset, length);
+        let ta: Option<v8::Local<v8::Value>> = match type_ {
+            0 => v8::Int8Array::new(s, ab, o, n).map(Into::into),
+            1 => v8::Uint8Array::new(s, ab, o, n).map(Into::into),
+            2 => v8::Uint8ClampedArray::new(s, ab, o, n).map(Into::into),
+            3 => v8::Int16Array::new(s, ab, o, n).map(Into::into),
+            4 => v8::Uint16Array::new(s, ab, o, n).map(Into::into),
+            5 => v8::Int32Array::new(s, ab, o, n).map(Into::into),
+            6 => v8::Uint32Array::new(s, ab, o, n).map(Into::into),
+            7 => v8::Float32Array::new(s, ab, o, n).map(Into::into),
+            8 => v8::Float64Array::new(s, ab, o, n).map(Into::into),
+            9 => v8::BigInt64Array::new(s, ab, o, n).map(Into::into),
+            // (this V8 binding has no Float16Array -> Value `From`; the upcast is always valid)
+            11 => v8::Float16Array::new(s, ab, o, n).map(|t| v8::Local::cast_unchecked(t)),
+            _ => v8::BigUint64Array::new(s, ab, o, n).map(Into::into), // 10
+        };
+        put(out, ta.ok_or(napi_generic_failure)?);
+        Ok(())
+    })
+}
+
+/// Throw a RangeError carrying `code`, as Node's napi_throw_range_error, and fail the call with
+/// napi_generic_failure.
+unsafe fn throw_range_error(
+    s: &mut v8::PinScope<'static, 'static>,
+    code: &str,
+    msg: &str,
+) -> NapiResult {
+    let msg = v8::String::new(s, msg).ok_or(napi_generic_failure)?;
+    let code = v8::String::new(s, code).ok_or(napi_generic_failure)?;
+    let err = v8::Exception::range_error(s, msg);
+    set_error_code(s, err, code)?;
+    s.throw_exception(err);
+    Err(napi_generic_failure)
 }
 
 #[no_mangle]
@@ -572,14 +793,15 @@ pub unsafe extern "C" fn napi_create_external_arraybuffer(
     _hint: *mut c_void,
     out: *mut napi_value,
 ) -> napi_status {
-    // copy into a managed ArrayBuffer (we don't track external lifetime here)
-    let s = scope(env);
-    let ab = v8::ArrayBuffer::new(s, len);
-    if let Some(store) = ab.get_backing_store().data() {
-        std::ptr::copy_nonoverlapping(data as *const u8, store.as_ptr() as *mut u8, len);
-    }
-    put(out, ab.into());
-    napi_ok
+    js_call(env, |s| {
+        // copy into a managed ArrayBuffer (we don't track external lifetime here)
+        let ab = v8::ArrayBuffer::new(s, len);
+        if let Some(store) = ab.get_backing_store().data() {
+            std::ptr::copy_nonoverlapping(data as *const u8, store.as_ptr() as *mut u8, len);
+        }
+        put(out, ab.into());
+        Ok(())
+    })
 }
 
 // ---- buffers (Node `Buffer` == Uint8Array; addons returning bytes use these) ---
@@ -597,20 +819,21 @@ pub unsafe extern "C" fn napi_create_buffer(
     data: *mut *mut c_void,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let ab = v8::ArrayBuffer::new(s, len);
-    if !data.is_null() {
-        *data = ab
-            .get_backing_store()
-            .data()
-            .map(|p| p.as_ptr())
-            .unwrap_or(std::ptr::null_mut());
-    }
-    let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
-        .map(|t| t.into())
-        .unwrap_or_else(|| ab.into());
-    put(out, buf);
-    napi_ok
+    js_call(env, |s| {
+        let ab = v8::ArrayBuffer::new(s, len);
+        if !data.is_null() {
+            *data = ab
+                .get_backing_store()
+                .data()
+                .map(|p| p.as_ptr())
+                .unwrap_or(std::ptr::null_mut());
+        }
+        let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
+            .map(|t| t.into())
+            .unwrap_or_else(|| ab.into());
+        put(out, buf);
+        Ok(())
+    })
 }
 
 #[no_mangle]
@@ -621,23 +844,24 @@ pub unsafe extern "C" fn napi_create_buffer_copy(
     result_data: *mut *mut c_void,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let ab = v8::ArrayBuffer::new(s, len);
-    if let Some(store) = ab.get_backing_store().data() {
-        if !src.is_null() && len > 0 {
-            std::ptr::copy_nonoverlapping(src as *const u8, store.as_ptr() as *mut u8, len);
+    js_call(env, |s| {
+        let ab = v8::ArrayBuffer::new(s, len);
+        if let Some(store) = ab.get_backing_store().data() {
+            if !src.is_null() && len > 0 {
+                std::ptr::copy_nonoverlapping(src as *const u8, store.as_ptr() as *mut u8, len);
+            }
+            if !result_data.is_null() {
+                *result_data = store.as_ptr();
+            }
+        } else if !result_data.is_null() {
+            *result_data = std::ptr::null_mut();
         }
-        if !result_data.is_null() {
-            *result_data = store.as_ptr();
-        }
-    } else if !result_data.is_null() {
-        *result_data = std::ptr::null_mut();
-    }
-    let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
-        .map(|t| t.into())
-        .unwrap_or_else(|| ab.into());
-    put(out, buf);
-    napi_ok
+        let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
+            .map(|t| t.into())
+            .unwrap_or_else(|| ab.into());
+        put(out, buf);
+        Ok(())
+    })
 }
 
 #[no_mangle]
@@ -649,19 +873,20 @@ pub unsafe extern "C" fn napi_create_external_buffer(
     _hint: *mut c_void,
     out: *mut napi_value,
 ) -> napi_status {
-    // We don't track the external lifetime; copy into a managed buffer.
-    let s = scope(env);
-    let ab = v8::ArrayBuffer::new(s, len);
-    if let Some(store) = ab.get_backing_store().data() {
-        if !data.is_null() && len > 0 {
-            std::ptr::copy_nonoverlapping(data as *const u8, store.as_ptr() as *mut u8, len);
+    js_call(env, |s| {
+        // We don't track the external lifetime; copy into a managed buffer.
+        let ab = v8::ArrayBuffer::new(s, len);
+        if let Some(store) = ab.get_backing_store().data() {
+            if !data.is_null() && len > 0 {
+                std::ptr::copy_nonoverlapping(data as *const u8, store.as_ptr() as *mut u8, len);
+            }
         }
-    }
-    let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
-        .map(|t| t.into())
-        .unwrap_or_else(|| ab.into());
-    put(out, buf);
-    napi_ok
+        let buf: v8::Local<v8::Value> = v8::Uint8Array::new(s, ab, 0, len)
+            .map(|t| t.into())
+            .unwrap_or_else(|| ab.into());
+        put(out, buf);
+        Ok(())
+    })
 }
 
 #[no_mangle]
@@ -673,36 +898,24 @@ pub unsafe extern "C" fn napi_get_buffer_info(
 ) -> napi_status {
     let s = scope(env);
     let val = to_local(v);
-    // Accept any ArrayBufferView (Uint8Array Buffer) or a raw ArrayBuffer.
-    if let Ok(view) = TryInto::<v8::Local<v8::ArrayBufferView>>::try_into(val) {
-        let len = view.byte_length();
-        if !length.is_null() {
-            *length = len;
-        }
-        if !data.is_null() {
-            let off = view.byte_offset();
-            *data = view
-                .buffer(s)
-                .and_then(|b| b.get_backing_store().data())
-                .map(|p| (p.as_ptr() as *mut u8).add(off) as *mut c_void)
-                .unwrap_or(std::ptr::null_mut());
-        }
-        return napi_ok;
+    // As Node (node::Buffer::HasInstance): any ArrayBufferView (Buffer, Uint8Array, DataView,
+    // ...); anything else, a raw ArrayBuffer included, is napi_invalid_arg.
+    let Ok(view) = TryInto::<v8::Local<v8::ArrayBufferView>>::try_into(val) else {
+        return napi_invalid_arg;
+    };
+    let len = view.byte_length();
+    if !length.is_null() {
+        *length = len;
     }
-    if let Ok(ab) = TryInto::<v8::Local<v8::ArrayBuffer>>::try_into(val) {
-        if !length.is_null() {
-            *length = ab.byte_length();
-        }
-        if !data.is_null() {
-            *data = ab
-                .get_backing_store()
-                .data()
-                .map(|p| p.as_ptr())
-                .unwrap_or(std::ptr::null_mut());
-        }
-        return napi_ok;
+    if !data.is_null() {
+        let off = view.byte_offset();
+        *data = view
+            .buffer(s)
+            .and_then(|b| b.get_backing_store().data())
+            .map(|p| (p.as_ptr() as *mut u8).add(off) as *mut c_void)
+            .unwrap_or(std::ptr::null_mut());
     }
-    napi_invalid_arg
+    napi_ok
 }
 
 // ---- more value getters (bool/double/int64) -------------------------------
@@ -713,32 +926,42 @@ pub unsafe extern "C" fn napi_get_value_bool(
     v: napi_value,
     out: *mut bool,
 ) -> napi_status {
+    // as Node: only a JS boolean, no ToBoolean coercion
+    let Ok(b) = v8::Local::<v8::Boolean>::try_from(to_local(v)) else {
+        return napi_boolean_expected;
+    };
     if !out.is_null() {
-        *out = to_local(v).boolean_value(&mut *((*_env).scope as *mut v8::PinScope<'static, 'static>));
+        *out = b.is_true();
     }
     napi_ok
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_value_double(
-    env: napi_env,
+    _env: napi_env,
     v: napi_value,
     out: *mut f64,
 ) -> napi_status {
-    let s = scope(env);
+    let Some(n) = number_of(v) else {
+        return napi_number_expected;
+    };
     if !out.is_null() {
-        *out = to_local(v).number_value(s).unwrap_or(0.0);
+        *out = n;
     }
     napi_ok
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_value_int64(
-    env: napi_env,
+    _env: napi_env,
     v: napi_value,
     out: *mut i64,
 ) -> napi_status {
-    let s = scope(env);
+    let Some(n) = number_of(v) else {
+        return napi_number_expected;
+    };
     if !out.is_null() {
-        *out = to_local(v).number_value(s).unwrap_or(0.0) as i64;
+        // as Node: NaN and the infinities are 0; finite values truncate, saturating at the
+        // int64 range (V8's IntegerValue)
+        *out = if n.is_finite() { n as i64 } else { 0 };
     }
     napi_ok
 }
@@ -762,15 +985,13 @@ pub unsafe extern "C" fn napi_get_array_length(
     v: napi_value,
     out: *mut u32,
 ) -> napi_status {
-    let arr: v8::Local<v8::Array> = match to_local(v).try_into() {
-        Ok(a) => a,
-        Err(_) => return napi_invalid_arg,
-    };
-    let _ = env;
-    if !out.is_null() {
-        *out = arr.length();
-    }
-    napi_ok
+    js_call(env, |_| {
+        let arr: v8::Local<v8::Array> = to_local(v).try_into().map_err(|_| napi_array_expected)?;
+        if !out.is_null() {
+            *out = arr.length();
+        }
+        Ok(())
+    })
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_element(
@@ -779,18 +1000,11 @@ pub unsafe extern "C" fn napi_get_element(
     index: u32,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let o: v8::Local<v8::Object> = match to_local(obj).try_into() {
-        Ok(o) => o,
-        Err(_) => return napi_invalid_arg,
-    };
-    match o.get_index(s, index) {
-        Some(v) => {
-            put(out, v);
-            napi_ok
-        }
-        None => napi_generic_failure,
-    }
+    js_call(env, |s| {
+        let o = to_object(s, obj)?;
+        put(out, o.get_index(s, index).ok_or(napi_pending_exception)?);
+        Ok(())
+    })
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_property_names(
@@ -798,53 +1012,160 @@ pub unsafe extern "C" fn napi_get_property_names(
     obj: napi_value,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let o: v8::Local<v8::Object> = match to_local(obj).try_into() {
-        Ok(o) => o,
-        Err(_) => return napi_invalid_arg,
-    };
-    match o.get_own_property_names(s, v8::GetPropertyNamesArgs::default()) {
-        Some(names) => {
-            put(out, names.into());
-            napi_ok
-        }
-        None => napi_generic_failure,
-    }
+    js_call(env, |s| {
+        let o = to_object(s, obj)?;
+        // as Node: the for-in keys (prototype chain, enumerable, no symbols), indices as strings
+        let args = v8::GetPropertyNamesArgs {
+            mode: v8::KeyCollectionMode::IncludePrototypes,
+            property_filter: v8::PropertyFilter::ONLY_ENUMERABLE | v8::PropertyFilter::SKIP_SYMBOLS,
+            index_filter: v8::IndexFilter::IncludeIndices,
+            key_conversion: v8::KeyConversionMode::ConvertToString,
+        };
+        let names = o
+            .get_property_names(s, args)
+            .ok_or(napi_pending_exception)?;
+        put(out, names.into());
+        Ok(())
+    })
 }
 
-// ---- wrap / new_instance: not supported; surface as a CATCHABLE JS throw ----
-// Wrapping a native pointer on a JS object (napi_wrap/unwrap) and constructing a
-// native class instance (napi_new_instance) need lifecycle/finalizer machinery we
-// don't model. Rather than leave these UNEXPORTED (null pointer -> SIGSEGV when the
-// addon calls them), export them and throw a clear, catchable JS error so the
-// require() fails as a normal load-error and the rest of the run survives.
-unsafe fn throw_unsupported(env: napi_env, name: &str) -> napi_status {
-    let s = scope(env);
-    let msg = format!("turbo-test: N-API {name} is not implemented (native addon called an unsupported entrypoint)");
-    if let Some(m) = v8::String::new(s, &msg) {
-        let exc = v8::Exception::error(s, m);
-        s.throw_exception(exc);
-    }
-    napi_pending_exception
+// ---- wrap / unwrap / remove_wrap ---------------------------------------------
+
+/// The isolate-wide private key under which an object carries its wrap (as Node's
+/// `napi_wrapper` private symbol: every addon of an isolate sees the same wraps).
+fn wrap_key<'s>(s: &v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+    let name = v8::String::new(s, "turbo-test::napi_wrap");
+    v8::Private::for_api(s, name)
 }
+
+/// The object a wrap call targets: as Node, NULL or a non-object is napi_invalid_arg.
+unsafe fn wrap_target(v: napi_value) -> Result<v8::Local<'static, v8::Object>, napi_status> {
+    if v.is_null() {
+        return Err(napi_invalid_arg);
+    }
+    to_local(v).try_into().map_err(|_| napi_invalid_arg)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn napi_wrap(
     env: napi_env,
-    _js_object: napi_value,
-    _native_object: *mut c_void,
-    _finalize_cb: *mut c_void,
-    _finalize_hint: *mut c_void,
-    _result: *mut napi_ref,
+    js_object: napi_value,
+    native_object: *mut c_void,
+    finalize_cb: Option<napi_finalize>,
+    finalize_hint: *mut c_void,
+    result: *mut napi_ref,
 ) -> napi_status {
-    throw_unsupported(env, "napi_wrap")
+    js_call(env, |s| {
+        let obj = wrap_target(js_object)?;
+        let key = wrap_key(s);
+        // as Node: an object carries one wrap; a result reference needs a finalizer (it is to
+        // be deleted from the finalizer)
+        if obj.has_private(s, key) == Some(true) || (!result.is_null() && finalize_cb.is_none()) {
+            return Err(napi_invalid_arg);
+        }
+        let e = &mut *env;
+        let id = e.next_wrap;
+        e.next_wrap += 1;
+        let wrap = Box::into_raw(Box::new(Wrap {
+            env,
+            id,
+            native: native_object,
+            finalize: finalize_cb,
+            hint: finalize_hint,
+            weak: None,
+        }));
+        let on_gc = Box::new(move |isolate: &mut v8::Isolate| wrap_collected(isolate, wrap));
+        (*wrap).weak = Some(v8::Weak::with_finalizer(s, obj, on_gc));
+        e.wraps.insert(id, wrap);
+        obj.set_private(s, key, v8::External::new(s, wrap as *mut c_void).into());
+        if !result.is_null() {
+            let weak = v8::Weak::new(s, v8::Local::<v8::Value>::from(obj));
+            *result = new_ref(e, Ref::Weak(weak));
+        }
+        Ok(())
+    })
 }
+
+/// GC finalizer of a wrapped object: the record leaves its env and its finalizer runs in a fresh
+/// handle scope of the env's context (V8 calls this after the collection, where napi calls are
+/// allowed).
+fn wrap_collected(isolate: &mut v8::Isolate, wrap: *mut Wrap) {
+    unsafe {
+        let wrap = Box::from_raw(wrap);
+        let env = wrap.env;
+        (*env).wraps.remove(&wrap.id);
+        v8::scope!(let hs, isolate);
+        let context = v8::Local::new(hs, &(*env).context);
+        let cs: &mut v8::PinScope = &mut v8::ContextScope::new(hs, context);
+        let here = cs as *mut v8::PinScope as *mut c_void;
+        let outer = std::mem::replace(&mut (*env).scope, here);
+        finalize_wrap(env, &wrap);
+        (*env).scope = outer;
+    }
+}
+
+/// napi_unwrap (`remove` false) and napi_remove_wrap (`remove` true), as Node's v8impl::Unwrap:
+/// the wrapped pointer, and for remove_wrap the wrap is dropped without running its finalizer.
+unsafe fn unwrap(
+    env: napi_env,
+    js_object: napi_value,
+    result: *mut *mut c_void,
+    remove: bool,
+) -> napi_status {
+    js_call(env, |s| {
+        // napi_unwrap needs `result`; napi_remove_wrap may discard the pointer
+        if !remove && result.is_null() {
+            return Err(napi_invalid_arg);
+        }
+        let obj = wrap_target(js_object)?;
+        let key = wrap_key(s);
+        let held = obj.get_private(s, key).ok_or(napi_pending_exception)?;
+        let ext: v8::Local<v8::External> = held.try_into().map_err(|_| napi_invalid_arg)?;
+        let wrap = ext.value() as *mut Wrap;
+        if !result.is_null() {
+            *result = (*wrap).native;
+        }
+        if remove {
+            obj.delete_private(s, key);
+            (*(*wrap).env).wraps.remove(&(*wrap).id);
+            drop(Box::from_raw(wrap));
+        }
+        Ok(())
+    })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn napi_unwrap(
     env: napi_env,
-    _js_object: napi_value,
-    _result: *mut *mut c_void,
+    js_object: napi_value,
+    result: *mut *mut c_void,
 ) -> napi_status {
-    throw_unsupported(env, "napi_unwrap")
+    unwrap(env, js_object, result, false)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn napi_remove_wrap(
+    env: napi_env,
+    js_object: napi_value,
+    result: *mut *mut c_void,
+) -> napi_status {
+    unwrap(env, js_object, result, true)
+}
+
+// ---- new_instance: not supported; surface as a CATCHABLE JS throw ----------
+// Constructing a native class instance (napi_new_instance) is not modelled. Rather than leave it
+// UNEXPORTED (null pointer -> SIGSEGV when the addon calls it), export it and throw a clear,
+// catchable JS error so the require() fails as a normal load-error and the rest of the run
+// survives.
+unsafe fn throw_unsupported(env: napi_env, name: &str) -> napi_status {
+    js_call(env, |s| {
+        let msg = format!("turbo-test: N-API {name} is not implemented (native addon called an unsupported entrypoint)");
+        if let Some(m) = v8::String::new(s, &msg) {
+            let exc = v8::Exception::error(s, m);
+            s.throw_exception(exc);
+        }
+        Err(napi_pending_exception)
+    })
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_new_instance(
@@ -861,38 +1182,65 @@ pub unsafe extern "C" fn napi_new_instance(
 
 #[no_mangle]
 pub unsafe extern "C" fn napi_throw(env: napi_env, error: napi_value) -> napi_status {
-    let s = scope(env);
-    s.throw_exception(to_local(error));
-    napi_ok
+    js_call(env, |s| {
+        s.throw_exception(to_local(error));
+        Ok(())
+    })
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_throw_error(
     env: napi_env,
-    _code: *const c_char,
+    code: *const c_char,
     msg: *const c_char,
 ) -> napi_status {
-    let s = scope(env);
-    let m = std::ffi::CStr::from_ptr(msg).to_string_lossy();
-    let ms = v8::String::new(s, &m).unwrap();
-    let exc = v8::Exception::error(s, ms);
-    s.throw_exception(exc);
-    napi_ok
+    js_call(env, |s| {
+        let m = std::ffi::CStr::from_ptr(msg).to_string_lossy();
+        let ms = v8::String::new(s, &m).ok_or(napi_generic_failure)?;
+        let exc = v8::Exception::error(s, ms);
+        if !code.is_null() {
+            let code = std::ffi::CStr::from_ptr(code).to_string_lossy();
+            let code = v8::String::new(s, &code).ok_or(napi_generic_failure)?;
+            set_error_code(s, exc, code)?;
+        }
+        s.throw_exception(exc);
+        Ok(())
+    })
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_create_error(
     env: napi_env,
-    _code: napi_value,
+    code: napi_value,
     msg: napi_value,
     out: *mut napi_value,
 ) -> napi_status {
-    let s = scope(env);
-    let ms: v8::Local<v8::String> = match to_local(msg).try_into() {
-        Ok(m) => m,
-        Err(_) => return napi_invalid_arg,
-    };
-    let exc = v8::Exception::error(s, ms);
-    put(out, exc);
-    napi_ok
+    // No NAPI_PREAMBLE in Node, but setting `code` can run JS (a setter): park what it throws.
+    catching(env, |s| {
+        let ms: v8::Local<v8::String> =
+            to_local(msg).try_into().map_err(|_| napi_string_expected)?;
+        let exc = v8::Exception::error(s, ms);
+        if !code.is_null() {
+            let code: v8::Local<v8::String> = to_local(code)
+                .try_into()
+                .map_err(|_| napi_string_expected)?;
+            set_error_code(s, exc, code)?;
+        }
+        put(out, exc);
+        Ok(())
+    })
+}
+
+/// `err.code = code`, as Node's set_error_code for napi_throw_error / napi_create_error: a
+/// failed (throwing) Set is napi_generic_failure.
+unsafe fn set_error_code(
+    s: &mut v8::PinScope<'static, 'static>,
+    err: v8::Local<v8::Value>,
+    code: v8::Local<v8::String>,
+) -> NapiResult {
+    let err: v8::Local<v8::Object> = err.try_into().map_err(|_| napi_generic_failure)?;
+    let key = v8::String::new(s, "code").ok_or(napi_generic_failure)?;
+    err.set(s, key.into(), code.into())
+        .ok_or(napi_generic_failure)?;
+    Ok(())
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_is_error(
@@ -944,13 +1292,17 @@ pub unsafe extern "C" fn napi_create_reference(
 ) -> napi_status {
     let s = scope(env);
     let g = v8::Global::new(s, to_local(v));
-    let e = &mut *env;
-    e.refs.push(Some(g));
-    let id = e.refs.len();
+    let r = new_ref(&mut *env, Ref::Strong(g));
     if !out.is_null() {
-        *out = id as napi_ref;
+        *out = r;
     }
     napi_ok
+}
+
+/// Store `r` on the env: its napi_ref is its 1-based id.
+fn new_ref(e: &mut Env, r: Ref) -> napi_ref {
+    e.refs.push(Some(r));
+    e.refs.len() as napi_ref
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_get_reference_value(
@@ -964,17 +1316,26 @@ pub unsafe extern "C" fn napi_get_reference_value(
     if id == 0 || id > e.refs.len() {
         return napi_invalid_arg;
     }
-    match e.refs[id - 1].as_ref() {
-        Some(g) => put(out, v8::Local::new(s, g)),
-        None => put(out, v8::undefined(s).into()),
+    let value = match e.refs[id - 1].as_ref() {
+        Some(Ref::Strong(g)) => Some(v8::Local::new(s, g)),
+        // as Node: a weak reference whose value was collected yields NULL
+        Some(Ref::Weak(w)) => w.to_local(s),
+        None => Some(v8::undefined(s).into()),
+    };
+    if !out.is_null() {
+        *out = value.map_or(std::ptr::null_mut(), |v| to_napi(v));
     }
     napi_ok
 }
 #[no_mangle]
 pub unsafe extern "C" fn napi_delete_reference(env: napi_env, r: napi_ref) -> napi_status {
+    // as Node (CHECK_ARG(env, ref)): a NULL reference is napi_invalid_arg
+    if r.is_null() {
+        return napi_invalid_arg;
+    }
     let e = &mut *env;
     let id = r as usize;
-    if id >= 1 && id <= e.refs.len() {
+    if id <= e.refs.len() {
         e.refs[id - 1] = None;
     }
     napi_ok
@@ -1075,45 +1436,39 @@ pub fn load_addon(
 
         let isolate = std::ptr::null_mut();
         let context = v8::Global::new(scope_ref, scope_ref.get_current_context());
-        let env = Box::new(Env {
+        let env_ptr: napi_env = Box::into_raw(Box::new(Env {
             isolate,
             scope: scope_ref as *mut v8::PinScope as *mut c_void,
-            context: Some(context),
+            context,
             last_exception: None,
             fns: Vec::new(),
             refs: Vec::new(),
-        });
-        ENV.with(|e| *e.borrow_mut() = Some(env));
+            wraps: Default::default(),
+            next_wrap: 0,
+        }));
+        // The isolate owns the env from here on (freed with it, like the functions using it).
+        match scope_ref.get_slot_mut::<AddonEnvs>() {
+            Some(envs) => envs.0.push(env_ptr),
+            None => {
+                scope_ref.set_slot(AddonEnvs(vec![env_ptr]));
+            }
+        }
 
         let exports = v8::Object::new(scope_ref);
         // The addon's module init runs arbitrary native code. Guard it two ways:
-        //  - A TryCatch captures any JS exception it throws (e.g. an unsupported N-API call we
-        //    route through throw_unsupported) so it surfaces as a clean require() failure.
-        //  - catch_unwind turns a Rust panic crossing the `extern "C"` FFI boundary (which is UB
+        //  - A JS exception it leaves pending (napi_throw_*, an unsupported N-API call we route
+        //    through throw_unsupported, a throwing JS call) surfaces as a clean require() failure.
+        //  - call_addon turns a Rust panic crossing the `extern "C"` FFI boundary (which is UB
         //    and can abort/segfault, taking the whole run down with no diagnostic) into a
         //    recoverable Err -> a thrown JS error in the loader. The rest of the run survives.
+        // call_addon also holds the addon lock, as for every other entry into addon code: two
+        // workers loading the same library must not run its init at once (a require() from
+        // inside a native callback or another addon's init is a same-thread re-entry).
         let exports_napi = to_napi(exports.into());
-        let tc = std::pin::pin!(v8::TryCatch::new(scope_ref));
-        let tc = &mut tc.init();
-        // napi value calls deref env.scope as *mut PinScope; a TryCatch derefs to the underlying
-        // scope, so hand the addon that pointer (valid for the duration of register()).
-        let scope_addr =
-            (&mut **tc) as *mut v8::PinScope as *mut c_void;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            ENV.with(|e| {
-                let mut b = e.borrow_mut();
-                let env = b.as_mut().unwrap();
-                env.scope = scope_addr;
-                let env_ptr: napi_env = env.as_mut() as *mut Env;
-                register(env_ptr, exports_napi)
-            })
-        }));
+        let result = call_addon(|| register(env_ptr, exports_napi));
         let result = init_outcome(result, path)?;
-        if tc.has_caught() {
-            let msg = tc
-                .exception()
-                .map(|e| e.to_rust_string_lossy(tc))
-                .unwrap_or_else(|| "exception during module init".into());
+        if let Some(exc) = (*env_ptr).last_exception.take() {
+            let msg = v8::Local::new(scope_ref, &exc).to_rust_string_lossy(scope_ref);
             return Err(format!("native addon threw during module init: {msg}"));
         }
         let ret_local = if result.is_null() {
@@ -1123,7 +1478,7 @@ pub fn load_addon(
         };
         // keep the lib loaded for the process lifetime
         std::mem::forget(lib);
-        Ok(v8::Global::new(tc, ret_local))
+        Ok(v8::Global::new(scope_ref, ret_local))
     }
 }
 

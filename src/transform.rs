@@ -21,6 +21,19 @@ pub fn needs_transform(path: &Path) -> bool {
     )
 }
 
+/// The `Scoping` oxc's `Transformer` must be given: a semantic pass WITH TS enum member
+/// evaluation. oxc's enum lowering reads the pre-computed member values from `Scoping`; without
+/// `with_enum_eval(true)` it debug-asserts (debug builds) or, in release, treats every member
+/// initializer as non-constant — so `enum E { A = 'a', B = A }` got a bogus reverse mapping
+/// (`E[E["B"] = E.A] = "B"`) instead of tsc's `E["B"] = "a"`.
+pub(crate) fn semantic_scoping(program: &oxc_ast::ast::Program) -> oxc_semantic::Scoping {
+    SemanticBuilder::new()
+        .with_enum_eval(true)
+        .build(program)
+        .semantic
+        .into_scoping()
+}
+
 /// Transform a TS/JSX source file to plain JS. Returns generated code.
 pub fn transform(path: &Path, src: &str) -> Result<String, String> {
     transform_with(path, src, false)
@@ -47,7 +60,7 @@ pub fn transform_with(path: &Path, src: &str, legacy_decorators: bool) -> Result
     let mut program = parsed.program;
 
     // semantic pass produces the scoping the transformer needs for correct renaming
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic_scoping(&program);
 
     let mut options = TransformOptions::default();
     if legacy_decorators {
@@ -83,7 +96,7 @@ pub fn transform_decorators_with_metadata(path: &Path, src: &str) -> Result<Stri
         return Err(format!("parse errors: {:?}", parsed.errors));
     }
     let mut program = parsed.program;
-    let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+    let scoping = semantic_scoping(&program);
 
     let mut options = TransformOptions::default();
     // oxc 0.134's CommonJS module transform is a no-op, so we leave imports as ESM and let a

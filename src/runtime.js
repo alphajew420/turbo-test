@@ -231,12 +231,33 @@ function __installVirtualDate() {
 function __restoreDate() { __installVirtualDate(); }
 __installVirtualDate();
 
-// await any async mock-factory results before the native loader drains them; drop rejected
+// A vi.mock/doMock factory that threw (or rejected): the module is registered as this stand-in,
+// and importing it throws the factory's error (vitest wraps it, with the cause; jest rethrows it
+// as is) instead of silently falling back to the real module. The native loader asks
+// __ttMockFactoryError(exports) on each import of a mocked path; any other access to the
+// stand-in throws the same error.
+const __ttMockErrors = new WeakMap();
+function __ttFactoryErrorMock(e, vitest) {
+  const err = vitest
+    ? new Error('[vitest] There was an error when mocking a module. If you are using "vi.mock" factory, '
+      + 'make sure there are no top level variables inside, since this call is hoisted to top of the file. '
+      + 'Read more: https://vitest.dev/api/vi.html#vi-mock Caused by: ' + String(e), { cause: e })
+    : e;
+  const stand = new Proxy({}, { get: (t, k) => { if (typeof k === 'symbol' || k === 'then') return undefined; throw err; } });
+  __ttMockErrors.set(stand, err);
+  return stand;
+}
+globalThis.__ttFactoryErrorMock = __ttFactoryErrorMock;
+globalThis.__ttMockFactoryError = (m) => __ttMockErrors.get(m);
+
+// await any async mock-factory results before the native loader drains them; a rejected factory
+// registers the error stand-in
 globalThis.__resolvePendingMocks = async () => {
   const list = globalThis.__pendingMocks || [];
   for (const m of list) {
     if (m.exports && typeof m.exports.then === 'function') {
-      try { m.exports = await m.exports; } catch (e) { m.exports = undefined; }
+      try { m.exports = __ttStrictMock(await m.exports, m.key, m.spec); }
+      catch (e) { m.exports = __ttFactoryErrorMock(e, m.vitest !== false); }
     }
   }
 };
@@ -350,8 +371,8 @@ if (typeof globalThis.URL === 'undefined') {
   globalThis.URL = class URL {
     constructor(url, base) {
       url = String(url);
-      if (base && !/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
-        url = String(base).replace(/\/+$/, '') + '/' + url.replace(/^\/+/, '');
+      if (base !== undefined && !/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+        url = URL._resolve(url, new globalThis.URL(String(base)));
       }
       // Real URL throws on input without a valid scheme (e.g. "not a url"). Matching this is
       // required for validators built on `new URL()` (e.g. zod's .url()).
@@ -369,7 +390,7 @@ if (typeof globalThis.URL === 'undefined') {
         this.host = m[2] || '';
         this.hostname = (m[2] || '').split(':')[0];
         this.port = (m[2] || '').split(':')[1] || '';
-        this.pathname = m[3] || '/';
+        this.pathname = URL._removeDots(m[3] || '/');
         searchStr = m[4] || '';
         this.hash = m[5] || '';
         this.origin = this.protocol + '//' + this.host;
@@ -401,6 +422,42 @@ if (typeof globalThis.URL === 'undefined') {
     }
     set href(v) { const u = new globalThis.URL(v); this.protocol = u.protocol; this.host = u.host; this.hostname = u.hostname; this.port = u.port; this.pathname = u.pathname; this.hash = u.hash; this.origin = u.origin; this._hierarchical = u._hierarchical; this._sp = u._sp; }
     toString() { return this.href; }
+    // WHATWG relative-reference resolution against a parsed base (Node's `new URL(rel, base)`):
+    // scheme-relative `//h/p`, absolute path `/p`, query-only `?q`, fragment-only `#f`, empty,
+    // and a relative path merged with the base path's directory. Dot segments are removed by
+    // the caller's pathname normalization. An opaque base (`mailto:x`) only takes a fragment.
+    static _resolve(rel, b) {
+      const auth = b.protocol + '//' + b.host;
+      const noHash = b.href.replace(/#.*$/, '');
+      if (!b._hierarchical) {
+        if (rel.startsWith('#')) return noHash + rel;
+        throw new TypeError('Invalid URL: ' + rel);
+      }
+      if (rel.startsWith('//')) return b.protocol + rel;
+      if (rel.startsWith('/')) return auth + rel;
+      if (rel === '') return noHash;
+      if (rel.startsWith('#')) return noHash + rel;
+      if (rel.startsWith('?')) return auth + b.pathname + rel;
+      return auth + b.pathname.replace(/[^/]*$/, '') + rel;
+    }
+    // RFC 3986 / WHATWG dot-segment removal on a path (`/a/./b/../c` -> `/a/c`).
+    static _removeDots(path) {
+      const out = [];
+      const segs = path.split('/');
+      for (let i = 1; i < segs.length; i++) {
+        const seg = segs[i];
+        const last = i === segs.length - 1;
+        if (seg === '..' || seg.toLowerCase() === '%2e%2e') {
+          if (out.length) out.pop();
+          if (last) out.push('');
+        } else if (seg === '.' || seg.toLowerCase() === '%2e') {
+          if (last) out.push('');
+        } else {
+          out.push(seg);
+        }
+      }
+      return '/' + out.join('/');
+    }
     static createObjectURL() { return 'blob:mock'; }
     static revokeObjectURL() {}
     static parse(url, base) { try { return new globalThis.URL(url, base); } catch { return null; } }
@@ -1088,7 +1145,9 @@ const __fs = {
   existsSync: (p) => globalThis.__fs_existsSync(String(p)),
   readFileSync: (p, enc) => globalThis.__fs_readFileSync(String(p), enc ? String(typeof enc === 'string' ? enc : enc.encoding || 'utf8') : ''),
   writeFileSync: (p, data) => globalThis.__fs_writeFileSync(String(p), data == null ? '' : (typeof data === 'string' ? data : String(data))),
-  appendFileSync: (p, data) => globalThis.__fs_writeFileSync(String(p), (globalThis.__fs_existsSync(String(p)) ? globalThis.__fs_readFileSync(String(p), 'utf8') : '') + (data == null ? '' : String(data))),
+  // a real append (O_APPEND on the Rust side), not read + rewrite: parallel workers appending to
+  // one file would otherwise overwrite each other's lines.
+  appendFileSync: (p, data) => globalThis.__fs_appendFileSync(String(p), data == null ? '' : (typeof data === 'string' ? data : String(data))),
   mkdirSync: (p) => globalThis.__fs_mkdirSync(String(p)),
   rmSync: (p) => globalThis.__fs_rmSync(String(p)),
   rmdirSync: (p) => globalThis.__fs_rmSync(String(p)),
@@ -1098,6 +1157,7 @@ const __fs = {
   promises: {
     readFile: (p, enc) => Promise.resolve(globalThis.__fs_readFileSync(String(p), enc ? 'utf8' : '')),
     writeFile: (p, data) => { globalThis.__fs_writeFileSync(String(p), data == null ? '' : String(data)); return Promise.resolve(); },
+    appendFile: (p, data) => { try { __fs.appendFileSync(p, data); return Promise.resolve(); } catch (e) { return Promise.reject(e); } },
     mkdir: (p) => { globalThis.__fs_mkdirSync(String(p)); return Promise.resolve(); },
     rm: (p) => { globalThis.__fs_rmSync(String(p)); return Promise.resolve(); },
     readdir: (p) => Promise.resolve(globalThis.__fs_readdirSync(String(p))),
@@ -1208,6 +1268,430 @@ const __util = {
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
 };
+// ---- querystring (Node's legacy API, per its docs; verified against Node's results) ----
+const __qsUnescape = (s) => {
+  try { return decodeURIComponent(s); } catch (e) {
+    // malformed %-sequences: decode the valid %XX bytes, keep the rest, then UTF-8 decode
+    const bytes = [];
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c === 37 && /^[0-9a-fA-F]{2}$/.test(s.substr(i + 1, 2))) { bytes.push(parseInt(s.substr(i + 1, 2), 16)); i += 2; }
+      else if (c < 0x80) bytes.push(c);
+      else for (const b of new globalThis.TextEncoder().encode(s[i])) bytes.push(b);
+    }
+    return __utf8Decode(bytes);
+  }
+};
+const __qsPrim = (v) => {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' && isFinite(v)) return '' + v;
+  if (typeof v === 'bigint') return '' + v;
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  return '';
+};
+const __querystring = {
+  unescape: __qsUnescape,
+  escape: (s) => encodeURIComponent(typeof s === 'string' ? s : String(s)),
+  stringify(obj, sep, eq, options) {
+    sep = sep || '&'; eq = eq || '=';
+    const enc = (options && typeof options.encodeURIComponent === 'function') ? options.encodeURIComponent : __querystring.escape;
+    if (obj === null || typeof obj !== 'object') return '';
+    const out = [];
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      const ks = enc(__qsPrim(k)) + eq;
+      if (Array.isArray(v)) { for (const x of v) out.push(ks + enc(__qsPrim(x))); }
+      else out.push(ks + enc(__qsPrim(v)));
+    }
+    return out.join(sep);
+  },
+  parse(qs, sep, eq, options) {
+    const obj = Object.create(null);
+    if (typeof qs !== 'string' || qs.length === 0) return obj;
+    sep = sep || '&'; eq = eq || '=';
+    const maxKeys = options && typeof options.maxKeys === 'number' ? options.maxKeys : 1000;
+    const dec = (options && typeof options.decodeURIComponent === 'function') ? options.decodeURIComponent : __querystring.unescape;
+    let parts = qs.split(sep);
+    if (maxKeys > 0 && parts.length > maxKeys) parts = parts.slice(0, maxKeys);
+    for (const part of parts) {
+      if (part.length === 0) continue;
+      const i = part.indexOf(eq);
+      const k = dec((i >= 0 ? part.slice(0, i) : part).replace(/\+/g, ' '));
+      const v = i >= 0 ? dec(part.slice(i + eq.length).replace(/\+/g, ' ')) : '';
+      if (!(k in obj)) obj[k] = v;
+      else if (Array.isArray(obj[k])) obj[k].push(v);
+      else obj[k] = [obj[k], v];
+    }
+    return obj;
+  },
+};
+__querystring.decode = __querystring.parse;
+__querystring.encode = __querystring.stringify;
+// WHATWG UTF-8 decode (one U+FFFD per maximal invalid subpart, like Node's Buffer#toString)
+function __utf8Decode(b, start, end) {
+  let s = '';
+  let i = start || 0;
+  end = end === undefined ? b.length : end;
+  while (i < end) {
+    const c = b[i];
+    if (c < 0x80) { s += String.fromCharCode(c); i++; continue; }
+    let need = 0, cp = 0, lo = 0x80, hi = 0xbf;
+    if (c >= 0xc2 && c <= 0xdf) { need = 1; cp = c & 0x1f; }
+    else if (c >= 0xe0 && c <= 0xef) { need = 2; cp = c & 0xf; if (c === 0xe0) lo = 0xa0; if (c === 0xed) hi = 0x9f; }
+    else if (c >= 0xf0 && c <= 0xf4) { need = 3; cp = c & 0x7; if (c === 0xf0) lo = 0x90; if (c === 0xf4) hi = 0x8f; }
+    else { s += '\ufffd'; i++; continue; }
+    let j = i + 1, k = 0;
+    for (; k < need && j < end; k++, j++) {
+      const x = b[j];
+      if (x < lo || x > hi) break;
+      lo = 0x80; hi = 0xbf;
+      cp = (cp << 6) | (x & 0x3f);
+    }
+    s += k < need ? '\ufffd' : String.fromCodePoint(cp);
+    i = j;
+  }
+  return s;
+}
+// Length of the incomplete-but-valid UTF-8 sequence at the end of b (0 if none).
+function __utf8Tail(b) {
+  for (let back = 1; back <= 3 && back <= b.length; back++) {
+    const c = b[b.length - back];
+    if ((c & 0xc0) === 0x80) continue; // continuation byte: keep looking for the lead
+    const need = c >= 0xc2 && c <= 0xdf ? 1 : c >= 0xe0 && c <= 0xef ? 2 : c >= 0xf0 && c <= 0xf4 ? 3 : 0;
+    return need >= back ? back : 0;
+  }
+  return 0;
+}
+const __sdEncodings = { utf8: 'utf8', 'utf-8': 'utf8', utf16le: 'utf16le', 'utf-16le': 'utf16le', ucs2: 'utf16le', 'ucs-2': 'utf16le', latin1: 'latin1', binary: 'latin1', ascii: 'ascii', hex: 'hex', base64: 'base64', base64url: 'base64url' };
+class __StringDecoder {
+  constructor(encoding) {
+    const enc = encoding == null ? 'utf8' : __sdEncodings[String(encoding).toLowerCase()];
+    if (!enc) { const e = new TypeError('Unknown encoding: ' + encoding); e.code = 'ERR_UNKNOWN_ENCODING'; throw e; }
+    this.encoding = enc;
+    this._rest = new Uint8Array(0);
+  }
+  _bytes(buf) {
+    const b = typeof buf === 'string' ? new globalThis.TextEncoder().encode(buf) : buf instanceof Uint8Array ? buf : ArrayBuffer.isView(buf) ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) : new Uint8Array(0);
+    if (!this._rest.length) return b;
+    const all = new Uint8Array(this._rest.length + b.length);
+    all.set(this._rest); all.set(b, this._rest.length);
+    return all;
+  }
+  _decode(b, final) {
+    switch (this.encoding) {
+      case 'utf8': {
+        const keep = final ? 0 : __utf8Tail(b);
+        this._rest = b.slice(b.length - keep);
+        return __utf8Decode(b, 0, b.length - keep);
+      }
+      case 'utf16le': {
+        let n = b.length - (b.length % 2);
+        if (!final && n >= 2) { const last = b[n - 2] | (b[n - 1] << 8); if (last >= 0xd800 && last <= 0xdbff) n -= 2; }
+        this._rest = final ? new Uint8Array(0) : b.slice(n);
+        let s = '';
+        for (let i = 0; i < n; i += 2) s += String.fromCharCode(b[i] | (b[i + 1] << 8));
+        return s;
+      }
+      case 'base64':
+      case 'base64url': {
+        const n = final ? b.length : b.length - (b.length % 3);
+        this._rest = b.slice(n);
+        let bin = '';
+        for (let i = 0; i < n; i++) bin += String.fromCharCode(b[i]);
+        const s = n ? globalThis.btoa(bin) : '';
+        return this.encoding === 'base64' ? s : s.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      }
+      default: {
+        this._rest = new Uint8Array(0);
+        let s = '';
+        for (const c of b) s += this.encoding === 'hex' ? c.toString(16).padStart(2, '0') : String.fromCharCode(this.encoding === 'ascii' ? c & 0x7f : c);
+        return s;
+      }
+    }
+  }
+  write(buf) { return this._decode(this._bytes(buf), false); }
+  end(buf) { const s = this._decode(this._bytes(buf === undefined ? new Uint8Array(0) : buf), true); this._rest = new Uint8Array(0); return s; }
+}
+// ---- assert / assert/strict ----
+function __fmtv(v) { try { return typeof v === 'string' ? JSON.stringify(v) : typeof v === 'bigint' ? v + 'n' : (v && typeof v === 'object') ? JSON.stringify(v) : String(v); } catch (e) { return String(v); } }
+function __deepEq(a, b, strict, seen) {
+  if (a === b) return a !== 0 || !strict || Object.is(a, b);
+  if (a === null || typeof a !== 'object' || b === null || typeof b !== 'object') {
+    if ((a === null || typeof a !== 'object') && (b === null || typeof b !== 'object')) return strict ? Object.is(a, b) : (a == b || (a !== a && b !== b));
+    return false;
+  }
+  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+  const tag = Object.prototype.toString.call(a);
+  if (tag !== Object.prototype.toString.call(b)) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  seen = seen || new Map();
+  const memo = seen.get(a);
+  if (memo && memo.has(b)) return true;
+  if (memo) memo.add(b); else seen.set(a, new Set([b]));
+  if (a instanceof Date) { if (a.getTime() !== b.getTime()) return false; }
+  else if (a instanceof RegExp) { if (a.source !== b.source || a.flags !== b.flags || a.lastIndex !== b.lastIndex) return false; }
+  else if (a instanceof Error) { if (a.message !== b.message || a.name !== b.name) return false; }
+  else if (ArrayBuffer.isView(a)) {
+    if (a.length !== b.length || a.byteLength !== b.byteLength) return false;
+    for (let i = 0; i < a.length; i++) if (strict ? !Object.is(a[i], b[i]) : a[i] != b[i]) return false;
+  } else if (tag === '[object Number]' || tag === '[object String]' || tag === '[object Boolean]' || tag === '[object BigInt]' || tag === '[object Symbol]') {
+    if (!Object.is(a.valueOf(), b.valueOf())) return false;
+  }
+  if (a instanceof Map) {
+    if (a.size !== b.size) return false;
+    for (const [k, v] of a) {
+      if (b.has(k)) { if (!__deepEq(v, b.get(k), strict, seen)) return false; continue; }
+      // an object key (or, loosely, a primitive one) can still match a deep-equal key
+      if (strict && (k === null || typeof k !== 'object')) return false;
+      let hit = false;
+      for (const [k2, v2] of b) if (__deepEq(k, k2, strict, seen) && __deepEq(v, v2, strict, seen)) { hit = true; break; }
+      if (!hit) return false;
+    }
+  } else if (a instanceof Set) {
+    if (a.size !== b.size) return false;
+    for (const v of a) {
+      if (b.has(v)) continue;
+      if (strict && (v === null || typeof v !== 'object')) return false;
+      let hit = false;
+      for (const v2 of b) if (__deepEq(v, v2, strict, seen)) { hit = true; break; }
+      if (!hit) return false;
+    }
+  }
+  const own = (o) => { const ks = Object.keys(o); if (strict) for (const s of Object.getOwnPropertySymbols(o)) if (Object.prototype.propertyIsEnumerable.call(o, s)) ks.push(s); return ks; };
+  const ka = own(a), kb = own(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (!Object.prototype.propertyIsEnumerable.call(b, k)) return false;
+    if (!__deepEq(a[k], b[k], strict, seen)) return false;
+  }
+  return true;
+}
+class __AssertionError extends Error {
+  constructor(options) {
+    options = options || {};
+    super(options.message != null ? String(options.message) : 'Failed');
+    this.name = 'AssertionError';
+    this.code = 'ERR_ASSERTION';
+    this.actual = options.actual;
+    this.expected = options.expected;
+    this.operator = options.operator;
+    this.generatedMessage = options.message == null;
+  }
+}
+function __mkAssert(strict) {
+  const fail = (actual, expected, message, operator, generated) => {
+    if (message instanceof Error) throw message;
+    throw new __AssertionError({ actual, expected, operator, message: message != null ? message : generated });
+  };
+  const okFn = (...args) => {
+    if (args.length === 0) throw new __AssertionError({ message: 'No value argument passed to `assert.ok()`', operator: '==' });
+    if (!args[0]) fail(args[0], true, args[1], '==', 'The expression evaluated to a falsy value:\n\n  assert.ok(' + __fmtv(args[0]) + ')\n');
+  };
+  const looseEq = (a, b) => a == b || (a !== a && b !== b);
+  // error validation for throws/rejects: a class, a RegExp, a validation function or an object
+  const matches = (err, expected, message, operator) => {
+    if (expected === undefined) return;
+    if (typeof expected === 'function') {
+      if (expected.prototype !== undefined && err instanceof expected) return;
+      if (Error.isPrototypeOf(expected) || expected === Error) fail(err, expected, message, operator, 'The error is expected to be an instance of "' + expected.name + '". Received "' + (err && err.constructor && err.constructor.name) + '"');
+      const res = expected.call({}, err);
+      if (res !== true) fail(err, expected, message, operator, 'The validation function is expected to return "true". Received ' + __fmtv(res));
+      return;
+    }
+    if (expected instanceof RegExp) { if (expected.test(String(err))) return; fail(err, expected, message, operator, 'The input did not match the regular expression ' + String(expected) + '. Input:\n\n' + __fmtv(String(err)) + '\n'); }
+    if (expected && typeof expected === 'object') {
+      for (const k of Object.keys(expected)) {
+        const want = expected[k], got = err == null ? undefined : err[k];
+        const ok = want instanceof RegExp && typeof got === 'string' ? want.test(got) : __deepEq(got, want, true);
+        if (!ok) fail(err, expected, message, operator, 'Expected values to be strictly deep-equal: ' + k + ' ' + __fmtv(got) + ' !== ' + __fmtv(want));
+      }
+    }
+  };
+  // doesNotThrow / doesNotReject: an error that does not match `expected` propagates as is
+  const unwanted = (e, expected, message, operator, what) => {
+    if (expected !== undefined) {
+      if (typeof expected !== 'function' && !(expected instanceof RegExp)) { const t = new TypeError('The "expected" argument must be of type function or an instance of RegExp'); t.code = 'ERR_INVALID_ARG_TYPE'; throw t; }
+      const hit = expected instanceof RegExp ? expected.test(String(e)) : (expected.prototype !== undefined && e instanceof expected) || (!Error.isPrototypeOf(expected) && expected !== Error && expected.call({}, e) === true);
+      if (!hit) throw e;
+    }
+    fail(e, expected, message, operator, 'Got unwanted ' + what + (message ? ': ' + message : '.') + '\nActual message: "' + (e && e.message) + '"');
+  };
+  const split = (expected, message) => (typeof expected === 'string' && message === undefined ? [undefined, expected] : [expected, message]);
+  const a = function assert(...args) { okFn(...args); };
+  Object.assign(a, {
+    ok: okFn,
+    fail: (message) => { if (message instanceof Error) throw message; throw new __AssertionError({ message: message === undefined ? 'Failed' : message, operator: 'fail' }); },
+    equal: (x, y, m) => { if (!(strict ? Object.is(x, y) : looseEq(x, y))) fail(x, y, m, strict ? 'strictEqual' : '==', __fmtv(x) + (strict ? ' !== ' : ' == ') + __fmtv(y)); },
+    notEqual: (x, y, m) => { if (strict ? Object.is(x, y) : looseEq(x, y)) fail(x, y, m, strict ? 'notStrictEqual' : '!=', __fmtv(x) + (strict ? ' === ' : ' != ') + __fmtv(y)); },
+    strictEqual: (x, y, m) => { if (!Object.is(x, y)) fail(x, y, m, 'strictEqual', 'Expected values to be strictly equal: ' + __fmtv(x) + ' !== ' + __fmtv(y)); },
+    notStrictEqual: (x, y, m) => { if (Object.is(x, y)) fail(x, y, m, 'notStrictEqual', 'Expected "actual" to be strictly unequal to: ' + __fmtv(y)); },
+    deepEqual: (x, y, m) => { if (!__deepEq(x, y, strict)) fail(x, y, m, strict ? 'deepStrictEqual' : 'deepEqual', 'Expected values to be ' + (strict ? 'strictly ' : 'loosely ') + 'deep-equal: ' + __fmtv(x) + ' vs ' + __fmtv(y)); },
+    notDeepEqual: (x, y, m) => { if (__deepEq(x, y, strict)) fail(x, y, m, strict ? 'notDeepStrictEqual' : 'notDeepEqual', 'Expected "actual" not to be ' + (strict ? 'strictly ' : 'loosely ') + 'deep-equal to: ' + __fmtv(y)); },
+    deepStrictEqual: (x, y, m) => { if (!__deepEq(x, y, true)) fail(x, y, m, 'deepStrictEqual', 'Expected values to be strictly deep-equal: ' + __fmtv(x) + ' vs ' + __fmtv(y)); },
+    notDeepStrictEqual: (x, y, m) => { if (__deepEq(x, y, true)) fail(x, y, m, 'notDeepStrictEqual', 'Expected "actual" not to be strictly deep-equal to: ' + __fmtv(y)); },
+    match: (s, re, m) => { if (typeof s !== 'string' || !re.test(s)) fail(s, re, m, 'match', 'The input did not match the regular expression ' + String(re) + '. Input:\n\n' + __fmtv(s) + '\n'); },
+    doesNotMatch: (s, re, m) => { if (typeof s !== 'string' || re.test(s)) fail(s, re, m, 'doesNotMatch', 'The input was expected to not match the regular expression ' + String(re) + '. Input:\n\n' + __fmtv(s) + '\n'); },
+    ifError: (v) => { if (v !== null && v !== undefined) throw new __AssertionError({ actual: v, expected: null, operator: 'ifError', message: 'ifError got unwanted exception: ' + (v instanceof Error ? v.message : __fmtv(v)) }); },
+    throws: (fn, expected, message) => {
+      [expected, message] = split(expected, message);
+      let threw = false, err;
+      try { fn(); } catch (e) { threw = true; err = e; }
+      if (!threw) fail(undefined, expected, message, 'throws', 'Missing expected exception' + (message ? ': ' + message : '.'));
+      matches(err, expected, message, 'throws');
+    },
+    doesNotThrow: (fn, expected, message) => {
+      [expected, message] = split(expected, message);
+      try { fn(); } catch (e) { unwanted(e, expected, message, 'doesNotThrow', 'exception'); }
+    },
+    rejects: async (p, expected, message) => {
+      [expected, message] = split(expected, message);
+      let threw = false, err;
+      try { await (typeof p === 'function' ? p() : p); } catch (e) { threw = true; err = e; }
+      if (!threw) fail(undefined, expected, message, 'rejects', 'Missing expected rejection' + (message ? ': ' + message : '.'));
+      matches(err, expected, message, 'rejects');
+    },
+    doesNotReject: async (p, expected, message) => {
+      [expected, message] = split(expected, message);
+      try { await (typeof p === 'function' ? p() : p); } catch (e) { unwanted(e, expected, message, 'doesNotReject', 'rejection'); }
+    },
+    AssertionError: __AssertionError,
+  });
+  return a;
+}
+const __assert = __mkAssert(false);
+const __assertStrict = __mkAssert(true);
+__assert.strict = __assertStrict;
+__assertStrict.strict = __assertStrict;
+// ---- buffer / fs/promises / process / timers ----
+const __buffer = {
+  Buffer: globalThis.Buffer,
+  atob: (s) => globalThis.atob(s),
+  btoa: (s) => globalThis.btoa(s),
+  get Blob() { return globalThis.Blob; },
+  get File() { return globalThis.File; },
+};
+// fs.constants: the values that are the same on every platform turbo-test ships for (no O_CREAT
+// etc., which differ between Linux and macOS)
+const __fsConstants = {
+  F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2,
+  S_IFMT: 0o170000, S_IFREG: 0o100000, S_IFDIR: 0o040000, S_IFLNK: 0o120000,
+  COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, COPYFILE_FICLONE_FORCE: 4,
+};
+__fs.constants = __fsConstants;
+__fs.promises.constants = __fsConstants;
+// os.constants: libuv's priorities everywhere; POSIX signal / errno numbers that Linux and macOS
+// share (left empty on Windows, whose numbering differs)
+__os.constants = {
+  priority: { PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 },
+  signals: {},
+  errno: {},
+};
+if ((globalThis.__ttPlatform || 'darwin') !== 'win32') {
+  __os.constants.signals = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6, SIGFPE: 8, SIGKILL: 9, SIGSEGV: 11, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15 };
+  const names = ['EPERM', 'ENOENT', 'ESRCH', 'EINTR', 'EIO', 'ENXIO', 'E2BIG', 'ENOEXEC', 'EBADF', 'ECHILD', null, 'ENOMEM', 'EACCES', 'EFAULT', 'ENOTBLK', 'EBUSY', 'EEXIST', 'EXDEV', 'ENODEV', 'ENOTDIR', 'EISDIR', 'EINVAL', 'ENFILE', 'EMFILE', 'ENOTTY', 'ETXTBSY', 'EFBIG', 'ENOSPC', 'ESPIPE', 'EROFS', 'EMLINK', 'EPIPE', 'EDOM', 'ERANGE'];
+  names.forEach((n, i) => { if (n) __os.constants.errno[n] = i + 1; });
+}
+const __constants = Object.assign({}, __os.constants.errno, __os.constants.priority, __os.constants.signals, __fsConstants, __crypto.constants);
+// the global timers (vi.useFakeTimers drives these same functions)
+const __abortError = (signal) => { const e = new Error('The operation was aborted'); e.name = 'AbortError'; e.code = 'ABORT_ERR'; if (signal && signal.reason !== undefined) e.cause = signal.reason; return e; };
+const __timerPromise = (schedule, clear, value, options) => new Promise((resolve, reject) => {
+  const signal = options && options.signal;
+  if (signal && signal.aborted) { reject(__abortError(signal)); return; }
+  const onAbort = () => { clear(id); reject(__abortError(signal)); };
+  const id = schedule(() => { if (signal) signal.removeEventListener('abort', onAbort); resolve(value); });
+  if (signal) signal.addEventListener('abort', onAbort);
+});
+const __timersPromises = {
+  setTimeout: (delay, value, options) => __timerPromise((cb) => globalThis.setTimeout(cb, delay), (id) => globalThis.clearTimeout(id), value, options),
+  setImmediate: (value, options) => __timerPromise((cb) => globalThis.setImmediate(cb), (id) => globalThis.clearImmediate(id), value, options),
+  // async iterator yielding `value` once per tick (ticks the consumer hasn't taken yet queue up)
+  setInterval: (delay, value, options) => {
+    const signal = options && options.signal;
+    let ticks = 0, wake = null, done = false, error = null;
+    const notify = () => { if (wake) { const w = wake; wake = null; w(); } };
+    const id = globalThis.setInterval(() => { ticks++; notify(); }, delay);
+    const finish = () => { done = true; globalThis.clearInterval(id); if (signal) signal.removeEventListener('abort', onAbort); };
+    const onAbort = () => { error = __abortError(signal); finish(); notify(); };
+    if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort); }
+    return {
+      [Symbol.asyncIterator]() { return this; },
+      async next() {
+        while (!ticks && !done) await new Promise((r) => { wake = r; });
+        if (error) { const e = error; error = null; throw e; }
+        if (done) return { done: true, value: undefined };
+        ticks--;
+        return { done: false, value };
+      },
+      async return() { finish(); return { done: true, value: undefined }; },
+    };
+  },
+  scheduler: {
+    wait: (delay, options) => __timersPromises.setTimeout(delay, undefined, options),
+    yield: () => __timersPromises.setImmediate(),
+  },
+};
+const __timers = {
+  get setTimeout() { return globalThis.setTimeout; },
+  get clearTimeout() { return globalThis.clearTimeout; },
+  get setInterval() { return globalThis.setInterval; },
+  get clearInterval() { return globalThis.clearInterval; },
+  get setImmediate() { return globalThis.setImmediate; },
+  get clearImmediate() { return globalThis.clearImmediate; },
+  promises: __timersPromises,
+};
+// ---- vm / worker_threads / inspector: what one V8 context in one thread can truthfully offer;
+// the rest throws a clear error instead of pretending ----
+const __unavailable = (what, why) => () => { throw new Error('turbo-test: ' + what + ' is not available (' + why + ')'); };
+const __oneContext = 'tests run in a single V8 context';
+class __VmScript {
+  constructor(code) { this._code = String(code); }
+  runInThisContext() { return (0, eval)(this._code); }
+}
+__VmScript.prototype.runInContext = __unavailable('vm.Script.runInContext', __oneContext);
+__VmScript.prototype.runInNewContext = __unavailable('vm.Script.runInNewContext', __oneContext);
+const __vm = {
+  Script: __VmScript,
+  runInThisContext: (code) => (0, eval)(String(code)),
+  compileFunction: (code, params) => new Function(...(params || []), String(code)),
+  isContext: (o) => {
+    if (o === null || typeof o !== 'object') { const e = new TypeError('The "object" argument must be of type object'); e.code = 'ERR_INVALID_ARG_TYPE'; throw e; }
+    return false; // no other contexts can exist here
+  },
+  createContext: __unavailable('vm.createContext', __oneContext),
+  runInContext: __unavailable('vm.runInContext', __oneContext),
+  runInNewContext: __unavailable('vm.runInNewContext', __oneContext),
+};
+const __envData = new Map();
+const __untransferable = new WeakSet();
+const __worker_threads = {
+  isMainThread: true,
+  parentPort: null,
+  threadId: 0,
+  workerData: null,
+  resourceLimits: {},
+  SHARE_ENV: Symbol.for('nodejs.worker_threads.SHARE_ENV'),
+  Worker: class Worker { constructor() { __unavailable('worker_threads.Worker', 'tests run on one thread')(); } },
+  get MessageChannel() { return globalThis.MessageChannel; },
+  get MessagePort() { return globalThis.MessagePort; },
+  getEnvironmentData: (k) => __envData.get(k),
+  setEnvironmentData: (k, v) => { if (v === undefined) __envData.delete(k); else __envData.set(k, v); },
+  markAsUntransferable: (o) => { if (o !== null && (typeof o === 'object' || typeof o === 'function')) __untransferable.add(o); },
+  isMarkedAsUntransferable: (o) => o !== null && (typeof o === 'object' || typeof o === 'function') && __untransferable.has(o),
+};
+const __inspectorError = (code, message) => { const e = new Error(message); e.code = code; return e; };
+const __inspector = {
+  url: () => undefined, // no inspector is active
+  open: __unavailable('inspector.open', 'the test isolate exposes no inspector'),
+  close: () => {},
+  waitForDebugger: () => { throw __inspectorError('ERR_INSPECTOR_NOT_ACTIVE', 'Inspector is not active'); },
+  get console() { return globalThis.console; },
+  Session: class Session extends __EventEmitter {
+    connect() { __unavailable('inspector.Session.connect', 'the test isolate exposes no inspector')(); }
+    connectToMainThread() { __unavailable('inspector.Session.connectToMainThread', 'the test isolate exposes no inspector')(); }
+    post() { throw __inspectorError('ERR_INSPECTOR_NOT_CONNECTED', 'Session is not connected'); }
+    disconnect() {}
+  },
+};
 globalThis.__nodeBuiltins = {
   fs: __fs,
   'node:fs': __fs,
@@ -1257,8 +1741,20 @@ globalThis.__nodeBuiltins = {
   'node:diagnostics_channel': __dc,
   async_hooks: __async_hooks,
   'node:async_hooks': __async_hooks,
-  assert: Object.assign((c) => { if (!c) throw new Error('assert'); }, { ok: (c) => { if (!c) throw new Error('assert'); } }),
+  assert: __assert,
+  'assert/strict': __assertStrict,
   perf_hooks: { performance: globalThis.performance || { now: () => 0 } },
+  buffer: __buffer,
+  'fs/promises': __fs.promises,
+  get process() { return globalThis.process; },
+  timers: __timers,
+  'timers/promises': __timersPromises,
+  vm: __vm,
+  worker_threads: __worker_threads,
+  querystring: __querystring,
+  string_decoder: { StringDecoder: __StringDecoder },
+  constants: __constants,
+  inspector: __inspector,
 };
 
 // ---- loader helpers (used by the CJS wrapper) ----
@@ -1691,13 +2187,37 @@ function makeSpy(impl) {
   fn.mockName = (n) => { fn.__name = n; return fn; };
   return fn;
 }
-// vitest automock: replace function exports with vi.fn(), recurse into objects, keep primitives.
+// vitest automock (factory-less vi.mock, both loader paths): functions become vi.fn() mocks
+// returning undefined, classes keep mocked statics and prototype methods (so instances get mock
+// methods), objects and class instances are mocked deeply, arrays are emptied, primitives kept.
+// A prototype chain is walked up to (not into) the built-in prototypes (Object, Error, ...).
+function __isBuiltinProto(p) {
+  if (p === Object.prototype || p === Function.prototype) return true;
+  try { return typeof p.constructor === 'function' && /\{\s*\[native code\]\s*\}$/.test(Function.prototype.toString.call(p.constructor)); } catch (e) { return true; }
+}
+function __automockProtoMethods(target, proto) {
+  for (let p = proto; p && !__isBuiltinProto(p); p = Object.getPrototypeOf(p)) {
+    for (const k of Object.getOwnPropertyNames(p)) {
+      if (k === 'constructor' || Object.prototype.hasOwnProperty.call(target, k)) continue;
+      const d = Object.getOwnPropertyDescriptor(p, k);
+      if (typeof d.value === 'function') { const s = makeSpy(); __spies.push(s); target[k] = s; }
+    }
+  }
+}
 function __automock(mod, depth) {
   depth = depth || 0;
   if (typeof mod === 'function') {
     const m = makeSpy(); __spies.push(m);
-    // preserve static members / prototype methods as mocks too (auto-mocked class)
-    if (depth < 3) { for (const k of Object.keys(mod)) { try { m[k] = __automock(mod[k], depth + 1); } catch (e) {} } }
+    if (depth < 3) {
+      // own statics (class static methods are non-enumerable), not the function's built-ins
+      for (const k of Object.getOwnPropertyNames(mod)) {
+        if (k === 'length' || k === 'name' || k === 'prototype' || k === 'caller' || k === 'arguments') continue;
+        try { m[k] = __automock(mod[k], depth + 1); } catch (e) {}
+      }
+      // class / constructor function: `new m()` returns an instance of m.prototype, whose
+      // methods (inherited ones included) are mocks
+      if (mod.prototype && mod.prototype.constructor === mod) __automockProtoMethods(m.prototype, mod.prototype);
+    }
     return m;
   }
   if (Array.isArray(mod)) return [];
@@ -1707,11 +2227,92 @@ function __automock(mod, depth) {
       let v; try { v = mod[k]; } catch (e) { continue; }
       out[k] = depth < 4 ? __automock(v, depth + 1) : v;
     }
+    // a class instance: its prototype methods become mocks too
+    __automockProtoMethods(out, Object.getPrototypeOf(mod));
     return out;
   }
   return mod;
 }
 const __spies = [];
+// Record (specifier, evaluated-exports) into a queue the native loader drains after the
+// module runs, registering the mock keyed by the resolved absolute path. The factory runs
+// here, in the calling module's scope (so closures over setup-file vars work). `vitest` is
+// false for jest.mock/doMock (jest semantics where they differ).
+const __ttMockErrorSpecs = new Set();
+// vitest: reading a name the factory did not return throws (an ES import of it fails on access
+// rather than reading undefined). Probes that interop/thenable checks make (`then`, `__esModule`),
+// symbols and inherited members never throw. Keys (dir + spec) last mocked with jest.mock/doMock
+// read undefined instead (jest semantics); checked on access, because the mock prepass registers
+// every factory via vi.mock and an isolate reuse keeps that first exports object.
+const __ttLenientMockKeys = new Set();
+function __ttStrictMock(mod, key, spec) {
+  if (mod === null || typeof mod !== 'object' || __ttMockErrors.has(mod)) return mod;
+  return new Proxy(mod, {
+    get: (t, k, r) => {
+      if (typeof k === 'symbol' || k in t || k === 'then' || k === '__esModule' || __ttLenientMockKeys.has(key)) return Reflect.get(t, k, r);
+      throw new Error(`[vitest] No "${k}" export is defined on the "${spec}" mock. Did you want to return the actual module?`);
+    },
+  });
+}
+// Modules (resolved absolute paths) the entry's mock prepass registered for the current file.
+// vitest calls a hoisted factory ONCE; the module's own hoisted vi.mock call for such a module
+// keeps the prepass registration instead of running the factory a second time. Consumed by
+// that call (a later vi.mock/doMock of the module runs normally) and cleared between files.
+const __ttPrepassMocks = new Set();
+globalThis.__ttPrepassMocks = __ttPrepassMocks;
+function __ttPrepassKey(spec) {
+  const dir = globalThis.__ttDir || globalThis.__ttEntryDir;
+  return (dir && globalThis.__ttResolveSpec(dir, String(spec))) || '\0' + String(spec);
+}
+function __ttMock(spec, factory, vitest) {
+  let exports;
+  const key = (globalThis.__ttDir || '') + '\0' + String(spec);
+  if (!globalThis.__ttMockPrepass) {
+    if (vitest) __ttLenientMockKeys.delete(key); else __ttLenientMockKeys.add(key);
+    if (__ttPrepassMocks.size && __ttPrepassMocks.delete(__ttPrepassKey(spec))) return;
+  }
+  // The calling module's dir: the module-runner's __ttDir, else (ESM graph, where modules have
+  // none) the entry file's dir, so a runtime vi.doMock registers immediately and a later import()
+  // of the module sees it.
+  const dir = globalThis.__ttDir || globalThis.__ttEntryDir;
+  // vitest passes `importOriginal` (a fn returning the real module, as a Promise) as the
+  // factory's first arg — `vi.mock('x', async (importOriginal) => ({...await importOriginal(), y}))`.
+  const importOriginal = () => Promise.resolve(globalThis.__ttImportActual(dir, String(spec)));
+  if (factory === undefined) {
+    // AUTOMOCK: no factory -> auto-generate a mock from the real module (functions -> vi.fn()).
+    // A real module that fails to load is left unmocked: importing it reports its own error.
+    try { exports = __automock(globalThis.__ttImportActual(dir, String(spec))); }
+    catch (e) { return; }
+  } else {
+    try { exports = typeof factory === 'function' ? factory(importOriginal) : factory; }
+    catch (e) {
+      // The entry's mock prepass (__ttMockPrepass) runs factories outside the module's scope; a
+      // throw there is not registered — the module's own vi.mock call re-runs it in scope.
+      if (globalThis.__ttMockPrepass) return;
+      exports = __ttFactoryErrorMock(e, vitest);
+    }
+  }
+  // Sync factory: register IMMEDIATELY in the calling module's dir (vi.mock is hoisted above
+  // the module's consumer requires, so the mock is in place before they load — and the factory
+  // ran in THIS module's scope, so it shares the test's bindings). Async (Promise) factory:
+  // queue for __resolvePendingMocks (run_entry_mocks prepass / drain).
+  if (globalThis.__ttMockPrepass) __ttPrepassMocks.add(__ttPrepassKey(spec));
+  if (exports && typeof exports.then === 'function') {
+    (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest, key });
+    return;
+  }
+  if (factory !== undefined) exports = __ttStrictMock(exports, key, String(spec));
+  if (globalThis.__ttRegisterMock && dir) {
+    // An error stand-in replaces (never merges into) a module already registered under this
+    // isolate; a later working factory for the same spec replaces the stand-in the same way.
+    if (__ttMockErrors.has(exports) || __ttMockErrorSpecs.has(key)) {
+      globalThis.vi.unmock(spec);
+      if (__ttMockErrors.has(exports)) __ttMockErrorSpecs.add(key); else __ttMockErrorSpecs.delete(key);
+    }
+    try { globalThis.__ttRegisterMock(dir, String(spec), exports); return; } catch (e) {}
+  }
+  (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports, vitest, key });
+}
 globalThis.vi = {
   fn: (impl) => { const s = makeSpy(impl); __spies.push(s); return s; },
   spyOn: (obj, key) => {
@@ -1731,33 +2332,7 @@ globalThis.vi = {
   // Record (specifier, evaluated-exports) into a queue the native loader drains after the
   // module runs, registering the mock keyed by the resolved absolute path. The factory runs
   // here, in the calling module's scope (so closures over setup-file vars work).
-  mock: (spec, factory) => {
-    let exports;
-    // vitest passes `importOriginal` (a fn returning the real module, as a Promise) as the
-    // factory's first arg — `vi.mock('x', async (importOriginal) => ({...await importOriginal(), y}))`.
-    const importOriginal = () => Promise.resolve(globalThis.__ttImportActual(globalThis.__ttDir, String(spec)));
-    try {
-      if (factory === undefined) {
-        // AUTOMOCK: no factory -> auto-generate a mock from the real module (functions -> vi.fn()).
-        exports = __automock(globalThis.__ttImportActual(globalThis.__ttDir, String(spec)));
-      } else {
-        exports = typeof factory === 'function' ? factory(importOriginal) : factory;
-      }
-    }
-    catch (e) { return; }
-    // Sync factory: register IMMEDIATELY in the calling module's dir (vi.mock is hoisted above
-    // the module's consumer requires, so the mock is in place before they load — and the factory
-    // ran in THIS module's scope, so it shares the test's bindings). Async (Promise) factory:
-    // queue for __resolvePendingMocks (run_entry_mocks prepass / drain).
-    if (exports && typeof exports.then === 'function') {
-      (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports });
-      return;
-    }
-    if (globalThis.__ttRegisterMock && globalThis.__ttDir) {
-      try { globalThis.__ttRegisterMock(globalThis.__ttDir, String(spec), exports); return; } catch (e) {}
-    }
-    (globalThis.__pendingMocks || (globalThis.__pendingMocks = [])).push({ spec: String(spec), exports });
-  },
+  mock: (spec, factory) => __ttMock(spec, factory, true),
   unmock: (spec) => {
     if (globalThis.__pendingMocks) globalThis.__pendingMocks = globalThis.__pendingMocks.filter((m) => m.spec !== String(spec));
     const dir = globalThis.__ttDir || globalThis.__cwd;
@@ -1927,9 +2502,9 @@ globalThis.babelHelpers.decorateMetadata = function (metadataKey, metadataValue)
 globalThis.jest = {
   fn: (impl) => globalThis.vi.fn(impl),
   spyOn: (obj, key) => globalThis.vi.spyOn(obj, key),
-  mock: (spec, factory) => globalThis.vi.mock(spec, factory),
+  mock: (spec, factory) => __ttMock(spec, factory, false),
   unmock: (spec) => globalThis.vi.unmock(spec),
-  doMock: (spec, factory) => globalThis.vi.doMock(spec, factory),
+  doMock: (spec, factory) => __ttMock(spec, factory, false),
   dontMock: (spec) => globalThis.vi.unmock(spec),
   mocked: (item) => globalThis.vi.mocked(item),
   clearAllMocks: () => globalThis.vi.clearAllMocks(),
@@ -1979,13 +2554,15 @@ function describe(name, a, b) {
   fn();
   current = prev;
 }
-describe.skip = (name, _fn) => { /* skipped */ };
+// A skipped/todo suite registers no tests, but it IS a collected task for vitest's "No test suite
+// found in file" check (see __tt.run) — count it so such a file is not reported as empty.
+describe.skip = (name, _fn) => { __tt.skippedSuites++; };
 describe.only = (name, fn) => { __tt.hasOnly = true; describe(name, fn); };
-describe.todo = (name) => { /* todo: collected as nothing to run */ };
+describe.todo = (name) => { __tt.skippedSuites++; /* todo: collected as nothing to run */ };
 // describe.skipIf/runIf: when the condition skips the block, register NO tests (the whole suite
 // is absent) — mirrors it.skipIf/runIf semantics applied at the suite level.
-describe.skipIf = (cond) => (name, a, b) => { if (cond) return; describe(name, a, b); };
-describe.runIf = (cond) => (name, a, b) => { if (!cond) return; describe(name, a, b); };
+describe.skipIf = (cond) => (name, a, b) => { if (cond) { __tt.skippedSuites++; return; } describe(name, a, b); };
+describe.runIf = (cond) => (name, a, b) => { if (!cond) { __tt.skippedSuites++; return; } describe(name, a, b); };
 describe.concurrent = describe; // accepted; a file's tests still run sequentially
 describe.each = (rows) => (name, fn) => rows.forEach((row, i) => {
   const args = Array.isArray(row) ? row : [row];
@@ -2162,6 +2739,8 @@ async function runSuite(suite, ancestors, summary) {
 
 globalThis.__tt = {
   hasOnly: false,
+  // Skipped/todo describe blocks seen in this file (they register nothing in `root`).
+  skippedSuites: 0,
   // Compiled lazily from globalThis.__TT_NAME_PATTERN (set by the host from -t/--testNamePattern).
   get namePattern() {
     if (this._np !== undefined) return this._np;
@@ -2171,6 +2750,14 @@ globalThis.__tt = {
   },
   async run() {
     const summary = { passed: 0, failed: 0, skipped: 0, failures: [], tests: [] };
+    // vitest (runner `runFiles`): a file that collected NO task at all — no test or suite, skipped
+    // and todo ones included — fails with "No test suite found in file <path>" unless
+    // passWithNoTests. Reported as the file's only failure entry with no failed test; the CLI
+    // turns that into a file-level error (cli.rs `file_result`).
+    if (!root.tests.length && !root.suites.length && !this.skippedSuites && !globalThis.__TT_PASS_WITH_NO_TESTS) {
+      summary.failures.push(`No test suite found in file ${globalThis.__ttFile}`);
+      return summary;
+    }
     // --no-allowOnly (host → __TT_FORBID_ONLY): a stray `.only` must fail the run (vitest CI
     // default). Record it as a failure so it surfaces in the report and flips the exit code.
     if (globalThis.__TT_FORBID_ONLY && this.hasOnly) {
@@ -2223,8 +2810,10 @@ globalThis.__ttResetForNextFile = () => {
   // setup) is the lesser evil and handled elsewhere.
   current = root;
   globalThis.__tt.hasOnly = false;
+  globalThis.__tt.skippedSuites = 0;
   // mock-prepass scratch (turbo-test specific) — must be empty before the next file hoists.
   globalThis.__pendingMocks = [];
+  __ttPrepassMocks.clear();
   globalThis.__hoistedCache = [];
   globalThis.__hoistedIdx = 0;
   // Bump the timer generation: the prior file's leaked timers (now gen < __loop.gen) get dropped,

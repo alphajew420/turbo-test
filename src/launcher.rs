@@ -42,7 +42,8 @@ const CONFIG_NAMES: [&str; 8] = [
 
 /// Runner flags that take a following value (so a file arg isn't mistaken for the value, and the
 /// value isn't mistaken for a file). Mirrors the value-flag set cli.js forwarded with their arg.
-const VALUE_FLAGS: [&str; 21] = [
+/// `cli::parse_args` also accepts each `--` one in its inline `--flag=value` form.
+pub(crate) const VALUE_FLAGS: [&str; 21] = [
     "-j",
     "--jobs",
     "--shard",
@@ -475,6 +476,10 @@ fn strip_comments(s: &str) -> String {
     let mut prev_sig = '\0';
     let mut cur_word = String::new();
     let mut last_word = String::new();
+    // Whether `cur_word` / `last_word` was reached by `.` property access (`obj.in`): a member NAME
+    // is never a keyword, so a `/` after it is division.
+    let mut cur_member = false;
+    let mut last_member = false;
     while let Some(c) = chars.next() {
         if let Some(q) = quote {
             out.push(c);
@@ -521,9 +526,7 @@ fn strip_comments(s: &str) -> String {
             // the regex out of their way entirely. Character classes `[...]` may hold an unescaped
             // `/`, so track them to find the true closing `/`.
             '/' if is_regex_context(prev_sig)
-                || REGEX_KEYWORDS.contains(
-                    &(if cur_word.is_empty() { last_word.as_str() } else { cur_word.as_str() }),
-                ) =>
+                || keyword_before_slash(&cur_word, cur_member, &last_word, last_member) =>
             {
                 out.push(' ');
                 let mut in_class = false;
@@ -567,6 +570,9 @@ fn strip_comments(s: &str) -> String {
                 if c.is_alphanumeric() || c == '_' || c == '$' {
                     // Identifier/number char: it IS significant (a `/` after it is division), and it
                     // extends the current word.
+                    if cur_word.is_empty() {
+                        cur_member = prev_sig == '.';
+                    }
                     cur_word.push(c);
                     prev_sig = c;
                 } else if c.is_whitespace() {
@@ -574,11 +580,13 @@ fn strip_comments(s: &str) -> String {
                     // `return /re/` still sees the keyword. prev_sig (last non-ws char) is unchanged.
                     if !cur_word.is_empty() {
                         last_word = std::mem::take(&mut cur_word);
+                        last_member = cur_member;
                     }
                 } else {
                     // Punctuation: significant, and it ends any pending word.
                     if !cur_word.is_empty() {
                         last_word = std::mem::take(&mut cur_word);
+                        last_member = cur_member;
                     } else {
                         last_word.clear();
                     }
@@ -595,6 +603,18 @@ const REGEX_KEYWORDS: [&str; 12] = [
     "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "do", "else", "yield",
     "await",
 ];
+
+/// Whether the word right before a `/` is a keyword after which it opens a regex (`return /re/`):
+/// the word being read wins over the one completed before the last space, and a word reached by
+/// `.` property access (`obj.in / 2`) is a member name, never a keyword.
+fn keyword_before_slash(cur: &str, cur_member: bool, last: &str, last_member: bool) -> bool {
+    let (word, member) = if cur.is_empty() {
+        (last, last_member)
+    } else {
+        (cur, cur_member)
+    };
+    !member && REGEX_KEYWORDS.contains(&word)
+}
 
 /// A `/` following one of these (or the start of input) opens a regex literal, not division.
 fn is_regex_context(prev: char) -> bool {
@@ -665,7 +685,8 @@ fn find_key_blocks(text: &str, key: &str) -> Vec<String> {
 /// decoy `resolve: { conditions }` before the real `resolve: { alias }` can't suppress it). Blocks
 /// are applied in source order with later-wins, so a `test.alias` placed after `resolve.alias`
 /// (the conventional order) overrides it on a key collision. Values are arbitrary JS, so the target
-/// is derived heuristically (see `alias_target`); a regex `find` (leading `/`) is skipped.
+/// is derived heuristically (see `alias_target`); a regex-literal `find` is skipped, a quoted one is
+/// a prefix string whatever its first char (`'/@z'`).
 fn config_aliases(start_dir: &Path, forced: Option<&Path>) -> Vec<(String, String)> {
     let Some(cfg) = find_config(start_dir, forced) else {
         return vec![];
@@ -699,12 +720,14 @@ fn parse_alias_inner(inner: &str, dir: &Path) -> Vec<(String, String)> {
             let e = entry.trim();
             let e = e.strip_prefix('{').unwrap_or(e);
             let e = e.strip_suffix('}').unwrap_or(e);
-            let find = value_after_key(e, "find").and_then(|v| first_quoted(&v));
+            // Only a quoted string `find` is a (prefix) alias, whatever its first char (`'/@z'`);
+            // a regex literal `find` (unquoted — already blanked by strip_comments) is skipped.
+            let find = value_after_key(e, "find")
+                .filter(|v| v.starts_with(['\'', '"', '`']))
+                .and_then(|v| first_quoted(&v));
             let repl = value_after_key(e, "replacement").and_then(|v| alias_target(dir, &v));
             if let (Some(f), Some(r)) = (find, repl) {
-                if !f.starts_with('/') {
-                    out.push((f, r));
-                }
+                out.push((f, r));
             }
         }
         return out;
@@ -731,13 +754,21 @@ fn parse_alias_inner(inner: &str, dir: &Path) -> Vec<(String, String)> {
 
 /// Derive the alias target path/specifier from a JS value expression. When the value looks like a
 /// filesystem-path expression (`path.resolve`/`path.join`/`fileURLToPath`/`new URL`/`__dirname`/
-/// `import.meta.url`), ALL its quoted segments are joined against the config dir with path.resolve
-/// semantics (so `path.resolve(__dirname, '../..', 'pkg/src')` resolves correctly, not just its last
-/// segment). Otherwise the value is a plain literal (`'/abs'`, `'./rel'`, or a bare module specifier
-/// like `'preact/compat'`) and its last string is resolved by its own prefix. `None` if no literal.
+/// `import.meta.url`/`import.meta.dirname`), ALL its quoted segments are joined against the config
+/// dir with path.resolve semantics (so `path.resolve(__dirname, '../..', 'pkg/src')` resolves
+/// correctly, not just its last segment). Otherwise the value is a plain literal (`'/abs'`, `'./rel'`, or a bare module specifier
+/// like `'preact/compat'`) and its last string is resolved by its own prefix. A bare `__dirname` /
+/// `import.meta.dirname` base is the config dir itself. `None` if there is no literal otherwise.
 fn alias_target(dir: &Path, val: &str) -> Option<String> {
-    const PATH_MARKERS: [&str; 6] =
-        ["path.resolve", "path.join", "fileURLToPath", "new URL", "__dirname", "import.meta.url"];
+    const PATH_MARKERS: [&str; 7] = [
+        "path.resolve",
+        "path.join",
+        "fileURLToPath",
+        "new URL",
+        "__dirname",
+        "import.meta.url",
+        "import.meta.dirname",
+    ];
     // A value can be a string CONCATENATION (`path.resolve(__dirname,'src') + '/sub'`). Split on the
     // top-level `+`: the FIRST operand is the base (path.resolve-joined when it's a path expression,
     // else its plain literal), and each later operand is a plain string appended LITERALLY — so
@@ -749,7 +780,9 @@ fn alias_target(dir: &Path, val: &str) -> Option<String> {
     // isn't mistaken for a path expression.
     let mut base = if PATH_MARKERS.iter().any(|m| blank_quoted(&first).contains(m)) {
         let quoted = extract_quoted(&first);
-        if quoted.is_empty() {
+        // a bare config-dir base (`__dirname + '/z'`) is the dir itself: joining no segments
+        let bare_dir = matches!(first.as_str(), "__dirname" | "import.meta.dirname");
+        if quoted.is_empty() && !bare_dir {
             return None;
         }
         resolve_alias_join(dir, &quoted)
@@ -1206,13 +1239,25 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
             continue;
         }
 
-        if a.starts_with('-') {
-            forward.push(a.clone());
+        if flag_takes_value(&a) {
             // forward a value-flag's following value too (so it isn't seen as a file).
-            if flag_takes_value(&a) && i + 1 < raw.len() && !raw[i + 1].starts_with('-') {
+            if i + 1 < raw.len() && !raw[i + 1].starts_with('-') {
+                forward.push(a.clone());
                 forward.push(raw[i + 1].clone());
                 i += 1;
+            } else {
+                // No value (last token, or another flag follows). Forwarded alone it would sit
+                // right before the appended test files and the runner would take the first FILE
+                // as its value (`a.test.js --reporter` → usage error; `-t` → the path became the
+                // name pattern). Drop it with a warning; a `--coverage-*` one still implies
+                // --coverage, as it does in the runner.
+                messages.push(format!("turbo-test: ignoring '{a}': missing value"));
+                if a.starts_with("--coverage") {
+                    forward.push("--coverage".to_string());
+                }
             }
+        } else if a.starts_with('-') {
+            forward.push(a.clone());
         } else if !a.is_empty() {
             // skip empty args (e.g. a stray "" from a shell wrapper) — they'd be treated as a
             // missing file and abort the whole run.
@@ -1227,6 +1272,12 @@ pub fn plan(mut raw: Vec<String>, proc_cwd: &Path) -> Plan {
         None => proc_cwd.to_path_buf(),
     };
     let forced = opts.config.as_ref().map(|f| absolute_in(proc_cwd, Path::new(f)));
+
+    // `--passWithNoTests` also covers a test file that collects no test at all (vitest: no
+    // "No test suite found in file" error) → the runtime reads it per file.
+    if opts.pass_with_no_tests {
+        env.push(("TURBO_PASS_WITH_NO_TESTS", "1".to_string()));
+    }
 
     // `--isolate` / `--no-isolate` → the runner's reuse env switches (read per-file in runner.rs).
     match opts.isolate {

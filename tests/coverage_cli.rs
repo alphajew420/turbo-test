@@ -93,7 +93,7 @@ test('branches', () => {
 });
 ";
 
-/// A plain CommonJS source: no ESM export thunks, so its function list is exact.
+/// A plain CommonJS source (no esbuild ESM interop prologue).
 const CJS_JS: &str = "\
 function twice(x) {
   return x * 2;
@@ -723,4 +723,261 @@ fn failing_tests_still_report_coverage_and_exit_nonzero() {
     let r = turbo_test(&p.dir, &["--coverage", "--coverage-reporter", "lcov"], &[]);
     assert_fail(&r);
     assert!(read(&p, "coverage/lcov.info").contains("FNDA:1,twice\n"));
+}
+
+// ---- turbo-test#34: instrumentation accuracy ---------------------------------------------------
+//
+// The issue's repro project. Every expected value below is what vitest 4.1's v8 provider
+// (@vitest/coverage-v8) reports for the same sources, except where a comment says otherwise.
+
+/// Two ESM exports, one never called; esbuild turns each export into a named getter arrow.
+const I34_LIB: &str =
+    "export function used() { return 1 }\n\n\nexport function unused() { return 2 }\n";
+/// Case bodies on the `case` line; only `case 'a'` runs.
+const I34_SW: &str = "\
+export function sw(x) {
+  switch (x) {
+    case 'a': return 1;
+    case 'b': return 2;
+    default: return 0;
+  }
+}
+";
+/// A braceless `if … throw` that never fires.
+const I34_THR: &str = "export function g(c) {\n  if (c) throw new Error('x');\n  return 1;\n}\n";
+/// Top-level CommonJS statements only.
+const I34_TOP: &str = "const a = 1;\nconst b = a + 1;\nmodule.exports = { b };\n";
+const I34_TEST: &str = "\
+import { used } from './lib.js';
+import { sw } from './sw.js';
+import { g } from './thr.js';
+const { b } = require('./top.cjs');
+test('t', () => { expect(used()).toBe(1); expect(sw('a')).toBe(1); expect(g(false)).toBe(1); expect(b).toBe(2); });
+";
+
+/// Run the #34 repro (`--coverage --coverage-reporter lcov,json-summary a.test.js`); returns the
+/// project, its lcov text and its coverage-summary.json.
+fn issue34_run(name: &str) -> (Project, String, serde_json::Value) {
+    let p = esbuild_project(name);
+    p.file("package.json", "{\"name\":\"k1\"}");
+    p.file("lib.js", I34_LIB);
+    p.file("sw.js", I34_SW);
+    p.file("thr.js", I34_THR);
+    p.file("top.cjs", I34_TOP);
+    p.file("a.test.js", I34_TEST);
+    let r = turbo_test(
+        &p.dir,
+        &[
+            "--coverage",
+            "--coverage-reporter",
+            "lcov,json-summary",
+            "a.test.js",
+        ],
+        &[],
+    );
+    assert_ok(&r);
+    let lcov = read(&p, "coverage/lcov.info");
+    let j = json(&p, "coverage/coverage-summary.json");
+    (p, lcov, j)
+}
+
+/// `(covered, total)` of `metric` for `file` in a coverage-summary.json.
+fn summary_of(j: &serde_json::Value, file: &std::path::Path, metric: &str) -> (u64, u64) {
+    let m = &j[file.to_str().unwrap()][metric];
+    (m["covered"].as_u64().unwrap(), m["total"].as_u64().unwrap())
+}
+
+#[test]
+fn esm_export_getters_are_not_counted_as_functions() {
+    let (p, lcov, j) = issue34_run("cov-i34-getters");
+    let rec = lcov_record(&lcov, &p.path("lib.js"));
+    // esbuild's `__export` getters (`unused: () => unused`) map to line 1; they are not functions
+    // of the source, so `unused` is listed once, at its declaration.
+    assert_eq!(
+        rec.lines()
+            .filter(|l| l.starts_with("FN"))
+            .collect::<Vec<_>>(),
+        vec![
+            "FN:1,used",
+            "FN:4,unused",
+            "FNDA:1,used",
+            "FNDA:0,unused",
+            "FNF:2",
+            "FNH:1"
+        ]
+    );
+    assert_eq!(summary_of(&j, &p.path("lib.js"), "functions"), (1, 2));
+}
+
+#[test]
+fn esm_prologue_does_not_make_a_type_only_or_blank_line_1_executable() {
+    let p = esbuild_project("cov-i34-line1");
+    p.file(
+        "src/typed.ts",
+        "type N = number;\nexport function f(x: N): N {\n  return x;\n}\n",
+    );
+    p.file(
+        "src/blank.ts",
+        "\nexport function h(): number {\n  return 3;\n}\n",
+    );
+    p.file(
+        "t.test.ts",
+        "import { f } from './src/typed';\nimport { h } from './src/blank';\n\
+test('t', () => { expect(f(1)).toBe(1); expect(h()).toBe(3); });\n",
+    );
+    let r = turbo_test(&p.dir, &["--coverage", "--coverage-reporter", "lcov"], &[]);
+    assert_ok(&r);
+    let lcov = read(&p, "coverage/lcov.info");
+    for file in ["src/typed.ts", "src/blank.ts"] {
+        let rec = lcov_record(&lcov, &p.path(file));
+        // vitest reports DA:3 only; turbo-test also counts the declaration and closing-brace
+        // lines (its c8-style line model) — but never the type-only / blank line 1.
+        assert_eq!(
+            lines_with(&rec, "DA:"),
+            vec!["DA:2,1", "DA:3,1", "DA:4,1"],
+            "{file}"
+        );
+        assert!(rec.contains("LF:3\nLH:3\n"), "{rec}");
+    }
+}
+
+#[test]
+fn top_level_statements_are_covered() {
+    let (p, lcov, j) = issue34_run("cov-i34-top");
+    let top = p.path("top.cjs");
+    // V8 counts top-level code only in the module-wide range, which opens on the wrapper line
+    assert_eq!(summary_of(&j, &top, "statements"), (3, 3));
+    assert_eq!(summary_of(&j, &top, "lines"), (3, 3));
+    assert_eq!(
+        lines_with(&lcov_record(&lcov, &top), "DA:"),
+        vec!["DA:1,1", "DA:2,1", "DA:3,1"]
+    );
+}
+
+#[test]
+fn braceless_if_throw_that_never_fires_is_an_uncovered_statement() {
+    let (p, lcov, j) = issue34_run("cov-i34-throw");
+    let thr = p.path("thr.js");
+    // the `throw` never ran: 2/3, the same as the braced `if (c) { throw … }` gives
+    assert_eq!(summary_of(&j, &thr, "statements"), (2, 3));
+    assert_eq!(
+        lines_with(&lcov_record(&lcov, &thr), "BRDA:"),
+        vec!["BRDA:2,0,0,0", "BRDA:2,0,1,1"]
+    );
+}
+
+#[test]
+fn lines_inside_never_run_switch_cases_are_uncovered() {
+    let (p, lcov, j) = issue34_run("cov-i34-switch");
+    let rec = lcov_record(&lcov, &p.path("sw.js"));
+    // only `case 'a'` ran. vitest reports DA:2-5; turbo-test also counts the declaration and the
+    // function's closing line (its c8-style line model).
+    assert_eq!(
+        lines_with(&rec, "DA:"),
+        vec!["DA:1,1", "DA:2,1", "DA:3,1", "DA:4,0", "DA:5,0", "DA:7,1"]
+    );
+    assert_eq!(
+        lines_with(&rec, "BRDA:"),
+        vec!["BRDA:2,0,0,1", "BRDA:2,0,1,0", "BRDA:2,0,2,0"]
+    );
+    assert_eq!(summary_of(&j, &p.path("sw.js"), "lines"), (4, 6));
+    assert_eq!(summary_of(&j, &p.path("sw.js"), "statements"), (2, 4));
+}
+
+/// turbo-test#40's repro: a braced `if` with no `else` whose consequent always runs.
+const I40_K: &str = "export function k(c) {\n  if (c) {\n    c++;\n  }\n  return c;\n}\n";
+/// More `if`-without-`else` shapes: an always-taken top-level `if`, one followed by a nested
+/// function, one in a loop, a braceless nested pair, an else-if chain, and a never-taken one.
+const I40_SHAPES: &str = "\
+const on = !globalThis.__off;
+if (on) {
+  globalThis.__seen = 1;
+}
+export function later(c) {
+  if (c) {
+    c++;
+  }
+  const twice = () => c * 2;
+  return twice();
+}
+export function loop(c) {
+  let n = 0;
+  for (let i = 0; i < 3; i++) {
+    if (c) n++;
+  }
+  return n;
+}
+export function nested(c, d) {
+  if (c)
+    if (d) c++;
+  return c;
+}
+export function chain(c) {
+  if (c === 1) {
+    c = 'a';
+  } else if (c === 2) {
+    c = 'b';
+  }
+  return c;
+}
+export function never(c) {
+  if (c) {
+    c++;
+  }
+  return c;
+}
+";
+const I40_TEST: &str = "\
+import { k } from './k.js';
+import { later, loop, nested, chain, never } from './shapes.js';
+test('k', () => { expect(k(1)).toBe(2); });
+test('shapes', () => {
+  expect(later(1)).toBe(4);
+  expect(loop(1)).toBe(3);
+  expect([nested(1, 1), nested(1, 0), nested(0, 1)]).toEqual([2, 1, 0]);
+  expect(chain(2)).toBe('b');
+  expect(never(0)).toBe(0);
+});
+";
+
+#[test]
+fn always_taken_if_without_else_counts_the_then_arm() {
+    let p = esbuild_project("cov-i40-always");
+    p.file("k.js", I40_K);
+    p.file("shapes.js", I40_SHAPES);
+    p.file("a.test.js", I40_TEST);
+    let r = turbo_test(
+        &p.dir,
+        &["--coverage", "--coverage-reporter", "lcov", "a.test.js"],
+        &[],
+    );
+    assert_ok(&r);
+    let lcov = read(&p, "coverage/lcov.info");
+    // V8 drops a consequent range whose count equals the enclosing one (it always ran): then=1
+    assert_eq!(
+        lines_with(&lcov_record(&lcov, &p.path("k.js")), "BRDA:"),
+        vec!["BRDA:2,0,0,1", "BRDA:2,0,1,0"]
+    );
+    // every value below is what vitest 4.1.12's v8 provider reports for the same files
+    assert_eq!(
+        lines_with(&lcov_record(&lcov, &p.path("shapes.js")), "BRDA:"),
+        vec![
+            "BRDA:2,0,0,1",
+            "BRDA:2,0,1,0", // top-level, always taken
+            "BRDA:6,1,0,1",
+            "BRDA:6,1,1,0", // always taken, a called arrow function after it
+            "BRDA:15,2,0,3",
+            "BRDA:15,2,1,0", // braceless, in a loop, taken on every iteration
+            "BRDA:20,3,0,2",
+            "BRDA:20,3,1,1", // outer braceless `if (c)`: twice of three
+            "BRDA:21,4,0,1",
+            "BRDA:21,4,1,1", // inner `if (d)`: once of two
+            "BRDA:25,5,0,0",
+            "BRDA:25,5,1,1", // `c === 1` false
+            "BRDA:27,6,0,1",
+            "BRDA:27,6,1,0", // `else if (c === 2)`: always taken when reached
+            "BRDA:33,7,0,0",
+            "BRDA:33,7,1,1", // never taken: V8 keeps its 0-count consequent range
+        ]
+    );
 }

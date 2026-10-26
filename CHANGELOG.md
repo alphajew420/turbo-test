@@ -46,6 +46,199 @@ from crates.io.
   trees from it without rewriting it. New CI job `npm-lockfile` runs `npm ci` under
   npm 10 and npm 11 so the lock cannot regress.
 
+The pre-existing bugs found by the coverage push (turbo-test#31-#35) are fixed below.
+Each fix has a regression test that fails without it; expected behaviour follows
+vitest / jest / Node / Node-API (and tsc / vitest's v8 coverage provider where noted).
+
+Runner and mocking (turbo-test#31):
+- JSON jest configs are read: a package.json `"jest"` block (only the top-level key) and
+  `jest.config.json` supply `setupFiles` / `setupFilesAfterEnv` / `rootDir` /
+  `testEnvironment`, as `jest.config.js` always did. The config-key scanner did not
+  accept quoted keys (item 1).
+- Under isolate reuse, re-mocking a dependency no longer empties an importer that is
+  itself mocked (`require()` returned `{}`), and a file that runs on a fresh isolate under
+  the reuse switch (the fresh-isolate retry, `--coverage`) registers a `doMock` as a new
+  module instead of patching the real exports object a test already holds (item 2).
+- `await import()` of a `TURBO_LAZY_STUBS` barrel settles: the stub namespace was treated
+  as a thenable and the import hung (item 3).
+- A factory-less `vi.mock('./a')` no longer takes the factory of a later `vi.mock` (whose
+  own mock was dropped) or a following test callback (item 4).
+- A factory-less `vi.mock(path)` automocks the module without esbuild too. The shared
+  automock now follows vitest's algorithm: class statics and prototype methods are mocked,
+  and so are class-instance methods. On the ESM graph, a mock's `default` key is its
+  default export (item 5).
+- `node:buffer`, `fs/promises`, `process`, `timers`, `timers/promises`, `vm`,
+  `worker_threads`, `querystring`, `string_decoder`, `constants`, `inspector` and
+  `assert/strict` no longer import as an empty module. Each has working named and default
+  exports with Node's behaviour on both loader paths (`assert` is Node's full API); what a
+  single context on one thread cannot do throws a clear "not available" error. The
+  supported set is documented in vitest.compat.md (item 6).
+- A bare `vi.hoisted(...)` after a declared one no longer duplicates the earlier
+  declaration in the mock prepass (a SyntaxError that dropped the file's prepass mocks);
+  bare calls are replayed too, as vitest hoists every `vi.hoisted` (item 7).
+- With `emitDecoratorMetadata` and no esbuild, a plain `import { SomeInterface }` used as a
+  decorated member's type no longer fails to link ("does not provide an export named");
+  type-only imports are read through a namespace import (TypeScript's TS1272 remedy), so
+  `design:type` is `Object` (item 8).
+- Module-runner load errors report the module's own error: an entry import of a throwing
+  dependency shows `Error: <message>` instead of `entry load failed`; `require()` of a
+  module whose body throws (or does not compile) throws that error instead of
+  `failed to load <spec>`, and `import()` rejects with it (item 9).
+- Module-runner mode: `import.meta.url` / `filename` / `dirname` are the module's own
+  location instead of undefined (the ESM-graph path gains `filename` / `dirname`), and
+  CSS-module default imports are class-name proxies (`s.foo === 'foo'`) (item 10).
+- A `vi.mock` / `vi.doMock` factory that throws or rejects no longer silently falls back to
+  the real module: importing the mocked module fails with vitest's "There was an error when
+  mocking a module … Caused by: <error>"; `jest.mock` rethrows the factory's error (item 11).
+- A setup file's `vi.mock` is hoisted above the setup file's own imports (module-runner),
+  so the setup sees its own mocks and shares them with the test files; a test file no
+  longer reads a setup file's `vi.hoisted` values. Reading an export a `vi.mock` factory
+  did not return throws vitest's `No "x" export is defined on the "<spec>" mock` on access
+  (module-runner; `jest.mock` keeps jest's `undefined`) (item 12).
+- The lenient mock synthetic no longer picks up names from an earlier import's `{...}`
+  when the import it reads is default-only (item 13).
+- `fs.appendFileSync` is a real `O_APPEND` append instead of read-then-rewrite, so
+  parallel workers appending to one file no longer lose lines; `fs.promises.appendFile`
+  is added (item 14).
+- `TURBO_NO_MR` (legacy bundle path): entry-file `vi.mock` / `jest.mock` targets are
+  externalized like setup mocks, so they intercept (they were bundled into the entry and
+  never did); the legacy prepass resolves automocks and `vi.importActual` from the entry
+  dir. Partial (`importOriginal`) and React-building factories still stay bundled there.
+  The "builds React" heuristic no longer mistakes `() => ({ ... })` for JSX (item 15).
+
+CLI and reporters (turbo-test#32):
+- A NaN/inf entry in the duration-history cache is ignored instead of panicking the run
+  (item 1).
+- Every value flag accepts vitest's inline form (`--reporter=json`, `--testTimeout=5000`,
+  `--shard=1/2`, `--outputFile=…`); these were warned about and ignored (item 2).
+- A value flag without a value (`turbo-test a.test.js --reporter`, a trailing `-t`) is
+  dropped with a warning instead of taking the test file as its value. A `-t` pattern that
+  starts with `-` needs the inline form (`--testNamePattern=-x`), as with vitest's parser
+  (item 3).
+- The TAP reporter reports a file that fails to load as `not ok N - <file>` with the load
+  error; it was dropped (item 4).
+- `--outputFile` with the text/dot/verbose reporters creates missing parent directories,
+  and a failed `--outputFile` write fails the run (exit 1) for every reporter (item 5).
+- Test `console.*` output no longer corrupts `--reporter json|junit|tap` stdout: it goes to
+  stderr while the artifact is on stdout (item 6).
+- A test file that collects no tests fails the run with vitest's "No test suite found in
+  file <path>" in every reporter, unless `--passWithNoTests` is given (as in vitest). Files
+  whose tests are all skipped or filtered out print PASS instead of FAIL (item 7).
+- Alias parsing: `__dirname + '/z'` targets resolve, a quoted `find` starting with `/` is a
+  prefix match, and `obj.in / 2` no longer hides an alias on the same line (item 8).
+
+Node-API host (turbo-test#33):
+- Re-entrant native callbacks (native -> JS -> native, or `require()` of a `.node` inside a
+  callback) no longer abort the run (item 1), and each loaded addon gets its own env, so a
+  second addon no longer takes over the first addon's functions and references (item 2).
+- Pending exceptions follow Node-API: `napi_is_exception_pending` /
+  `napi_get_and_clear_last_exception` work, calls that can run JS return
+  `napi_pending_exception` while one is pending, and the exception is thrown when the
+  callback returns (item 3).
+- `napi_get_cb_info` fills missing argv slots with `undefined` instead of NULL (which
+  crashed the process) (item 4); `napi_get_value_string_utf8` never writes past
+  `bufsize`, copies whole UTF-8 characters and returns `napi_string_expected` for
+  non-strings (item 5); `napi_typeof` reports `napi_symbol` / `napi_bigint` (item 6);
+  `napi_create_string_utf8` replaces invalid UTF-8 with U+FFFD (item 7); number getters
+  wrap like ToUint32 and return `napi_number_expected` for non-numbers, the bool getter
+  `napi_boolean_expected` (item 8); a throwing setter makes `napi_set_named_property` /
+  `napi_set_element` return `napi_pending_exception` (item 9).
+- Status codes and semantics match Node: ToObject / `object_expected`, `array_expected`,
+  `string_expected`, an unknown typed-array type is `invalid_arg`, property names include
+  the prototype chain, error `code` and function `name` are honoured, a NULL `recv` and a
+  raw ArrayBuffer passed to `napi_get_buffer_info` are `invalid_arg` (item 10).
+- No panics across the FFI boundary: over-long strings return `napi_generic_failure`, and
+  bad typed-array ranges throw Node's RangeErrors (item 11).
+
+Coverage (turbo-test#34; expected values = vitest's v8 provider):
+- esbuild's ESM `__export` getters are no longer reported as functions (an uncalled export
+  was counted twice, both on line 1) (item 1), and esbuild's ESM prologue no longer marks a
+  blank or type-only source line 1 as executed (item 6).
+- Top-level module statements and branches are counted (they always read 0 or "not
+  reached") (item 2).
+- A never-taken braceless `if (c) throw …;` / `return …;` counts as an uncovered statement:
+  gen->source columns no longer drift past esbuild's leading-blank segments (item 3).
+- Lines of switch cases that never ran (and their closing braces) read 0 instead of the
+  function's count (item 4).
+- `coverage-summary.json` stays valid JSON with zero file rows (latent) (item 5).
+
+Transform (turbo-test#35):
+- TypeScript enums are lowered like tsc: string members no longer get a bogus reverse
+  mapping (`enum E { A = 'a', B = A }` emits `E["B"] = "a"`), member references fold to
+  constants, and debug builds no longer panic on oxc's enum debug_assert; the oxc semantic
+  pass now evaluates enum members (item 1).
+- Native ESM->CJS: string-named imports and re-exports whose name is not an identifier
+  (`import { "a-b" as ab }`, `export { "a-b" as c } from`) use computed access
+  `import_x["a-b"]` instead of `import_x.a-b` ("b is not defined"); export keys with `\` or
+  line terminators are escaped correctly (item 2).
+
+The bugs found while fixing those (turbo-test#37-#41) are filed and fixed too.
+
+Native ESM->CJS emitter (turbo-test#37):
+- A module whose only import is a dynamic `import()` no longer fails with `__toESM is not
+  defined` (item 1).
+- `import()` of a module that throws returns a rejected promise instead of throwing
+  synchronously: the load is deferred (`Promise.resolve().then(() => __toESM(require(x)))`),
+  a computed specifier is evaluated at the call as in Node/vitest, and in the native
+  dependency bundler `import()` of an already-bundled module reuses that instance (item 2).
+- Module specifiers containing `"` or `\` are emitted as escaped string literals in
+  `require(...)`; the invalid native output used to be silently replaced by the esbuild
+  retry (item 3).
+
+Runtime (turbo-test#38):
+- The `URL` polyfill resolves relative references like Node's WHATWG `URL` (it appended the
+  reference to the whole base: `new URL('./x.json', 'file:///d/a.test.ts').pathname` was
+  `/d/a.test.ts/./x.json`), so `new URL(rel, import.meta.url)` works; dot segments are
+  normalized (item 1).
+- An entry file's hoisted `vi.mock` / `jest.mock` factory runs once (it ran in the mock
+  prepass and again in the module body) (item 2).
+- A setup file that throws (or fails to load or link) fails every test file using it with
+  `setup file <path>: <error>`, as in vitest; it was silently ignored. Under isolate reuse
+  the error fails every file on that worker (item 3).
+- Without esbuild, the entry's mock factories see the file's `vi.hoisted` values (item 4)
+  and async factories are awaited before the entry links (item 5).
+
+Mock resolution (turbo-test#39):
+- `vi.doMock` followed by `import()` returns the mock on the ESM graph and the `TURBO_NO_MR`
+  bundle path too, also for a module imported (real) before (item 1).
+- A mock whose specifier has a `?query` is a module id of its own: `vi.mock('./x.js?raw', …)`
+  no longer replaces the mock of `./x.js` (item 2).
+
+Coverage (turbo-test#40):
+- An `if` without `else` whose consequent always ran was reported as then 0 / else N, and a
+  later nested function's range could be taken as the else-count. The then-count is now
+  sampled at the consequent (as vitest's v8 provider does) and else = if-count - then;
+  matches vitest 4.1.12 on a 119-module corpus of if/else/ternary/logical shapes (item 1).
+
+Node-API host (turbo-test#41):
+- `napi_call_function` with `argc > 0` and a NULL `argv`, `napi_get_value_string_utf8` with
+  a NULL `buf` and NULL `result`, and `napi_delete_reference(NULL)` return
+  `napi_invalid_arg` as in Node (items 1-3).
+- `napi_wrap`, `napi_unwrap` and `napi_remove_wrap` are implemented with Node semantics
+  (one wrap per object, weak optional result reference, `remove_wrap` doesn't finalize,
+  finalizers on collection and at env teardown), so ObjectWrap-style addons can construct
+  objects (item 4).
+- Addon module init runs under the addon lock like every other entry into addon code, so
+  two workers loading the same `.node` no longer run its init concurrently; a nested
+  `require()` of a `.node` during init still works (item 5).
+
+### Removed
+- runner.rs dead code listed in turbo-test#31 (`kind_of`, `mock_specifiers`,
+  `is_react_family`), and the "mocked but no exports" fallbacks of `native_require` /
+  `load_dep`, which could only serve an empty `{}` and were reachable only through the
+  turbo-test#31 item 2 eviction bug.
+
+### Security
+- esbuild runtime dependency `^0.21.0` (locked 0.21.5) -> `^0.28.2` (turbo-test#36):
+  esbuild <= 0.24.2 is affected by GHSA-67mh-4wv8-2f99 (its `serve` dev server lets any
+  website read responses). turbo-test only spawns esbuild for transforms and bundles and
+  never starts that server, but consumers' `npm audit` flagged the dependency. The
+  helpers esbuild emits that the runner patches (`__defProp`, `__toESM`) are unchanged in
+  0.28; every Rust test, `npm test` and fixtures/compat give the same results. The lock is
+  regenerated with npm 11; npm 10.9 and npm 11.20 `npm ci` install byte-identical trees
+  without rewriting it. `test/deps-advisories.test.mjs` keeps the declared, locked and
+  installed esbuild outside the affected range.
+
 ### Tests
 - Line-coverage gate for the Rust crate: 6.09% (361/5926) -> 99.87% of production
   lines, enforced at `fail-under = 99` by the new CI `coverage` job (cargo-tarpaulin,
@@ -55,6 +248,13 @@ from crates.io.
   addons compiled at test time against throwaway projects. Every file is at 100% except
   `src/runner.rs` (8 lines: three branches reachable only through pre-existing bugs, which
   are filed separately, and a V8-unreachable empty-ranges skip; listed in tarpaulin.toml).
+- After the turbo-test#31-#35 fixes the crate is at 99.98% (6423/6424 lines) and the gate
+  is raised to `fail-under = 99.98`. The one uncovered line is coverage_accumulate's
+  "script with no ranges" skip, which V8 precise coverage never triggers. 61 new
+  regression tests (455 Rust tests, 64 `npm test`); new integration files
+  `tests/runner_c_config.rs`, `tests/runner_c_mocks.rs`, `tests/runner_c_node.rs`.
+  After the turbo-test#37-#41 fixes: 6578/6579 lines (99.98%), 476 Rust tests, new files
+  `tests/runner_c_runtime.rs` and `tests/runner_c_mockres.rs`.
 - Testability refactors, output byte-identical: `src/bin/turbo_test.rs` is now a thin
   wrapper over the new `cli` module (argument parsing, the retry/fresh-isolate policy,
   the worker pool and pure reporter renderers); `launcher::prepare` wraps a side-effect-free

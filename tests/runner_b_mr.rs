@@ -95,7 +95,7 @@ describe('mocks', () => {
     expect((await import('./src/other')).o).toBe('real-o');
   });
 });
-// factory-less (automock) form last: nothing may follow it (see the extract_mocks note)
+// factory-less (automock) form (code may follow it since turbo-test#31 item 4)
 vi.mock('./src/auto');
 "#,
     );
@@ -185,7 +185,7 @@ describe('native require', () => {
   });
   it('packages', () => {
     expect(require('fakepkg').pkg).toBe('fake');
-    expect(() => require('badpkg')).toThrow('failed to load badpkg');
+    expect(() => require('badpkg')).toThrow('pkg boom');
   });
   it('a broken native addon throws', () => {
     expect(() => require('./src/addon.node')).toThrow(/^native addon .*addon\.node: /);
@@ -225,9 +225,9 @@ fn cjs_loader_diagnostics_for_unreadable_unparsable_and_throwing_modules() {
         "diag.test.ts",
         r#"test('load failures', () => {
   expect(() => require('./badutf.cjs')).toThrow('failed to load ./badutf.cjs');
-  expect(() => require('./syntax.cjs')).toThrow('failed to load ./syntax.cjs');
-  expect(() => require('./throws.cjs')).toThrow('failed to load ./throws.cjs');
-  expect(() => require('./rx')).toThrow('failed to load ./rx');
+  expect(() => require('./syntax.cjs')).toThrow("Unexpected token ';'");
+  expect(() => require('./throws.cjs')).toThrow('body boom');
+  expect(() => require('./rx')).toThrow('Invalid regular expression');
 });
 "#,
     );
@@ -288,9 +288,9 @@ fn decorator_file_that_throws_is_retried_once_with_metadata() {
     p.file(
         "d.test.ts",
         r#"test('retry', () => {
-  expect(() => require('./deco')).toThrow('failed to load ./deco');
+  expect(() => require('./deco')).toThrow('deco boom');
   expect(globalThis.__decoLoads).toBe(2);
-  expect(() => require('./plain')).toThrow('failed to load ./plain');
+  expect(() => require('./plain')).toThrow('plain boom');
   expect(globalThis.__plainLoads).toBe(1);
 });
 "#,
@@ -332,7 +332,7 @@ fn e2e_entries_stub_broken_node_modules_unless_disabled() {
   });
   it('stubs an addon', () => { expect(typeof require('../src/addon.node')).toBe('function'); });
   it('app modules still fail', () => {
-    expect(() => require('../src/throws.cjs')).toThrow('failed to load ../src/throws.cjs');
+    expect(() => require('../src/throws.cjs')).toThrow('body boom');
   });
 });
 "#,
@@ -342,8 +342,8 @@ fn e2e_entries_stub_broken_node_modules_unless_disabled() {
     let strict = turbo_test(&p.dir, &[], &[("TURBO_NO_STUB_FAIL", "1")]);
     assert_eq!(strict.code, Some(1), "{}", strict.all());
     for msg in [
-        "stubs a failing package: failed to load badpkg",
-        "stubs unresolvable requires from node_modules: failed to load needsmissing",
+        "stubs a failing package: pkg boom",
+        "stubs unresolvable requires from node_modules: cannot resolve ./nope-sibling",
         "stubs an addon: native addon ",
     ] {
         assert!(strict.stdout.contains(msg), "{msg}\n{}", strict.all());
@@ -551,7 +551,7 @@ fn an_exception_escaping_the_entry_load_is_the_load_error() {
 }
 
 #[test]
-fn setup_file_mocks_are_externalized_and_lenient() {
+fn setup_file_mocks_reach_test_files_with_vitest_missing_export_semantics() {
     let p = esbuild_project("rb-mr-setup-mocks");
     p.file(
         "vitest.config.ts",
@@ -566,14 +566,23 @@ fn setup_file_mocks_are_externalized_and_lenient() {
         "vi.mock('./src/svc', () => { return { a: 'setup-a' }; });\n\
          vi.mock('*.svg?url', () => ({ default: 'x' }));\n",
     );
-    // `b` is imported but missing from the factory: the mock module still links
+    // `b` is imported but missing from the factory: the mock module still links; reading `b`
+    // throws on the module runner (a property access, as in vitest) and reads undefined on the
+    // legacy bundle (an ES import binding cannot throw)
     p.file(
         "s.test.ts",
         "import { a, b } from './src/svc';\n\
+         test('setup mock', () => { expect(a).toBe('setup-a'); \
+         expect(() => b).toThrow('No \"b\" export is defined on the \"./src/svc\" mock'); });\n",
+    );
+    p.file(
+        "legacy.test.ts",
+        "import { a, b } from './src/svc';\n\
          test('setup mock', () => { expect(a).toBe('setup-a'); expect(b).toBe(undefined); });\n",
     );
-    for env in [&[][..], &[("TURBO_NO_MR", "1")][..]] {
-        let r = turbo_test(&p.dir, &[], env);
-        assert_passes(&r, 1);
-    }
+    assert_passes(&turbo_test(&p.dir, &["s.test.ts"], &[]), 1);
+    assert_passes(
+        &turbo_test(&p.dir, &["legacy.test.ts"], &[("TURBO_NO_MR", "1")]),
+        1,
+    );
 }

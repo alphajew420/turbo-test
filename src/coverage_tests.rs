@@ -435,6 +435,215 @@ fn gen_to_orig_maps_through_segments() {
     assert_eq!(gen_to_orig(&meta, w.len() - 1), None);
 }
 
+/// An ESM source as esbuild emits it under `--format=cjs`: the interop prologue (export table +
+/// `__toCommonJS`, every line mapped to (0, 0) only), then the code. Source line 1 holds a whole
+/// function whose export getter (`longExportedName: () => …`) is never read.
+const ESM_SRC: &str = "\
+export function longExportedName() { return 1; }
+export function api() {
+  return longExportedName();
+}
+";
+const ESM_GEN: &str = "\
+var m_exports = {};
+__export(m_exports, {
+  api: () => api,
+  longExportedName: () => longExportedName
+});
+module.exports = __toCommonJS(m_exports);
+function longExportedName() {
+  return 1;
+}
+function api() {
+  return longExportedName();
+}";
+const ESM_MAP: &str = "AAAA;AAAA;AAAA;AAAA;AAAA;AAAA;AAAO;EAA8B;AAAW;AACzC;EACL;AACF";
+
+fn esm_meta(name: &str) -> PathBuf {
+    let p = vpath(name);
+    let w = inline_wrapped(ESM_GEN, &format!("{{\"mappings\":\"{ESM_MAP}\"}}"));
+    register_meta(&p, &w, ESM_SRC);
+    p
+}
+
+#[test]
+fn interop_header_end_spans_the_esbuild_prologue_only() {
+    let (_, segs) = parse_mappings_full(ESM_MAP);
+    let gen: Vec<&str> = ESM_GEN.lines().collect();
+    assert_eq!(interop_header_end(&gen, &segs), 6);
+    // CommonJS output: real mappings come first, so there is no prologue
+    let (_, cjs) = parse_mappings_full("AAAA,IAAI;AACA");
+    let cjs_gen = ["const a = 1;", "module.exports = __toCommonJS(a);"];
+    assert_eq!(interop_header_end(&cjs_gen, &cjs), 0);
+    // (0, 0)-only lines without the closing `__toCommonJS` line are not a prologue either
+    assert_eq!(interop_header_end(&gen[..5], &segs), 0);
+}
+
+#[test]
+fn interop_prologue_has_no_source_positions_or_functions() {
+    let p = esm_meta("esm-prologue.js");
+    let meta = meta_for(&p).unwrap();
+    assert_eq!(meta.header_end, 6);
+    let getter = at(ESM_GEN, "() => longExportedName", 0);
+    assert_eq!(gen_to_orig(&meta, getter), None);
+    assert_eq!(
+        gen_to_orig(&meta, at(ESM_GEN, "function longExportedName", 0)),
+        Some((0, 7))
+    );
+    let lf = (
+        at(ESM_GEN, "function longExportedName", 0),
+        at(ESM_GEN, "}\nfunction api", 1),
+    );
+    let api = (at(ESM_GEN, "function api", 0), WRAP.len() + ESM_GEN.len());
+    let ranges = vec![
+        (getter, at(ESM_GEN, "\n});", 0), 0), // the getter is never read
+        (lf.0, lf.1, 1),                      // …but the function runs, via api()
+        (api.0, api.1, 1),
+    ];
+    // export getters (named after their export, mapped to line 1) are not the source's functions
+    let funcs = vec![
+        ("api".to_string(), at(ESM_GEN, "() => api", 0), 1),
+        ("longExportedName".to_string(), getter, 0),
+        ("longExportedName".to_string(), lf.0, 1),
+        ("api".to_string(), api.0, 1),
+    ];
+    map_script(&p, &ranges, &funcs);
+    assert_eq!(
+        fns_of(&p),
+        BTreeMap::from([
+            ((1, "longExportedName".to_string()), 1),
+            ((2, "api".to_string()), 1)
+        ])
+    );
+    // the unread getter's 0-count range does not land on `return 1` (source line 1, col 37)
+    map_statements(&p, &ranges);
+    assert_eq!(stmts_of(&p), BTreeMap::from([(0, (1, 1)), (1, (3, 1))]));
+}
+
+#[test]
+fn interop_prologue_lines_are_not_source_line_1() {
+    let p = esm_meta("esm-prologue-lines.js");
+    let lf = (
+        at(ESM_GEN, "function longExportedName", 0),
+        at(ESM_GEN, "}\nfunction api", 1),
+    );
+    let ranges = vec![
+        (0, WRAP.len() + ESM_GEN.len(), 1), // module body: the prologue runs
+        (lf.0, lf.1, 0),                    // the line-1 function never does
+    ];
+    map_script(&p, &ranges, &[]);
+    // line 1 is only the never-run function; the prologue (count 1) does not count as line 1
+    assert_eq!(
+        lines_of(&p),
+        BTreeMap::from([(1, 0), (2, 1), (3, 1), (4, 1)])
+    );
+}
+
+/// turbo-test#34's thr.js and the code part of esbuild's output for it, with esbuild's own
+/// mappings: the indented line starts its first segment on the indentation, and the `throw`
+/// segment starts on the space before the keyword (gen col 8 → source col 9).
+const THR_SRC: &str = "export function g(c) {\n  if (c) throw new Error('x');\n  return 1;\n}\n";
+const THR_GEN: &str = "function g(c) {\n  if (c) throw new Error(\"x\");\n  return 1;\n}";
+const THR_MAP: &str = "AAAO,SAAS,EAAE,GAAG;AACnB,MAAI,EAAG,OAAM,IAAI,MAAM,GAAG;AAC1B,SAAO;AACT";
+
+#[test]
+fn gen_to_orig_skips_a_segments_blank_lead_in() {
+    let p = vpath("thr-lead.js");
+    let w = inline_wrapped(THR_GEN, &format!("{{\"mappings\":\"{THR_MAP}\"}}"));
+    register_meta(&p, &w, THR_SRC);
+    let meta = meta_for(&p).unwrap();
+    let line1 = at(THR_GEN, "  if", 0);
+    assert_eq!(gen_to_orig(&meta, line1), Some((1, 2))); // indentation: the segment's own start
+    assert_eq!(gen_to_orig(&meta, line1 + 1), Some((1, 2)));
+    assert_eq!(gen_to_orig(&meta, line1 + 2), Some((1, 2))); // `if`
+    assert_eq!(gen_to_orig(&meta, line1 + 3), Some((1, 3)));
+    assert_eq!(gen_to_orig(&meta, line1 + 9), Some((1, 9))); // `throw` (was col 10)
+    assert_eq!(gen_to_orig(&meta, line1 + 12), Some((1, 12)));
+    assert_eq!(gen_to_orig(&meta, line1 + 15), Some((1, 15))); // `new`: next segment, no lead
+                                                               // a lead-in whose source position is itself blank is a real (identity) run: no skipping
+    let q = vpath("blank-source-lead.js");
+    let src = "a  =  1;";
+    register_meta(
+        &q,
+        &inline_wrapped(src, "{\"mappings\":\"AAAA,CAAC\"}"),
+        src,
+    );
+    let qm = meta_for(&q).unwrap();
+    assert_eq!(gen_to_orig(&qm, WRAP.len() + 3), Some((0, 3)));
+}
+
+#[test]
+fn braceless_consequent_statement_takes_its_own_range() {
+    let p = vpath("thr-statements.js");
+    let w = inline_wrapped(THR_GEN, &format!("{{\"mappings\":\"{THR_MAP}\"}}"));
+    register_meta(&p, &w, THR_SRC);
+    // V8's ranges for g(false): the function, and the never-run `throw` (it starts AT the keyword)
+    let ranges = vec![
+        (at(THR_GEN, "function", 0), WRAP.len() + THR_GEN.len(), 1),
+        (at(THR_GEN, "throw", 0), at(THR_GEN, "\n  return", 0), 0),
+    ];
+    map_statements(&p, &ranges);
+    // if (2), throw (2), return 1 (3)
+    assert_eq!(
+        stmts_of(&p),
+        BTreeMap::from([(0, (2, 1)), (1, (2, 0)), (2, (3, 1))])
+    );
+    map_branches(&p, &ranges);
+    assert_eq!(
+        brs_of(&p),
+        BTreeMap::from([((0, 0), (2, true, 0)), ((0, 1), (2, true, 1))])
+    );
+}
+
+/// turbo-test#34's sw.js and the code part of esbuild's output, with esbuild's own mappings:
+/// each `case`/`default`/`}` line opens with a segment covering only its indentation, mapped to
+/// where the previous source token ended (`    default:` → the `2` of `return 2;`).
+const SW_SRC: &str = "\
+export function sw(x) {
+  switch (x) {
+    case 'a': return 1;
+    case 'b': return 2;
+    default: return 0;
+  }
+}
+";
+const SW_GEN: &str = "\
+function sw(x) {
+  switch (x) {
+    case \"a\":
+      return 1;
+    case \"b\":
+      return 2;
+    default:
+      return 0;
+  }
+}";
+const SW_MAP: &str = "AAAO,SAAS,GAAG,GAAG;AACpB,UAAQ,GAAG;AAAA,IACT,KAAK;AAAK,aAAO;AAAA,IACjB,KAAK;AAAK,aAAO;AAAA,IACjB;AAAS,aAAO;AAAA,EAClB;AACF";
+
+#[test]
+fn a_line_opening_with_a_blank_only_segment_is_not_attributed_to_the_previous_line() {
+    let p = vpath("switch-lines.js");
+    let w = inline_wrapped(SW_GEN, &format!("{{\"mappings\":\"{SW_MAP}\"}}"));
+    register_meta(&p, &w, SW_SRC);
+    assert_eq!(
+        meta_for(&p).unwrap().blank_first,
+        vec![false, false, true, false, true, false, true, false, true, false]
+    );
+    // V8's ranges for sw('a'): the function, and the two cases that never ran
+    let ranges = vec![
+        (at(SW_GEN, "function", 0), WRAP.len() + SW_GEN.len(), 1),
+        (at(SW_GEN, "case \"b\"", 0), at(SW_GEN, "return 2;", 9), 0),
+        (at(SW_GEN, "default", 0), at(SW_GEN, "return 0;", 9), 0),
+    ];
+    map_script(&p, &ranges, &[]);
+    // `    default:` and `  }` are credited to lines 4 and 5 (where their indentation segment
+    // points) but open outside both case ranges: they take the count of the token they point at
+    assert_eq!(
+        lines_of(&p),
+        BTreeMap::from([(1, 1), (2, 1), (3, 1), (4, 0), (5, 0), (7, 1)])
+    );
+}
+
 // ---- mapping V8 ranges onto lines / functions / branches / statements -----------------------
 
 #[test]
@@ -501,7 +710,7 @@ function f(x, y) {
     register_meta(&p, &identity_wrapped(src), src);
     let body = (at(src, "function", 0), WRAP.len() + src.len(), 4);
     let ranges = vec![
-        (0, WRAP.len() + src.len(), 1), // module wrapper: starts on line 0 → dropped
+        (0, WRAP.len() + src.len(), 1), // module wrapper: opens on line 0 → starts at (0, 0)
         body,
         (at(src, "{\n    a()", 0), at(src, "} else", 1), 3), // consequent
         (at(src, "{\n    b()", 0), at(src, "  }\n  const t", 3), 1), // alternate
@@ -526,43 +735,82 @@ function f(x, y) {
 
 #[test]
 fn map_branches_implicit_else_derives_counts_from_sub_ranges() {
-    let src = "function g(x) {\n  if (x) return 1;\n  return 2;\n}";
-    let ranges_for = |consequent: Option<i64>, continuation: Option<i64>| {
-        let mut r = vec![(at(src, "function", 0), WRAP.len() + src.len(), 5)];
-        if let Some(c) = consequent {
-            // V8 starts the braceless consequent's range a column past the keyword
-            r.push((at(src, "return 1", 1), at(src, "return 1", 9), c));
-        }
-        if let Some(c) = continuation {
-            r.push((at(src, "\n  return 2", 0), at_last(src, "}", 0), c));
-        }
-        r
-    };
-    let run = |name: &str, ranges: Vec<(usize, usize, i64)>| {
+    // V8's ranges for `g` called 5 times. V8 keeps a nested range only when its count differs from
+    // the enclosing range's: a consequent's when it ran sometimes or never (NOT always), the
+    // continuation after the `if` when the consequent returned. The then-count is the count at the
+    // consequent's start; else = (if-statement executions) − then.
+    let run = |name: &str, src: &str, ranges: Vec<(usize, usize, i64)>| {
         let p = vpath(name);
         register_meta(&p, &identity_wrapped(src), src);
         map_branches(&p, &ranges);
         let b = brs_of(&p);
         (b[&(0, 0)], b[&(0, 1)])
     };
-    // then sometimes taken: its own range's count is the then-count, else = block − then
+    let ret = "function g(x) {\n  if (x) return 1;\n  return 2;\n}";
+    let ret_ranges = |consequent: Option<i64>, continuation: Option<i64>| {
+        let mut r = vec![(at(ret, "function", 0), WRAP.len() + ret.len(), 5)];
+        if let Some(c) = consequent {
+            r.push((at(ret, "return 1", 0), at(ret, "return 1", 9), c));
+        }
+        if let Some(c) = continuation {
+            r.push((at(ret, "\n  return 2", 0), at_last(ret, "}", 0), c));
+        }
+        r
+    };
+    // then sometimes taken: its own range's count is the then-count
     assert_eq!(
-        run("ie-some.js", ranges_for(Some(2), None)),
-        ((2, true, 2), (2, true, 3))
+        run("ie-some.js", ret, ret_ranges(Some(3), Some(2))),
+        ((2, true, 3), (2, true, 2))
     );
-    // then always taken: the continuation after the `if` is a lower-count (0) range
+    // then always taken: no consequent range (the enclosing count is the then-count); the code
+    // after the `if` never ran
     assert_eq!(
-        run("ie-always.js", ranges_for(None, Some(0))),
+        run("ie-always.js", ret, ret_ranges(None, Some(0))),
         ((2, true, 5), (2, true, 0))
     );
-    // then never taken: no distinct sub-range at all
+    // then never taken: the consequent keeps its 0-count range, the continuation has none
     assert_eq!(
-        run("ie-never.js", ranges_for(None, None)),
+        run("ie-never.js", ret, ret_ranges(Some(0), None)),
         ((2, true, 0), (2, true, 5))
     );
+    // a consequent that falls through, then a nested function `h` that g returns (its callers
+    // call it any number of times)
+    let fall = "function g(x) {\n  if (x) {\n    x++;\n  }\n  const h = () => x;\n  return h;\n}";
+    let fall_ranges = |consequent: Option<i64>, h: Option<i64>| {
+        let mut r = vec![(at(fall, "function", 0), WRAP.len() + fall.len(), 5)];
+        if let Some(c) = consequent {
+            r.push((at(fall, "{\n    x++", 0), at(fall, "}\n  const", 1), c));
+        }
+        if let Some(c) = h {
+            r.push((at(fall, "() => x", 0), at(fall, "() => x", 7), c));
+        }
+        r
+    };
+    assert_eq!(
+        run("ie-fall-some.js", fall, fall_ranges(Some(3), Some(7))),
+        ((2, true, 3), (2, true, 2))
+    );
+    assert_eq!(
+        run("ie-fall-never.js", fall, fall_ranges(Some(0), Some(7))),
+        ((2, true, 0), (2, true, 5))
+    );
+    // turbo-test#40: always taken, so V8 emits no range besides the function's (and `h`'s). This
+    // was read as "then never taken" (then 0 / else 5), and a later nested function's range was
+    // taken for the continuation after the `if` (else = `h`'s count)
+    for (name, h) in [
+        ("ie-fall-always.js", None),
+        ("ie-fall-always-h-called.js", Some(3)),
+        ("ie-fall-always-h-uncalled.js", Some(0)),
+    ] {
+        assert_eq!(
+            run(name, fall, fall_ranges(None, h)),
+            ((2, true, 5), (2, true, 0)),
+            "{name}"
+        );
+    }
     // the decision itself never reached (no range covers it): not reached, nothing taken
     assert_eq!(
-        run("ie-unreached.js", vec![]),
+        run("ie-unreached.js", ret, vec![]),
         ((2, false, 0), (2, false, 0))
     );
 }
@@ -604,6 +852,63 @@ fn map_statements_uses_the_innermost_covering_range() {
     map_statements(&p, &[(at(src, "function", 0), WRAP.len() + src.len(), 7)]);
     let s = stmts_of(&p);
     assert_eq!((s[&0].1, s[&2].1, s[&3].1), (7, 7, 7));
+}
+
+#[test]
+fn top_level_code_takes_the_module_range_that_opens_on_the_wrapper_line() {
+    // V8 counts top-level code only in the module-wide ranges (the script and the CJS wrapper
+    // function), which start on wrapper line 0 and end past the source map comment — neither end
+    // has a source position of its own.
+    let src = "const a = 0;\nif (a) {\n  g();\n}\nfunction g() {\n  return a;\n}\nfunction h() {\n  return 0;\n}";
+    let p = vpath("top-level.js");
+    let w = identity_wrapped(src);
+    register_meta(&p, &w, src);
+    let meta = meta_for(&p).unwrap();
+    let last_line = WRAP.len() + src.rfind('\n').unwrap() + 1;
+    assert_eq!(meta.code_span, Some((WRAP.len(), last_line)));
+    let ranges = vec![
+        (0, w.len(), 1),                                          // the script
+        (1, w.len() - 1, 1),                                      // the wrapper function
+        (at(src, "{\n  g()", 0), at(src, "}\nfunction g", 1), 0), // the `if` never fires
+        (at(src, "function g", 0), at(src, "}\nfunction h", 1), 0),
+        (at(src, "function h", 0), WRAP.len() + src.len(), 0),
+    ];
+    map_statements(&p, &ranges);
+    // const a (1), if (2), g() (3), return a (6), return 0 (9)
+    assert_eq!(
+        stmts_of(&p),
+        BTreeMap::from([
+            (0, (1, 1)),
+            (1, (2, 1)),
+            (2, (3, 0)),
+            (3, (6, 0)),
+            (4, (9, 0))
+        ])
+    );
+    // the top-level `if` is reached: then 0, else 1 (was "-" / "-": never reached)
+    map_branches(&p, &ranges);
+    assert_eq!(
+        brs_of(&p),
+        BTreeMap::from([((0, 0), (2, true, 0)), ((0, 1), (2, true, 1))])
+    );
+    // a range that ends before the first mapped position (a runtime helper) is still dropped
+    let q = vpath("top-level-helper.js");
+    register_meta(&q, &w, src);
+    map_statements(&q, &[(0, WRAP.len() - 1, 9)]);
+    assert!(stmts_of(&q).values().all(|&(_, c)| c == 0));
+}
+
+#[test]
+fn innermost_range_prefers_the_narrower_of_two_with_the_same_start() {
+    // a CommonJS function on line 1 column 0 starts where the module range does (both map to
+    // (0, 0)): its own range, not the module's, must count its statements — whatever the order.
+    let src = "function f() {\n  return 1;\n}\nmodule.exports = f;";
+    let p = vpath("same-start.js");
+    let w = identity_wrapped(src);
+    register_meta(&p, &w, src);
+    let f = (at(src, "function f", 0), at(src, "}\nmodule", 1));
+    map_statements(&p, &[(f.0, f.1, 0), (0, w.len(), 1)]);
+    assert_eq!(stmts_of(&p), BTreeMap::from([(0, (2, 0)), (1, (4, 1))]));
 }
 
 #[test]
@@ -729,6 +1034,18 @@ fn json_summary_matches_the_c8_shape() {
     // and it is valid JSON whose keys round-trip the escaped path
     let v: serde_json::Value = serde_json::from_str(&s).unwrap();
     assert_eq!(v["/p/a\"q\\.ts"]["lines"]["covered"], 1);
+}
+
+#[test]
+fn json_summary_without_file_rows_is_valid_json() {
+    // turbo-test#34 item 5: zero rows used to leave a trailing comma after the total block.
+    let s = json_summary(&row("", 0, 0, 0, 0, 0, 0, 0, 0), &[]);
+    assert_eq!(
+        s,
+        "{\n  \"total\": {\"lines\":{\"total\":0,\"covered\":0,\"skipped\":0,\"pct\":100},\"statements\":{\"total\":0,\"covered\":0,\"skipped\":0,\"pct\":100},\"functions\":{\"total\":0,\"covered\":0,\"skipped\":0,\"pct\":100},\"branches\":{\"total\":0,\"covered\":0,\"skipped\":0,\"pct\":100}}\n}\n"
+    );
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert_eq!(v.as_object().unwrap().len(), 1);
 }
 
 #[test]

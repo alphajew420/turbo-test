@@ -1,6 +1,7 @@
 //! Unit tests for the napi host paths an addon cannot drive through `require()`: the panic
-//! guards (a C callback cannot unwind into Rust), stored pending exceptions, same-thread
-//! re-entry of the addon lock, and the trampoline's missing-env / missing-slot fallbacks.
+//! guards (a C callback cannot unwind into Rust), stored pending exceptions, termination
+//! handling, same-thread re-entry of the addon lock, and the trampoline's dispatch through its
+//! callback record.
 //! The end-to-end surface is covered by tests/napi_host.rs.
 
 use super::*;
@@ -26,10 +27,12 @@ fn env_for(scope: &mut v8::PinScope) -> Box<Env> {
     Box::new(Env {
         isolate: std::ptr::null_mut(),
         scope: scope as *mut v8::PinScope as *mut c_void,
-        context: None,
+        context: v8::Global::new(scope, scope.get_current_context()),
         last_exception: None,
         fns: Vec::new(),
         refs: Vec::new(),
+        wraps: Default::default(),
+        next_wrap: 0,
     })
 }
 
@@ -117,9 +120,17 @@ unsafe extern "C" fn record_call(_env: napi_env, _info: napi_callback_info) -> n
 }
 
 #[test]
-fn trampoline_without_env_or_slot_returns_undefined() {
+fn trampoline_dispatches_through_the_callback_record() {
     with_scope(|s| {
-        ENV.with(|e| *e.borrow_mut() = None);
+        let recv: v8::Local<v8::Value> = v8::undefined(s).into();
+        // a function on the trampoline without a callback record (not made by
+        // napi_create_function) calls nothing and returns undefined
+        let bare = v8::FunctionTemplate::new(s, napi_fn_trampoline)
+            .get_function(s)
+            .unwrap();
+        assert!(bare.call(s, recv, &[]).unwrap().is_undefined());
+        assert!(!CALLED.load(Ordering::SeqCst));
+        // a napi-created function reaches its addon callback through the record
         let mut env = env_for(s);
         let mut f: napi_value = std::ptr::null_mut();
         let status = unsafe {
@@ -133,20 +144,45 @@ fn trampoline_without_env_or_slot_returns_undefined() {
             )
         };
         assert_eq!(status, napi_ok);
+        assert_eq!(env.fns.len(), 1);
         let func: v8::Local<v8::Function> = unsafe { to_local(f) }.try_into().unwrap();
-        let recv: v8::Local<v8::Value> = v8::undefined(s).into();
-        // no env installed on this thread
-        let r = func.call(s, recv, &[]).unwrap();
-        assert!(r.is_undefined());
-        // an env without this function's slot
-        ENV.with(|e| *e.borrow_mut() = Some(env_for(s)));
-        let r = func.call(s, recv, &[]).unwrap();
-        assert!(r.is_undefined());
-        assert!(!CALLED.load(Ordering::SeqCst));
-        ENV.with(|e| *e.borrow_mut() = None);
-        // control: the sentinel does record a real invocation
-        let ret = unsafe { record_call(&mut *env, std::ptr::null_mut()) };
-        assert!(ret.is_null());
+        assert!(func.call(s, recv, &[]).unwrap().is_undefined());
         assert!(CALLED.load(Ordering::SeqCst));
+    });
+}
+
+fn terminate(scope: &mut v8::PinScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
+    scope.terminate_execution();
+}
+
+#[test]
+fn js_call_parks_exceptions_but_not_a_termination() {
+    with_scope(|s| {
+        let mut env = env_for(s);
+        let e: napi_env = &mut *env;
+        let recv = unsafe { to_napi(v8::undefined(s).into()) };
+        let mut out: napi_value = std::ptr::null_mut();
+        let term = v8::Function::new(s, terminate).unwrap();
+        let key = v8::String::new(s, "term").unwrap();
+        let global = s.get_current_context().global(s);
+        global.set(s, key.into(), term.into()).unwrap();
+        let js = |s: &mut v8::PinScope, src: &str| {
+            let src = v8::String::new(s, src).unwrap();
+            let f = v8::Script::compile(s, src, None).unwrap().run(s).unwrap();
+            unsafe { to_napi(f) }
+        };
+        // a termination (e.g. a test timeout) inside JS the addon called keeps unwinding: it
+        // fails the call but is not parked as a pending exception to be rethrown later
+        let spin = js(s, "() => { term(); for (;;) {} }");
+        let st = unsafe { napi_call_function(e, recv, spin, 0, std::ptr::null(), &mut out) };
+        s.cancel_terminate_execution();
+        assert_eq!(st, napi_pending_exception);
+        assert!(env.last_exception.is_none());
+        // a JS exception is parked on the env
+        let thrower = js(s, "() => { throw 7 }");
+        let st = unsafe { napi_call_function(e, recv, thrower, 0, std::ptr::null(), &mut out) };
+        assert_eq!(st, napi_pending_exception);
+        let parked = env.last_exception.take().unwrap();
+        assert_eq!(v8::Local::new(s, &parked).int32_value(s), Some(7));
     });
 }

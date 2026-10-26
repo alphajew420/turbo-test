@@ -150,7 +150,7 @@ fn bundles_a_cyclic_esm_graph_with_assets_ts_and_cjs() {
         "unresolvable stays a runtime require: {e}"
     );
     assert!(
-        e.contains("Promise.resolve(__toESM(require(\"./dyn.js\")))"),
+        e.contains("Promise.resolve().then(() => __toESM(require(\"./dyn.js\")))"),
         "dynamic import not bundled: {e}"
     );
 

@@ -371,7 +371,113 @@ struct ScriptMeta {
     segments: Vec<Vec<(u32, u32, u32)>>, // per gen line: (gen_col, src_line, src_col) — gen→orig
     branches: Vec<BranchCC>,       // decision points in original (line, col)
     statements: Vec<(u32, u32)>,   // executable statement starts in original (line, col)
+    /// gen lines `[0, header_end)` are esbuild's interop prologue (see `interop_header_end`)
+    header_end: usize,
+    /// wrapped offsets of the first and last mapped positions of the code (see `code_span`)
+    code_span: Option<(usize, usize)>,
+    /// per gen line, per segment: blank lead-in columns of its run (see `segment_leads`)
+    leads: Vec<Vec<u32>>,
+    /// per gen line: its first segment covers blanks only (see `blank_first_segments`)
+    blank_first: Vec<bool>,
 }
+
+impl ScriptMeta {
+    /// The 0-based WRAPPED line holding `off` when that line is generated source code — not the
+    /// wrapper line 0 and not esbuild's interop prologue (see `interop_header_end`).
+    fn code_line(&self, off: usize) -> Option<usize> {
+        let li = self
+            .line_start
+            .partition_point(|&s| s <= off)
+            .saturating_sub(1);
+        (li > self.header_end).then_some(li) // wrapped line li ↔ esbuild gen line li-1
+    }
+}
+
+/// esbuild's ESM→CJS interop prologue: the runtime helpers, `var x_exports = {};`, the
+/// `__export(x_exports, { name: () => name, … })` getter table and
+/// `module.exports = __toCommonJS(x_exports);`. esbuild maps every mapped line of it to source
+/// (0, 0) only, so it would otherwise read as code on source line 1 — and every export getter as
+/// a function there. Returns the number of leading generated lines it spans: up to the
+/// `module.exports = __toCommonJS(` line, provided nothing before it maps anywhere but (0, 0).
+/// 0 when there is none (a CommonJS source, or an ESM one without exports).
+fn interop_header_end(gen_lines: &[&str], segs: &Segments) -> usize {
+    for (i, (row, line)) in segs.iter().zip(gen_lines).enumerate() {
+        if row.iter().any(|s| (s.1, s.2) != (0, 0)) {
+            return 0;
+        }
+        if line.starts_with("module.exports = __toCommonJS(") {
+            return i + 1;
+        }
+    }
+    0
+}
+
+/// Wrapped offsets of the first and last mapped generated positions after the prologue (None
+/// when nothing is mapped). V8 ranges that open before / close after them are the module-wide
+/// ones — see `orig_ranges`.
+fn code_span(line_start: &[usize], segs: &Segments, header_end: usize) -> Option<(usize, usize)> {
+    let mut mapped = segs
+        .iter()
+        .enumerate()
+        .skip(header_end)
+        .filter_map(|(g, row)| {
+            let ls = *line_start.get(g + 1)?; // esbuild gen line g ↔ wrapped line g+1
+            Some((ls + row.first()?.0 as usize, ls + row.last()?.0 as usize))
+        });
+    let first = mapped.next()?;
+    let last = mapped.next_back().unwrap_or(first);
+    Some((first.0, last.1))
+}
+/// Per segment (same shape as `segs`): how many leading columns of its generated run are blanks
+/// that are not source text. esbuild often starts a segment on the indentation or on the space
+/// before the token it maps — `  if (c) throw …` maps gen col 0 to the `if` at source col 2 and
+/// gen col 8 (the space) to the `throw` at col 9 — so a plain 1:1 offset delta put every later
+/// column of the run that far right of its token (V8's range for the `throw` started a column
+/// past it). Only blanks in front of a non-blank source position count: there they cannot be
+/// part of the source run.
+fn segment_leads(gen_lines: &[&[u16]], orig_lines: &[&[u16]], segs: &Segments) -> Vec<Vec<u32>> {
+    let blank = |c: &u16| *c == 0x20 || *c == 0x09;
+    let mut out = Vec::with_capacity(segs.len());
+    for (g, row) in segs.iter().enumerate() {
+        let text = gen_lines.get(g).copied().unwrap_or_default();
+        let mut leads = Vec::with_capacity(row.len());
+        for (i, &(col, line, src_col)) in row.iter().enumerate() {
+            let end = row.get(i + 1).map_or(text.len(), |n| n.0 as usize);
+            let run = text.get(col as usize..end).unwrap_or_default();
+            let w = run.iter().take_while(|c| blank(c)).count() as u32;
+            let at = orig_lines
+                .get(line as usize)
+                .and_then(|t| t.get(src_col as usize));
+            leads.push(if at.is_some_and(|c| !blank(c)) { w } else { 0 });
+        }
+        out.push(leads);
+    }
+    out
+}
+
+/// Per gen line: whether its first segment's generated run is blank only. esbuild opens such a
+/// line (`    case "b":`, `    default:`, `  }`) with a segment for its indentation that points
+/// at where the PREVIOUS source token ended (`    default:` → the `2` of `return 2;` on the line
+/// before), and its code with a later segment. Line coverage attributes a generated line to its
+/// first segment's source line, sampled at the line start, so such a line used to credit the
+/// previous source line with a count taken outside every case range.
+fn blank_first_segments(gen_lines: &[&[u16]], segs: &Segments) -> Vec<bool> {
+    let blank = |c: &u16| *c == 0x20 || *c == 0x09;
+    let mut out = Vec::with_capacity(segs.len());
+    for (g, row) in segs.iter().enumerate() {
+        let text = gen_lines.get(g).copied().unwrap_or_default();
+        let run = match row.first() {
+            Some(first) => {
+                let end = row.get(1).map_or(text.len(), |n| n.0 as usize);
+                text.get(first.0 as usize..end).unwrap_or_default()
+            }
+            None => &[],
+        };
+        out.push(!run.is_empty() && run.iter().all(blank));
+    }
+    out
+}
+
 static META: Mutex<Option<HashMap<PathBuf, Option<Arc<ScriptMeta>>>>> = Mutex::new(None);
 
 pub fn has_meta(file: &Path) -> bool {
@@ -404,7 +510,25 @@ pub fn register_meta(file: &Path, wrapped: &str, orig_source: &str) {
             .into_iter()
             .map(|o| byte_to_linecol(orig_source, o))
             .collect();
-        Arc::new(ScriptMeta { line_start, genmap, segments, branches, statements })
+        let gen_lines: Vec<&str> = wrapped.split('\n').skip(1).collect();
+        let header_end = interop_header_end(&gen_lines, &segments);
+        let code_span = code_span(&line_start, &segments, header_end);
+        let gen16: Vec<&[u16]> = u16s.split(|&c| c == 0x0A).skip(1).collect();
+        let orig_u16: Vec<u16> = orig_source.encode_utf16().collect();
+        let orig16: Vec<&[u16]> = orig_u16.split(|&c| c == 0x0A).collect();
+        let leads = segment_leads(&gen16, &orig16, &segments);
+        let blank_first = blank_first_segments(&gen16, &segments);
+        Arc::new(ScriptMeta {
+            line_start,
+            genmap,
+            segments,
+            branches,
+            statements,
+            header_end,
+            code_span,
+            leads,
+            blank_first,
+        })
     });
     let mut g = META.lock().unwrap();
     g.get_or_insert_with(HashMap::new).insert(file.to_path_buf(), meta);
@@ -604,18 +728,11 @@ pub fn map_script(file: &Path, ranges: &[(usize, usize, i64)], funcs: &[(String,
     let line_start = &meta.line_start;
     let genmap = &meta.genmap;
 
-    // map a byte offset → original source line (via wrapped line → esbuild gen line → src line).
-    let off_to_src = |off: usize| -> Option<u32> {
-        // largest line index whose start is <= off
-        let li = line_start.partition_point(|&s| s <= off).saturating_sub(1);
-        if li == 0 {
-            return None; // wrapper line
-        }
-        genmap.get(&((li - 1) as u32)).map(|&sl| sl + 1)
-    };
+    // wrapped line `li` (>= 1) → original source line (1-based), via esbuild gen line li-1
+    let src_line_of = |li: usize| genmap.get(&((li - 1) as u32)).map(|&sl| sl + 1);
 
     // innermost covered range for an offset = the one with the largest start that still contains it.
-    let innermost = |off: usize| -> Option<i64> {
+    let innermost_gen = |off: usize| -> Option<i64> {
         let mut best: Option<(usize, i64)> = None;
         for &(s, e, c) in ranges {
             if s <= off && off < e {
@@ -628,19 +745,37 @@ pub fn map_script(file: &Path, ranges: &[(usize, usize, i64)], funcs: &[(String,
     };
 
     // line coverage
-    for (li, &off) in line_start.iter().enumerate() {
-        if li == 0 {
-            continue; // wrapper line
-        }
-        let Some(count) = innermost(off) else { continue };
-        if let Some(src_line) = off_to_src(off) {
+    let oranges = orig_ranges(&meta, ranges);
+    for &off in line_start {
+        // the wrapper line and esbuild's interop prologue (mapped to (0, 0), so it would make
+        // even a blank or type-only line 1 look executable) are not source lines
+        let Some(li) = meta.code_line(off) else {
+            continue;
+        };
+        // A line whose first segment is only its indentation (a `case`/`default`/`}` line) is
+        // credited to the source token that segment points back to — the end of the previous
+        // line. Take that token's count: the line-start sample lies outside a case range that
+        // ends at that token, so it would read the enclosing count instead.
+        let count = if meta.blank_first.get(li - 1).copied().unwrap_or(false) {
+            let (_, line, col) = meta.segments[li - 1][0];
+            innermost(&oranges, (line, col)).map(|r| r.2)
+        } else {
+            innermost_gen(off)
+        };
+        let Some(count) = count else { continue };
+        if let Some(src_line) = src_line_of(li) {
             record(file, src_line, count.max(0) as u64);
         }
     }
 
-    // function coverage — each function's outer range start offset → its declaration line.
+    // function coverage — each function's outer range start offset → its declaration line. A
+    // function in esbuild's interop prologue (an export getter `name: () => name`) is not one of
+    // the source's functions.
     for (name, start, count) in funcs {
-        if let Some(src_line) = off_to_src(*start) {
+        let Some(li) = meta.code_line(*start) else {
+            continue;
+        };
+        if let Some(src_line) = src_line_of(li) {
             let n = if name.is_empty() { "(anonymous)" } else { name.as_str() };
             record_fn(file, src_line, n, (*count).max(0) as u64);
         }
@@ -648,29 +783,51 @@ pub fn map_script(file: &Path, ranges: &[(usize, usize, i64)], funcs: &[(String,
 }
 
 /// A WRAPPED generated byte offset → original (src_line, src_col), both 0-based, via the source map
-/// segments. Within a segment the offset delta is applied 1:1 (esbuild segments are identity runs).
+/// segments. Within a segment the offset delta is applied 1:1 (esbuild segments are identity runs)
+/// once past the segment's blank lead-in (see `segment_leads`); the lead-in itself maps to the
+/// segment's source position.
+/// Offsets on the wrapper line or in esbuild's interop prologue have no source position: the
+/// prologue's (0, 0) mappings would otherwise put e.g. an unused export getter's 0-count range
+/// over source line 1.
 fn gen_to_orig(meta: &ScriptMeta, off: usize) -> Option<(u32, u32)> {
-    // 0-based wrapped line (line_start[0] == 0, so every offset has one)
-    let li = meta.line_start.partition_point(|&s| s <= off).saturating_sub(1);
-    if li == 0 {
-        return None; // wrapper line
-    }
+    let li = meta.code_line(off)?;
     let gen_col = (off - meta.line_start[li]) as u32;
     let segs = meta.segments.get(li - 1)?; // wrapped line li → esbuild gen line li-1
-    if segs.is_empty() {
-        return None;
-    }
     // largest segment whose gen_col <= ours (segments are sorted by gen_col within a line)
-    let mut chosen: Option<&(u32, u32, u32)> = None;
-    for s in segs {
-        if s.0 <= gen_col {
-            chosen = Some(s);
-        } else {
-            break;
-        }
-    }
-    let s = chosen?;
-    Some((s.1, s.2 + (gen_col - s.0)))
+    let i = segs.partition_point(|s| s.0 <= gen_col).checked_sub(1)?;
+    let (col, line, src_col) = segs[i];
+    let delta = (gen_col - col).saturating_sub(meta.leads[li - 1][i]);
+    Some((line, src_col + delta))
+}
+
+type OrigPos = (u32, u32);
+type OrigRange = (OrigPos, OrigPos, i64);
+
+/// V8's covered ranges in original (line, col) coordinates; empty and unmappable ones dropped.
+/// A range that opens before the first mapped generated position starts at (0, 0), and one that
+/// closes after the last mapped position ends at the end of the source. That keeps the
+/// module-wide ranges — the script and the CJS wrapper function, which open on wrapper line 0
+/// and close past the source-map comment — and they are V8's only count for top-level code. A
+/// runtime helper (it lies wholly before the first mapping) is still dropped.
+fn orig_ranges(meta: &ScriptMeta, ranges: &[(usize, usize, i64)]) -> Vec<OrigRange> {
+    let (first, last) = meta.code_span.unwrap_or((0, usize::MAX));
+    let start = |o: usize| gen_to_orig(meta, o).or((o < first).then_some((0, 0)));
+    let end = |o: usize| gen_to_orig(meta, o).or((o > last).then_some((u32::MAX, u32::MAX)));
+    ranges
+        .iter()
+        .filter_map(|&(gs, ge, c)| Some((start(gs)?, end(ge)?, c)))
+        .filter(|(s, e, _)| s < e)
+        .collect()
+}
+
+/// The innermost range containing `p`: the latest start and, among equal starts, the earliest
+/// end (a function at source (0, 0) starts where the module range does).
+fn innermost(oranges: &[OrigRange], p: OrigPos) -> Option<OrigRange> {
+    oranges
+        .iter()
+        .filter(|(s, e, _)| *s <= p && p < *e)
+        .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
+        .copied()
 }
 
 /// Branch coverage: map V8's generated block ranges into original (line, col) ranges, then look up
@@ -680,81 +837,29 @@ pub fn map_branches(file: &Path, ranges: &[(usize, usize, i64)]) {
     if meta.branches.is_empty() {
         return;
     }
-    // original-coordinate covered ranges
-    let mut oranges: Vec<((u32, u32), (u32, u32), i64)> = Vec::new();
-    for &(gs, ge, c) in ranges {
-        if let (Some(s), Some(e)) = (gen_to_orig(&meta, gs), gen_to_orig(&meta, ge)) {
-            if s < e {
-                oranges.push((s, e, c));
-            }
-        }
-    }
-    let count_at = |p: (u32, u32)| -> Option<i64> {
-        let mut best: Option<((u32, u32), i64)> = None;
-        for &(s, e, c) in &oranges {
-            if s <= p && p < e && best.map(|(bs, _)| s >= bs).unwrap_or(true) {
-                best = Some((s, c));
-            }
-        }
-        best.map(|(_, c)| c)
-    };
-    // The innermost covered range CONTAINING `p` (start, end, count) — gives the enclosing block.
-    let block_of = |p: (u32, u32)| -> Option<((u32, u32), (u32, u32), i64)> {
-        let mut best: Option<((u32, u32), (u32, u32), i64)> = None;
-        for &(s, e, c) in &oranges {
-            if s <= p && p < e && best.map(|(bs, _, _)| s >= bs).unwrap_or(true) {
-                best = Some((s, e, c));
-            }
-        }
-        best
-    };
-    // The covered range with the SMALLEST start within `[lo, hi)` — used to find a consequent's
-    // own block, which V8 may start a column or two past the AST keyword position (so plain
-    // point-containment at the keyword misses it and falls through to the parent count).
-    let first_range_in = |lo: (u32, u32), hi: (u32, u32)| -> Option<i64> {
-        oranges
-            .iter()
-            .filter(|(s, _, _)| *s >= lo && *s < hi)
-            .min_by_key(|(s, _, _)| *s)
-            .map(|(_, _, c)| *c)
-    };
+    let oranges = orig_ranges(&meta, ranges);
+    let count_at = |p: OrigPos| innermost(&oranges, p).map(|r| r.2).unwrap_or(0).max(0) as u64;
     for (block, br) in meta.branches.iter().enumerate() {
         let block_id = block as u32;
         let line = br.decision.0 + 1; // 1-based source line of the decision
-        let block_count = count_at(br.decision).unwrap_or(0).max(0) as u64;
+        let block_count = count_at(br.decision);
         let reached = block_count > 0;
         if br.implicit_else && br.arms.len() == 2 {
-            // `if` with no `else`. arms[0] = consequent start, arms[1] = if-statement end (the
-            // implicit-else position). Derive then/else from V8's sub-ranges rather than a single
-            // point sample — robust to the braceless `if (c) return X;` shape where V8 starts the
-            // consequent's range a column past the `return`/`throw` keyword.
-            let (then_taken, else_taken) =
-                if let Some(c) = first_range_in(br.arms[0], br.arms[1]) {
-                    // consequent has its own block (then taken sometimes-but-not-always): that
-                    // range's count IS the then-count; else = block − then.
-                    let t = c.max(0) as u64;
-                    (t, block_count.saturating_sub(t))
-                } else {
-                    // No distinct consequent range. Two cases, told apart by the continuation:
-                    //  - then ALWAYS taken → code after the `if` is unreachable → V8 emits a
-                    //    lower-count continuation range → else = that count (0), then = block.
-                    //  - then NEVER taken → continuation count == block (no distinct range) →
-                    //    then = 0, else = block.
-                    let block_end = block_of(br.decision).map(|(_, e, _)| e).unwrap_or((u32::MAX, 0));
-                    match first_range_in(br.arms[1], block_end) {
-                        Some(c) => {
-                            let e = c.max(0) as u64;
-                            (block_count.saturating_sub(e), e)
-                        }
-                        None => (0, block_count),
-                    }
-                };
+            // `if` with no `else`: arms[0] = consequent start; the implicit else has no code of
+            // its own, so its count is derived: else = (if-statement executions) − then.
+            // The then-count is sampled at the consequent like any other arm (as vitest's v8
+            // provider does). V8 keeps a consequent range only when its count differs from the
+            // enclosing range's: a never-run consequent keeps a 0-count range, but one that ALWAYS
+            // ran is dropped, so the enclosing count is then the then-count (then = block,
+            // else = 0). No continuation search is needed (or safe: the first range after the
+            // `if` may belong to a later nested function).
+            let then_taken = count_at(br.arms[0]);
+            let else_taken = block_count.saturating_sub(then_taken);
             record_branch(file, block_id, 0, line, reached, then_taken);
             record_branch(file, block_id, 1, line, reached, else_taken);
         } else {
             for (i, &arm) in br.arms.iter().enumerate() {
-                let taken = count_at(arm).unwrap_or(0).max(0) as u64;
-                record_branch(file, block_id, i as u32, line, reached, taken);
+                record_branch(file, block_id, i as u32, line, reached, count_at(arm));
             }
         }
     }
@@ -767,25 +872,9 @@ pub fn map_statements(file: &Path, ranges: &[(usize, usize, i64)]) {
     if meta.statements.is_empty() {
         return;
     }
-    // original-coordinate covered ranges (same construction as map_branches)
-    let mut oranges: Vec<((u32, u32), (u32, u32), i64)> = Vec::new();
-    for &(gs, ge, c) in ranges {
-        if let (Some(s), Some(e)) = (gen_to_orig(&meta, gs), gen_to_orig(&meta, ge)) {
-            if s < e {
-                oranges.push((s, e, c));
-            }
-        }
-    }
-    // innermost (smallest-start) range containing `p` gives that statement's hit count.
-    let count_at = |p: (u32, u32)| -> Option<i64> {
-        let mut best: Option<((u32, u32), i64)> = None;
-        for &(s, e, c) in &oranges {
-            if s <= p && p < e && best.map(|(bs, _)| s >= bs).unwrap_or(true) {
-                best = Some((s, c));
-            }
-        }
-        best.map(|(_, c)| c)
-    };
+    // the innermost range containing a statement's start gives its hit count
+    let oranges = orig_ranges(&meta, ranges);
+    let count_at = |p: OrigPos| innermost(&oranges, p).map(|r| r.2);
     for (idx, &pos) in meta.statements.iter().enumerate() {
         let line = pos.0 + 1; // 1-based source line of the statement
         let count = count_at(pos).unwrap_or(0).max(0) as u64;
@@ -1122,15 +1211,13 @@ fn json_summary(total: &Row, rows: &[Row]) -> String {
             metric(r.brh, r.brf, r.bpct())
         )
     }
-    let mut s = String::from("{\n");
-    s.push_str(&format!("  \"total\": {},\n", block(total)));
-    for (i, r) in rows.iter().enumerate() {
+    // One entry per line, comma-separated (never a trailing comma, even with zero file rows).
+    let mut entries = vec![format!("  \"total\": {}", block(total))];
+    for r in rows {
         let key = r.path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
-        let comma = if i + 1 < rows.len() { "," } else { "" };
-        s.push_str(&format!("  \"{}\": {}{}\n", key, block(r), comma));
+        entries.push(format!("  \"{}\": {}", key, block(r)));
     }
-    s.push_str("}\n");
-    s
+    format!("{{\n{}\n}}\n", entries.join(",\n"))
 }
 
 /// Self-contained HTML overview table (c8/istanbul-style) — browsable `coverage/index.html`.

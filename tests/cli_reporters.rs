@@ -115,6 +115,174 @@ fn json_reporter_keeps_stdout_clean() {
 }
 
 #[test]
+fn test_console_output_never_corrupts_a_stdout_artifact() {
+    // turbo-test#32 item 6: `[js] [log] …` forwarding went to stdout ahead of the JSON/XML/TAP
+    // artifact, so `JSON.parse(stdout)` failed. With an artifact on stdout it goes to stderr.
+    let p = Project::new("rep-console");
+    p.file(
+        "log.test.js",
+        "test('log', () => { console.log('hello-from-test'); console.error('err-from-test') })\n",
+    );
+    for reporter in ["json", "junit", "tap"] {
+        let r = turbo_test(&p.dir, &["--reporter", reporter, "log.test.js"], &[]);
+        assert_eq!(r.code, Some(0), "{reporter}: {}", r.all());
+        assert!(!r.stdout.contains("[js]"), "{reporter}: {}", r.all());
+        assert!(
+            r.stderr.contains("[js] [log] hello-from-test\n")
+                && r.stderr.contains("[js] [error] err-from-test\n"),
+            "{reporter}: {}",
+            r.all()
+        );
+    }
+    let r = turbo_test(&p.dir, &["--reporter", "json", "log.test.js"], &[]);
+    assert_eq!(json_report(&r)["numPassedTests"], 1);
+    // human reporters, and an artifact written to --outputFile (stdout then carries the human
+    // footer), keep the console on stdout as before
+    for args in [
+        &["log.test.js"][..],
+        &["--reporter", "verbose", "log.test.js"],
+        &[
+            "--reporter",
+            "json",
+            "--outputFile",
+            "r.json",
+            "log.test.js",
+        ],
+    ] {
+        let r = turbo_test(&p.dir, args, &[]);
+        assert_eq!(r.code, Some(0), "{args:?}: {}", r.all());
+        assert!(
+            r.stdout.contains("[js] [log] hello-from-test\n"),
+            "{args:?}: {}",
+            r.all()
+        );
+        assert!(!r.stderr.contains("[js]"), "{args:?}: {}", r.all());
+    }
+}
+
+#[test]
+fn file_without_tests_fails_the_run() {
+    // turbo-test#32 item 7: a file that collects no test printed FAIL but counted as passed and
+    // exited 0. vitest fails it with "No test suite found in file <path>" unless
+    // --passWithNoTests (vitest runner `runFiles`: `!file.tasks.length && !passWithNoTests`).
+    let p = Project::new("rep-empty");
+    p.file("empty.spec.js", "export const x = 1;\n");
+    p.file("a.test.js", "test('a', () => {})\n");
+    let (e, a) = (path(&p, "empty.spec.js"), path(&p, "a.test.js"));
+    let msg = format!("No test suite found in file {e}");
+    let r = turbo_test(&p.dir, &["empty.spec.js", "a.test.js"], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout
+            .contains(&format!("ERROR empty.spec.js  ({msg})\nPASS  a.test.js")),
+        "{}",
+        r.all()
+    );
+    assert!(
+        r.stdout.contains("Test Files  1 failed | 1 passed (2)"),
+        "{}",
+        r.all()
+    );
+    let r = turbo_test(&p.dir, &["--reporter", "json", &e, &a], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    let j = json_report(&r);
+    assert_eq!(j["success"], false);
+    assert_eq!(j["testResults"][0]["status"], "error");
+    assert_eq!(j["testResults"][1]["status"], "passed");
+    let r = turbo_test(&p.dir, &["--reporter", "junit", &e], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout.contains(&format!(
+            "<testcase name=\"{e}\" classname=\"{e}\">\n      <error message=\"{msg}\"/>"
+        )),
+        "{}",
+        r.all()
+    );
+    let r = turbo_test(&p.dir, &["--reporter", "tap", &e], &[]);
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert_eq!(
+        r.stdout,
+        format!("TAP version 13\n1..1\nnot ok 1 - {e}\n  ---\n  message: {msg}\n  ...\n\n"),
+        "{}",
+        r.all()
+    );
+    // --passWithNoTests also covers an empty file (vitest semantics): it passes
+    let r = turbo_test(
+        &p.dir,
+        &["--passWithNoTests", "empty.spec.js", "a.test.js"],
+        &[],
+    );
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(
+        r.stdout
+            .contains("PASS  empty.spec.js  (0 passed, 0 failed)"),
+        "{}",
+        r.all()
+    );
+}
+
+#[test]
+fn skipped_or_filtered_files_are_not_empty() {
+    // Collected-but-not-run tests are tasks too (vitest only errors on a file with NO tasks):
+    // skipped/todo tests and suites, and tests a -t pattern filters out, keep the file green.
+    let p = Project::new("rep-skipped");
+    p.file("skip.test.js", "test.skip('s', () => {})\n");
+    p.file("todo.test.js", "test.todo('t')\n");
+    p.file(
+        "dskip.test.js",
+        "describe.skip('d', () => { test('x', () => {}) })\n",
+    );
+    p.file("dtodo.test.js", "describe.todo('d')\n");
+    p.file(
+        "dif.test.js",
+        "describe.skipIf(true)('d', () => {})\ndescribe.runIf(false)('e', () => {})\n",
+    );
+    p.file("a.test.js", "test('alpha', () => {})\n");
+    p.file("empty.test.js", "export {}\n");
+    let files = [
+        "skip.test.js",
+        "todo.test.js",
+        "dskip.test.js",
+        "dtodo.test.js",
+        "dif.test.js",
+    ];
+    let r = turbo_test(&p.dir, &files, &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert!(r.stdout.contains("Test Files  5 passed (5)"), "{}", r.all());
+    for f in files {
+        assert!(
+            r.stdout
+                .contains(&format!("PASS  {f}  (0 passed, 0 failed)")),
+            "{f}: {}",
+            r.all()
+        );
+    }
+    let r = turbo_test(&p.dir, &["-t", "nomatch", "a.test.js"], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    // under isolate reuse the skipped-suite marker is reset per file: a skipped-suite file
+    // followed by an empty one on the same worker still fails the empty one
+    let r = turbo_test(
+        &p.dir,
+        &[
+            "--no-isolate",
+            "--jobs",
+            "1",
+            "dskip.test.js",
+            "empty.test.js",
+        ],
+        &[],
+    );
+    assert_eq!(r.code, Some(1), "{}", r.all());
+    assert!(
+        r.stdout.contains("PASS  dskip.test.js")
+            && r.stdout
+                .contains("ERROR empty.test.js  (No test suite found in file "),
+        "{}",
+        r.all()
+    );
+}
+
+#[test]
 fn junit_reporter() {
     let p = fixture("rep-junit");
     let r = run(&p, &["--reporter", "junit"]);
@@ -167,14 +335,47 @@ fn junit_reporter() {
 fn tap_reporter() {
     let p = fixture("rep-tap");
     let r = run(&p, &["--reporter", "tap"]);
-    assert!(
-        r.stdout.starts_with(
-            "TAP version 13\n1..4\nok 1 - adds <&>\nok 2 - later # SKIP\nnot ok 3 - breaks\n  ---\n  message: expected \"x\" to be \"y\"\n  ...\nok 4 - ok\n"
+    // the load-error file is a `not ok` point too (turbo-test#32 item 4), never dropped
+    assert_eq!(
+        r.stdout,
+        format!(
+            "TAP version 13\n1..5\nok 1 - adds <&>\nok 2 - later # SKIP\nnot ok 3 - breaks\n  ---\n  message: expected \"x\" to be \"y\"\n  ...\nok 4 - ok\nnot ok 5 - {}\n  ---\n  message: module errored: Error: top <boom>\n  ...\n\n",
+            path(&p, "c.test.ts")
         ),
         "{}",
         r.all()
     );
     assert!(r.stderr.contains(SUMMARY), "{}", r.all());
+}
+
+#[test]
+fn output_file_failures_and_missing_dirs() {
+    // turbo-test#32 item 5: text reporter + --outputFile into a missing dir silently wrote
+    // nothing (exit 0); an unwritable --outputFile never failed the run.
+    let p = Project::new("rep-outfile-dirs");
+    p.file("a.test.js", "test('a', () => {})\n");
+    let target = path(&p, "no/such/dir/out.txt");
+    let r = turbo_test(&p.dir, &["--outputFile", &target, "a.test.js"], &[]);
+    assert_eq!(r.code, Some(0), "{}", r.all());
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "PASS  a.test.js  (1 passed, 0 failed)\n"
+    );
+    std::fs::create_dir_all(p.path("adir")).unwrap();
+    for reporter in ["default", "json"] {
+        let r = turbo_test(
+            &p.dir,
+            &["--reporter", reporter, "--outputFile", "adir", "a.test.js"],
+            &[],
+        );
+        assert_eq!(r.code, Some(1), "{reporter}: {}", r.all());
+        assert!(
+            r.stderr
+                .contains("turbo-test: failed to write --outputFile 'adir': "),
+            "{reporter}: {}",
+            r.all()
+        );
+    }
 }
 
 #[test]
@@ -200,7 +401,7 @@ fn output_file_artifacts() {
     run(&p, &["--reporter", "tap", "--output-file", "r.tap"]);
     assert!(std::fs::read_to_string(p.path("r.tap"))
         .unwrap()
-        .starts_with("TAP version 13\n1..4\n"));
+        .starts_with("TAP version 13\n1..5\n"));
 
     run(&p, &["--reporter", "json", "--outputFile", "r.json"]);
     let j: serde_json::Value =

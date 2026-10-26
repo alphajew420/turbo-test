@@ -300,16 +300,87 @@ fn parse_ignored_vitest_flags() {
 
 #[test]
 fn parse_unknown_flags_warn() {
-    let o = parse(&["--frobnicate", "a.test.ts", "-z", "--reporter=json"]);
+    let o = parse(&["--frobnicate", "a.test.ts", "-z", "--silent=yes"]);
     assert_eq!(o.files, vec![PathBuf::from("a.test.ts")]);
     assert_eq!(
         o.warnings,
         vec![
             "turbo-test: ignoring unsupported flag '--frobnicate'".to_string(),
             "turbo-test: ignoring unsupported flag '-z'".to_string(),
-            "turbo-test: ignoring unsupported flag '--reporter=json'".to_string(),
+            "turbo-test: ignoring unsupported flag '--silent=yes'".to_string(),
         ]
     );
+}
+
+#[test]
+fn parse_inline_value_forms() {
+    // turbo-test#32 item 2: every value flag also takes `--flag=value` (one token, nothing more
+    // consumed), exactly like its space form.
+    use CoverageOp::*;
+    let o = parse(&[
+        "--jobs=3",
+        "--testTimeout=250",
+        "--retry=2",
+        "--bail=1",
+        "--shard=1/2",
+        "--reporter=json",
+        "--outputFile=out.json",
+        "--testNamePattern=a=b",
+        "--coverage-dir=cov",
+        "--coverage-thresholds=lines=90",
+        "--coverage-reporter=lcov",
+        "--coverage-include=src/**",
+        "--coverage-exclude=x.ts",
+        "--pool=forks",
+        "a.test.ts",
+    ]);
+    assert_eq!(o.files, vec![PathBuf::from("a.test.ts")]);
+    assert!(o.warnings.is_empty(), "{:?}", o.warnings);
+    assert_eq!(o.jobs, 3);
+    assert_eq!((o.bail, o.shard), (1, Some((1, 2))));
+    assert_eq!(o.reporter, Reporter::Json);
+    assert_eq!(o.output_file.as_deref(), Some("out.json"));
+    assert_eq!(
+        o.env,
+        vec![
+            ("TURBO_TEST_TIMEOUT", "250".to_string()),
+            ("TURBO_TEST_RETRY", "2".to_string()),
+            ("TURBO_TEST_NAME_PATTERN", "a=b".to_string()),
+        ]
+    );
+    assert_eq!(
+        o.coverage,
+        vec![
+            Enable,
+            OutDir("cov".into()),
+            Enable,
+            Thresholds("lines=90".into()),
+            Enable,
+            Reporters("lcov".into()),
+            Enable,
+            Include("src/**".into()),
+            Enable,
+            Exclude("x.ts".into()),
+        ]
+    );
+    for (f, r) in [
+        ("--reporters=tap", Reporter::Tap),
+        ("--maxWorkers=5", Reporter::Default),
+    ] {
+        assert_eq!(parse(&[f]).reporter, r, "{f}");
+    }
+    assert_eq!(parse(&["--maxWorkers=5"]).jobs, 5);
+    assert_eq!(
+        parse(&["--output-file=p.xml"]).output_file.as_deref(),
+        Some("p.xml")
+    );
+    // the inline value is the whole value: the next token stays a file
+    let o = parse(&["--minWorkers=2", "--reporter=", "b.test.ts"]);
+    assert_eq!(o.files, vec![PathBuf::from("b.test.ts")]);
+    assert_eq!((o.jobs, o.reporter), (7, Reporter::Default));
+    // invalid inline numbers are ignored like their space forms
+    assert!(parse(&["--testTimeout=soon", "--retry=-1"]).env.is_empty());
+    assert_eq!(parse(&["--bail=x"]).bail, 0);
 }
 
 #[test]
@@ -385,6 +456,25 @@ fn schedule_slowest_first_ties_keep_order() {
     assert_eq!(schedule_order(&files, &hist), vec![3, 1, 0, 2]);
     assert_eq!(schedule_order(&files, &HashMap::new()), vec![0, 1, 2, 3]);
     assert!(schedule_order(&[], &hist).is_empty());
+}
+
+#[test]
+fn non_finite_history_entries_are_ignored() {
+    // turbo-test#32 item 1: `a\tNaN` parses as f64 NaN and panicked the partial_cmp sort.
+    let t = Tmp::new("nan");
+    let path = t.0.join("durations.tsv");
+    std::fs::write(&path, "a\tNaN\nb\tinf\nc\t-inf\nd\t7\n").unwrap();
+    let hist = load_durations(&path);
+    assert_eq!(hist.len(), 1, "{hist:?}");
+    assert_eq!(hist["d"], 7.0);
+    // Even a NaN that reaches the scheduler directly sorts deterministically, never panics:
+    // NaN ranks above every finite duration (total order), finite entries stay slowest-first.
+    let files: Vec<PathBuf> = ["a", "b", "c"].iter().map(PathBuf::from).collect();
+    let mut raw = HashMap::new();
+    raw.insert("a".to_string(), 3.0);
+    raw.insert("b".to_string(), f64::NAN);
+    raw.insert("c".to_string(), 9.0);
+    assert_eq!(schedule_order(&files, &raw), vec![1, 2, 0]);
 }
 
 #[test]
@@ -699,10 +789,32 @@ fn file_result_lines() {
         "FAIL  /p/a.test.ts  (1 passed, 2 failed)\n        ✗ x: boom\n        ✗ y: bang"
     );
     assert_eq!(r.tests.len(), 1);
-    // nothing collected is not a pass
-    assert!(file_result(0, f, Ok(report(0, 0)), 1.0)
-        .line
-        .starts_with("FAIL  "));
+    // only skipped / name-filtered tests: nothing failed → PASS, matching how it is counted
+    // (turbo-test#32 item 7: it printed FAIL yet counted as a passed file)
+    let r = file_result(0, f, Ok(report(0, 0)), 1.0);
+    assert_eq!(r.line, "PASS  /p/a.test.ts  (0 passed, 0 failed)");
+    assert!(!r.load_error);
+    // a file that collected nothing at all: the runtime's vitest "No test suite found in file"
+    // report becomes a file-level error (like a load error) so every reporter fails it
+    let msg = "No test suite found in file /p/a.test.ts";
+    let rep = TestReport {
+        failures: vec![msg.into()],
+        ..report(0, 0)
+    };
+    let r = file_result(4, f, Ok(rep), 3.0);
+    assert_eq!(
+        r.line,
+        "ERROR /p/a.test.ts  (No test suite found in file /p/a.test.ts)"
+    );
+    assert!(r.load_error && r.tests.is_empty());
+    assert_eq!((r.idx, r.passed, r.failed, r.dur_ms), (4, 0, 0, 3.0));
+    assert_eq!(r.error_msg, msg);
+    // the same text as a real failure (failed > 0) stays an ordinary FAIL
+    let rep = TestReport {
+        failures: vec![msg.into()],
+        ..report(0, 1)
+    };
+    assert!(file_result(0, f, Ok(rep), 1.0).line.starts_with("FAIL  "));
     let r = file_result(1, f, Err("graph load failed".into()), 2.0);
     assert_eq!(r.line, "ERROR /p/a.test.ts  (graph load failed)");
     assert!(r.load_error && r.tests.is_empty());
@@ -913,16 +1025,25 @@ fn junit_reporter() {
 
 #[test]
 fn tap_reporter() {
-    let (_, res) = sample();
-    let expected = "TAP version 13\n1..6\n\
+    let (files, res) = sample();
+    // turbo-test#32 item 4: the load-error file (`files[2]`) is one `not ok` point carrying the
+    // error, like JUnit's / JSON's synthetic failing case — it was silently dropped.
+    let expected = "TAP version 13\n1..7\n\
 ok 1 - suite > adds\n\
 ok 2 - suite > skipped one # SKIP\n\
 not ok 3 - suite > breaks <&>\n  ---\n  message: expected \"1\" to be '2'\n  ...\n\
 ok 4 - todo\n\
 not ok 5 - silent fail\n\
-ok 6 - ok\n";
-    assert_eq!(render_tap(&res), expected);
-    assert_eq!(render_tap(&[]), "TAP version 13\n1..0\n");
+ok 6 - ok\n\
+not ok 7 - /p/c&<x>.test.ts\n  ---\n  message: module errored: Error: top <boom> & \"q\"\n  ...\n";
+    assert_eq!(render_tap(&files, &res), expected);
+    assert_eq!(render_tap(&[], &[]), "TAP version 13\n1..0\n");
+    // a multi-line load error is flattened like a test failure message
+    let only_err = vec![file_result(0, &files[0], Err("a\nb".into()), 1.0)];
+    assert_eq!(
+        render_tap(&files, &only_err),
+        "TAP version 13\n1..1\nnot ok 1 - /p/a.test.ts\n  ---\n  message: a b\n  ...\n"
+    );
 }
 
 #[test]
@@ -939,7 +1060,7 @@ fn artifact_dispatch() {
     );
     assert_eq!(
         render_artifact(Reporter::Tap, &files, &res, &t),
-        Some(render_tap(&res))
+        Some(render_tap(&files, &res))
     );
     for r in [Reporter::Default, Reporter::Dot, Reporter::Verbose] {
         assert_eq!(render_artifact(r, &files, &res, &t), None);
@@ -987,6 +1108,22 @@ fn output_delivery() {
     assert_eq!(
         emit_output(None, Reporter::Default, None, &res),
         (String::new(), String::new())
+    );
+    // turbo-test#32 item 5: the human-reporter branch creates parent dirs like the artifact
+    // branch, and reports a failed write instead of dropping it silently
+    let deep = t.0.join("no/such/dir/out.txt");
+    assert_eq!(
+        emit_output(None, Reporter::Default, deep.to_str(), &res),
+        (String::new(), String::new())
+    );
+    assert_eq!(std::fs::read_to_string(&deep).unwrap(), lines);
+    let (out, err) = emit_output(None, Reporter::Dot, Some(dir), &res);
+    assert_eq!(out, "");
+    assert!(
+        err.starts_with(&format!(
+            "turbo-test: failed to write --outputFile '{dir}': "
+        )),
+        "{err}"
     );
 }
 

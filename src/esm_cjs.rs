@@ -6,7 +6,8 @@
 //!
 //!   - imports → `var import_<src> = require("src")` (or `__toESM(require(...))` when the import
 //!     binds a default or namespace), references to named/default locals rewritten to
-//!     `import_<src>.<name>` so bindings stay LIVE (spyOn / vi.mock observe writes);
+//!     `import_<src>.<name>` (`import_<src>["a-b"]` for a non-identifier string name) so bindings
+//!     stay LIVE (spyOn / vi.mock observe writes);
 //!   - exports → an `__export(__tt_exports, { name: () => binding, ... })` getter block +
 //!     `module.exports = __toCommonJS(__tt_exports)`, `export *` via `__reExport`.
 //!
@@ -145,6 +146,9 @@ pub(crate) struct ModuleParts {
     pub default_needs_rewrite: bool,
     /// true if the module used any static ESM import/export (else it's CJS / a plain script).
     pub has_module_syntax: bool,
+    /// true if the body references `__toESM` (a lowered dynamic `import()`). Only the module
+    /// preamble declares it, so a script without module syntax needs `TO_ESM_HELPER` prepended.
+    pub uses_to_esm: bool,
 }
 
 struct EmitState<'a, 'r> {
@@ -154,6 +158,8 @@ struct EmitState<'a, 'r> {
     /// bundler mode: resolve a `require("./rel")` specifier to a bundled module to rewrite the call.
     /// `None` in app mode → require() calls are left untouched (runtime resolution).
     resolve: Option<&'r dyn Fn(&str) -> SourceRef>,
+    /// set when the body now calls `__toESM` (see `ModuleParts::uses_to_esm`).
+    uses_to_esm: bool,
 }
 
 impl<'a> EmitState<'a, '_> {
@@ -163,8 +169,19 @@ impl<'a> EmitState<'a, '_> {
         self.imports.get(&sym)
     }
 
+    /// `var.prop`, or `var["prop"]` when `prop` (a string-named import such as `"a-b"`) is not an
+    /// identifier name.
     fn build_member(&self, access: &Access) -> Expression<'a> {
         let obj = self.ast.expression_identifier(SPAN, self.ast.ident(&access.var));
+        if !is_plain_ident(&access.prop) {
+            let key = self
+                .ast
+                .expression_string_literal(SPAN, self.ast.str(&access.prop), None);
+            return Expression::ComputedMemberExpression(
+                self.ast
+                    .alloc_computed_member_expression(SPAN, obj, key, false),
+            );
+        }
         Expression::StaticMemberExpression(self.ast.alloc_static_member_expression(
             SPAN,
             obj,
@@ -179,26 +196,87 @@ impl<'a> EmitState<'a, '_> {
         self.ast.expression_call(SPAN, callee, NONE, self.ast.vec1(Argument::from(arg)), false)
     }
 
-    /// `obj.method(arg)`.
-    fn call_member(&self, obj: &str, method: &str, arg: Expression<'a>) -> Expression<'a> {
-        let object = self.ast.expression_identifier(SPAN, self.ast.ident(obj));
+    /// `object.method(args…)`.
+    fn call_method(
+        &self,
+        object: Expression<'a>,
+        method: &str,
+        args: Vec<Expression<'a>>,
+    ) -> Expression<'a> {
         let callee = Expression::StaticMemberExpression(self.ast.alloc_static_member_expression(
             SPAN,
             object,
             self.ast.identifier_name(SPAN, self.ast.ident(method)),
             false,
         ));
-        self.ast.expression_call(SPAN, callee, NONE, self.ast.vec1(Argument::from(arg)), false)
+        let args = self.ast.vec_from_iter(args.into_iter().map(Argument::from));
+        self.ast.expression_call(SPAN, callee, NONE, args, false)
     }
 
-    /// Convert a dynamic `import(x)` into `Promise.resolve(__toESM(require(x)))` — esbuild's
-    /// `--supported:dynamic-import=false` lowering. The runner's CJS `require` resolves relative
-    /// specifiers the same way static requires do, and `__toESM` preserves default/named interop
-    /// so `(await import('./m')).default` / `.named` keep working.
-    fn lower_dynamic_import(&self, source: Expression<'a>) -> Expression<'a> {
-        let require_call = self.call_global("require", source);
-        let toesm = self.call_global("__toESM", require_call);
-        self.call_member("Promise", "resolve", toesm)
+    /// `(<param>) => body` (no parameter when `param` is `None`).
+    fn arrow(&self, param: Option<&str>, body: Expression<'a>) -> Expression<'a> {
+        let ast = self.ast;
+        let items = ast.vec_from_iter(param.map(|name| {
+            let pattern = ast.binding_pattern_binding_identifier(SPAN, ast.ident(name));
+            ast.plain_formal_parameter(SPAN, pattern)
+        }));
+        let kind = FormalParameterKind::ArrowFormalParameters;
+        let params = ast.alloc_formal_parameters(SPAN, kind, items, NONE);
+        let stmt = ast.statement_expression(SPAN, body);
+        let body = ast.alloc_function_body(SPAN, ast.vec(), ast.vec1(stmt));
+        ast.expression_arrow_function(SPAN, true, false, NONE, params, NONE, body)
+    }
+
+    /// `Promise.resolve().then(() => module)` — `module` is evaluated in a later job.
+    fn deferred(&self, module: Expression<'a>) -> Expression<'a> {
+        let promise = self
+            .ast
+            .expression_identifier(SPAN, self.ast.ident("Promise"));
+        let resolved = self.call_method(promise, "resolve", vec![]);
+        let load = self.arrow(None, module);
+        self.call_method(resolved, "then", vec![load])
+    }
+
+    /// `__toESM(<module.exports>)`, noting that the body now needs the helper.
+    fn wrap_to_esm(&mut self, module_exports: Expression<'a>) -> Expression<'a> {
+        self.uses_to_esm = true;
+        self.call_global("__toESM", module_exports)
+    }
+
+    /// Lower a dynamic `import(x)` like esbuild's `--supported:dynamic-import=false`:
+    /// `Promise.resolve().then(() => __toESM(require(x)))`. The load runs in a later job, so a
+    /// module that throws REJECTS the promise instead of throwing out of `import()` (Node / vitest),
+    /// and a `vi.doMock` registered before the call is seen. The runner's CJS `require` resolves
+    /// relative specifiers like static requires do, and `__toESM` keeps default/named interop so
+    /// `(await import('./m')).default` / `.named` work. A computed specifier is evaluated at the
+    /// call, as in Node (esbuild evaluates it inside the `.then`):
+    /// `((__tt_spec) => Promise.resolve().then(() => __toESM(require(__tt_spec))))(x)`. In bundler
+    /// mode a literal specifier of a bundled module loads that module's lazy init / `require_<id>`.
+    fn lower_dynamic_import(&mut self, source: Expression<'a>) -> Expression<'a> {
+        let Expression::StringLiteral(spec) = &source else {
+            let spec = self
+                .ast
+                .expression_identifier(SPAN, self.ast.ident("__tt_spec"));
+            let require_call = self.call_global("require", spec);
+            let load = self.wrap_to_esm(require_call);
+            let deferred = self.deferred(load);
+            let lower = self.arrow(Some("__tt_spec"), deferred);
+            let lower = self.ast.expression_parenthesized(SPAN, lower);
+            let args = self.ast.vec1(Argument::from(source));
+            return self.ast.expression_call(SPAN, lower, NONE, args, false);
+        };
+        let module = match self.resolve.map(|resolve| resolve(spec.value.as_str())) {
+            Some(SourceRef::BundledEsm { id }) => self.build_init_exports(&id),
+            Some(SourceRef::BundledCjs { id }) => {
+                let require_call = self.build_require_id(&id);
+                self.wrap_to_esm(require_call)
+            }
+            _ => {
+                let require_call = self.call_global("require", source);
+                self.wrap_to_esm(require_call)
+            }
+        };
+        self.deferred(module)
     }
 
     /// `init_<id>(), <id>_exports` as a parenthesized sequence — the namespace of a bundled ESM
@@ -309,7 +387,7 @@ fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -
 
     // TS/JSX strip IN PLACE (original spans preserved → the codegen map points at the .ts source).
     if crate::transform::needs_transform(path) {
-        let scoping0 = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        let scoping0 = crate::transform::semantic_scoping(&program);
         let mut opts = TransformOptions::default();
         if legacy_decorators {
             // Mirror `transform::transform_decorators_with_metadata` so output is identical to the
@@ -327,7 +405,8 @@ fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -
         }
     }
 
-    // Rebuild semantic on the now-plain-JS AST for the ESM→CJS reference rewriting.
+    // Rebuild semantic on the now-plain-JS AST for the ESM→CJS reference rewriting (no TS enums
+    // remain, so no `with_enum_eval` here or in `transform_to_parts`).
     let sem = SemanticBuilder::new().build(&program);
     if !sem.errors.is_empty() {
         return None;
@@ -339,11 +418,13 @@ fn emit_inner(path: &Path, src: &str, legacy_decorators: bool, with_map: bool) -
     let map_src = if with_map { Some((path, src)) } else { None };
     let (parts, mappings) = lower(ast, scoping, &ctx, &mut program, map_src)?;
 
-    // No ESM module syntax → CJS/script: return the transformed body unwrapped (no preamble).
+    // No ESM module syntax → CJS/script: return the transformed body unwrapped (no preamble), with
+    // just the `__toESM` helper prepended when a lowered `import()` calls it.
     if !parts.has_module_syntax {
-        let mut out = parts.body_code;
+        let helper = if parts.uses_to_esm { TO_ESM_HELPER } else { "" };
+        let mut out = format!("{helper}{}", parts.body_code);
         if let Some(m) = &mappings {
-            append_inline_map(&mut out, path, 0, m);
+            append_inline_map(&mut out, path, helper.matches('\n').count(), m);
         }
         return Some(out);
     }
@@ -391,7 +472,13 @@ fn lower<'a>(
     let Plan { imports, requires, re_exports, exports, body_stmts, default_needs_rewrite } =
         plan(&ast, &scoping, ctx, program)?;
 
-    let mut state = EmitState { ast, imports, scoping, resolve: ctx.resolve };
+    let mut state = EmitState {
+        ast,
+        imports,
+        scoping,
+        resolve: ctx.resolve,
+        uses_to_esm: false,
+    };
     let mut body = body_stmts;
     for stmt in body.iter_mut() {
         state.visit_statement(stmt);
@@ -420,8 +507,17 @@ fn lower<'a>(
 
     let has_module_syntax =
         !(requires.is_empty() && re_exports.is_empty() && exports.is_empty() && !default_needs_rewrite);
+    let uses_to_esm = state.uses_to_esm;
     Some((
-        ModuleParts { requires, re_exports, exports, body_code, default_needs_rewrite, has_module_syntax },
+        ModuleParts {
+            requires,
+            re_exports,
+            exports,
+            body_code,
+            default_needs_rewrite,
+            has_module_syntax,
+            uses_to_esm,
+        },
         mappings,
     ))
 }
@@ -534,7 +630,7 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
 
     for (exported, local, sym) in deferred_named {
         let value_js = match sym.and_then(|s| imports.get(&s)) {
-            Some(access) => format!("{}.{}", access.var, access.prop),
+            Some(access) => member_js(&access.var, &access.prop),
             None => local,
         };
         exports.push(ExportEntry { name: exported, value_js });
@@ -549,7 +645,7 @@ fn plan<'a>(ast: &AstBuilder<'a>, scoping: &Scoping, ctx: &LowerCtx, program: &m
 fn module_namespace_expr(ctx: &LowerCtx, src: &str, _seq: usize, toesm: bool) -> (Vec<String>, String) {
     match ctx.source_ref(src) {
         SourceRef::External => {
-            let r = format!("require(\"{src}\")");
+            let r = require_js(src);
             (vec![], if toesm { format!("__toESM({r})") } else { r })
         }
         // `(init_<id>(), <id>_exports)` — ensure the bundled ESM module is initialized, then read it.
@@ -602,7 +698,7 @@ fn collect_import(
         match &sref {
             SourceRef::External => {
                 let var = import_var(src, seq);
-                requires.push(format!("var {var} = require(\"{src}\");"));
+                requires.push(format!("var {var} = {};", require_js(src)));
             }
             SourceRef::BundledEsm { id } => requires.push(format!("init_{id}();")),
             SourceRef::BundledCjs { id } => requires.push(format!("require_{id}();")),
@@ -653,7 +749,11 @@ fn collect_import(
         // external (bare, or app mode): runtime `require("spec")`.
         SourceRef::External => {
             let var = ns_local.unwrap_or_else(|| import_var(src, seq));
-            let expr = if has_default_or_ns { format!("__toESM(require(\"{src}\"))") } else { format!("require(\"{src}\")") };
+            let expr = if has_default_or_ns {
+                format!("__toESM({})", require_js(src))
+            } else {
+                require_js(src)
+            };
             requires.push(format!("var {var} = {expr};"));
             map_var_specs(specifiers, &var, imports);
         }
@@ -695,7 +795,10 @@ fn collect_export_named<'a>(
         for spec in &decl.specifiers {
             let exported = module_export_name(&spec.exported);
             let local = module_export_name(&spec.local);
-            exports.push(ExportEntry { name: exported, value_js: format!("{var}.{local}") });
+            exports.push(ExportEntry {
+                name: exported,
+                value_js: member_js(&var, &local),
+            });
         }
         return true;
     }
@@ -797,22 +900,34 @@ fn module_export_name(n: &ModuleExportName) -> String {
     }
 }
 
+/// The identity-preserving `__toESM` helper line (self-contained). Part of `PREAMBLE`; also
+/// prepended alone to a script (no module syntax) whose lowered `import()` calls it.
+macro_rules! to_esm_helper {
+    () => {
+        "var __toESM = (mod) => (mod && mod.__esModule ? mod : (mod && (typeof mod === \"object\" || typeof mod === \"function\") && !(\"default\" in mod) && Object.defineProperty(mod, \"default\", { value: mod, configurable: true }), mod));\n"
+    };
+}
+const TO_ESM_HELPER: &str = to_esm_helper!();
+
 /// Runtime helper preamble (shared by app emit + the bundler — emitted ONCE per output). `__esm`
 /// and `__commonJS` are the lazy module-init wrappers the bundler uses so circular dependencies +
 /// init ordering work (each module's body runs once, on first require, with its exports object
 /// already live).
-pub(crate) const PREAMBLE: &str = r#"var __defProp = Object.defineProperty;
+pub(crate) const PREAMBLE: &str = concat!(
+    r#"var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __export = (target, all) => { for (var name in all) __defProp(target, name, { get: all[name], enumerable: true, configurable: true }); };
 var __copyProps = (to, from, except, desc) => { if (from && typeof from === "object" || typeof from === "function") { for (let key of __getOwnPropNames(from)) if (!__hasOwnProp.call(to, key) && key !== except) __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable, configurable: true }); } return to; };
 var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "default"), secondTarget && __copyProps(secondTarget, mod, "default"));
-var __toESM = (mod) => (mod && mod.__esModule ? mod : (mod && (typeof mod === "object" || typeof mod === "function") && !("default" in mod) && Object.defineProperty(mod, "default", { value: mod, configurable: true }), mod));
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+"#,
+    to_esm_helper!(),
+    r#"var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var __commonJS = (cb) => { var mod; return () => (mod || (mod = { exports: {} }, cb(mod.exports, mod)), mod.exports); };
 var __esm = (fn) => { var done, res; return () => (done || (done = 1, res = fn()), res); };
-"#;
+"#
+);
 
 /// Assemble one module's CJS text from its parts — NO preamble (the caller emits that once).
 /// `module.exports = __toCommonJS(__tt_exports)` is written EARLY (before requires + body) so that
@@ -849,14 +964,39 @@ fn assemble(requires: &[String], re_exports: &[String], exports: &[ExportEntry],
     out
 }
 
+/// Whether `name` can be written bare as an object key or after `.` (an ASCII identifier name;
+/// reserved words are fine there). Conservative: non-ASCII identifiers are quoted, still valid.
+fn is_plain_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// An object key for an export name: bare if an identifier, else a JS string literal (a JSON
+/// string is one; ES module export names are well-formed Unicode, so no lone surrogates).
 pub(crate) fn quote_key(name: &str) -> String {
-    let ok = !name.is_empty()
-        && name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_' || c == '$').unwrap_or(false)
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
-    if ok {
+    if is_plain_ident(name) {
         name.to_string()
     } else {
-        format!("\"{}\"", name.replace('"', "\\\""))
+        json_string(name)
+    }
+}
+
+/// `require("<spec>")` source text, the specifier as an escaped string literal (a JSON string is
+/// one; a raw `"` or `\` in the specifier would otherwise end the literal or start an escape).
+fn require_js(spec: &str) -> String {
+    format!("require({})", json_string(spec))
+}
+
+/// Source text reading property `prop` of `obj`: `obj.prop`, or `obj["a-b"]` for a string export
+/// name that isn't an identifier (`obj.a-b` would parse as `obj.a - b`).
+fn member_js(obj: &str, prop: &str) -> String {
+    if is_plain_ident(prop) {
+        format!("{obj}.{prop}")
+    } else {
+        format!("{obj}[{}]", json_string(prop))
     }
 }
 
@@ -956,14 +1096,17 @@ mod tests_dynimport {
     #[test]
     fn dynamic_import_lowers_to_require() {
         let o = emit(Path::new("t.ts"), "const m = await import(\"./x\"); m.default;").unwrap();
-        assert!(o.contains("Promise.resolve(__toESM(require(\"./x\")))"), "{o}");
+        assert!(
+            o.contains("Promise.resolve().then(() => __toESM(require(\"./x\")))"),
+            "{o}"
+        );
         assert!(!o.contains(" import("), "raw import() must be gone: {o}");
     }
     #[test]
     fn dynamic_import_with_imported_specifier_var() {
         // import() whose arg references an imported binding gets the live access rewrite too.
         let o = emit(Path::new("t.ts"), "import { p } from \"s\"; await import(p);").unwrap();
-        assert!(o.contains("require(import_s_1.p)"), "{o}");
+        assert!(o.contains("require(__tt_spec))))(import_s_1.p)"), "{o}");
     }
 }
 

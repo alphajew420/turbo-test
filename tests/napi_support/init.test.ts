@@ -16,8 +16,8 @@ test('a JS exception thrown during init is a catchable require() error', () => {
 });
 
 test('an unsupported entrypoint called during init is a catchable require() error', () => {
-  expect(() => require('./init_wrap.node')).toThrow(
-    'native addon threw during module init: Error: turbo-test: N-API napi_wrap is not implemented (native addon called an unsupported entrypoint)',
+  expect(() => require('./init_unsupported.node')).toThrow(
+    'native addon threw during module init: Error: turbo-test: N-API napi_new_instance is not implemented (native addon called an unsupported entrypoint)',
   );
 });
 
@@ -29,4 +29,11 @@ test('a shared library without napi_register_module_v1 is rejected', () => {
 
 test('a file that fails to dlopen is rejected', () => {
   expect(() => require('./garbage.node')).toThrow(/^native addon \/.*\/garbage\.node: dlopen /);
+});
+
+// Module init runs under the host's addon lock; this nested init is a same-thread re-entry and
+// must not deadlock. (Host-only: Node hangs here, its dlopen mutex is held across module init.)
+test("require() of a .node from inside another addon's module init", () => {
+  (globalThis as any).loadNested = () => require('./second.node');
+  expect(require('./init_nested.node').nested.who()).toBe('second');
 });

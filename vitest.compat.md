@@ -49,6 +49,13 @@ subcommand layer** — `argv[0]` that isn't a flag is treated as a test-file pat
 | `--coverage-reporter[s] a,b` | ✅ | `lcov,json-summary,text,html`. |
 | `--coverage-include GLOB` / `--coverage-exclude GLOB` | ✅ | Brace-alternation; auto-read from config. |
 
+> Every value flag accepts both the space form and vitest's inline form (`--reporter json` ≡
+> `--reporter=json`, `--testTimeout=5000`, `--shard=1/2`, `--outputFile=out/r.xml`, …; the value is
+> everything after the first `=`). A value flag given WITHOUT a value (the last token, or followed
+> by another `-` token) is dropped with a `turbo-test: ignoring '<flag>': missing value` warning
+> (a value-less `--coverage-*` still implies `--coverage`); it never swallows a test-file path.
+> A value that itself starts with `-` needs the inline form (`--testNamePattern=-x`).
+
 > Note: turbo-test's coverage flags use a `--coverage-*` namespace, **not** vitest's dotted
 > `--coverage.*` form (`--coverage.reporter`, `--coverage.thresholds.lines`). A vitest invocation
 > using dotted coverage flags would not be understood. See §3 dotted-flag gap.
@@ -58,7 +65,7 @@ subcommand layer** — `argv[0]` that isn't a flag is treated as a test-file pat
 |---|---|---|---|
 | `-t, --testNamePattern <re>` | ✅ | **P0 — DONE** | Filter tests by name (regex, unanchored, case-sensitive). `cli.rs` → `TURBO_TEST_NAME_PATTERN` env → `__TT_NAME_PATTERN` global → `runtime.js` `runSuite` filter. `cli.js` forwards the value. |
 | `--run` | ✅ | **P0 — DONE** | `run`/`watch`/`dev` leading subcommand token stripped in `cli.js`; `--run` (and other unknown flags) accepted-and-ignored. |
-| `--passWithNoTests` | ✅ | **P0 — DONE** | `cli.js`: exit 0 instead of 1 when discovery finds no files. |
+| `--passWithNoTests` | ✅ | **P0 — DONE** | Launcher: exit 0 instead of 1 when discovery finds no files. Like vitest, it also covers a test file that collects NO test or suite at all: without the flag such a file fails the run with `No test suite found in file <abs path>` (reported as a file-level error: `ERROR` line, JSON `"error"`, JUnit `<error>` case, TAP `not ok`; exit 1); with it the file passes. A file whose tests are all skipped/todo (incl. `describe.skip`/`describe.todo`/`skipIf`) or filtered out by `-t` is NOT empty and passes. vitest's per-suite `No test found in suite <name>` (an empty `describe`) is not modeled. |
 | `--bail <n>` | 🟡 | **P1 — DONE** | Stop after N **failed tests** total. `cli.rs`: shared `Arc<AtomicUsize>` failure counter incremented after each file; workers stop pulling new files once it reaches N. **File-granular**: a worker already mid-file finishes that file, so the final failed count can exceed N (esp. with multiple workers); partial results are still reported. `cli.js` forwards the value. |
 | `--reporter junit` / `--outputFile` | ✅ | **P1 — DONE** | JUnit XML (per-testcase) + `--outputFile` for json/junit/tap. See §3. |
 | `--reporter` (verbose/dot/tap/default) | ✅ | **P1/P2 — DONE** | `tap`/`verbose`/`dot`/`default` implemented; unknown values (`html`, `tap-flat`, …) accepted-and-ignored → text fallback. See §3. |
@@ -103,13 +110,13 @@ for unmodeled flags. Covered by `test/cli-compat.test.mjs`.
 | capability | status | Notes |
 |---|---|---|
 | default text (`PASS/FAIL file (n passed, n failed)` + summary line) | ✅ | turbo-test's own format, not byte-identical to vitest's. `--reporter default` selects it. |
-| `--reporter json` | 🟡 | Emits `{numTotalTests,numPassedTests,…,testResults[]}` (file-level, not per-assertion). To **stdout** (summary line moved to stderr to keep stdout clean) or to `--outputFile`. `testResults[]` is per-FILE counts, not per-test `assertionResults[]` like vitest. **Where:** `src/cli.rs` `render_json`. |
+| `--reporter json` | 🟡 | Emits `{numTotalTests,numPassedTests,…,testResults[]}` (file-level, not per-assertion). To **stdout** (summary line AND test `console.*` output moved to stderr to keep stdout clean — same for junit/tap printed to stdout) or to `--outputFile`. `testResults[]` is per-FILE counts, not per-test `assertionResults[]` like vitest. **Where:** `src/cli.rs` `render_json`. |
 | `--reporter junit` + `--outputFile` | ✅ | JUnit XML: `<testsuites tests= failures= errors=>` → one `<testsuite>` per file → one `<testcase name="describe > it" classname=file time=>` per test, with `<failure message=…/>` on failures. Names/messages XML-escaped. A file that fails to LOAD emits one synthetic `<testcase>` with `<error>`. Skipped tests omitted from `<testcase>` list. **Where:** `src/cli.rs` `render_junit`; per-test list from `TestReport.tests` (`runner.rs`) ← `summary.tests[]` (`runtime.js runSuite`). **Gap:** no `<system-out>`/`<properties>`; `time` is wall-clock `Date.now()` (ms-granular, can read `0.000` for sub-ms tests; affected by `vi.setSystemTime`). |
-| `--reporter tap` | ✅ | TAP v13: `TAP version 13`, flat `1..N` plan over all tests, `ok N - name` / `not ok N - name`, `# SKIP` directive, YAML `message:` diagnostic block on failure. **Where:** `Reporter::Tap`. **Gap:** flat (no nested subtests); message newlines flattened to spaces. |
+| `--reporter tap` | ✅ | TAP v13: `TAP version 13`, flat `1..N` plan over all tests, `ok N - name` / `not ok N - name`, `# SKIP` directive, YAML `message:` diagnostic block on failure. A file that fails to LOAD is one `not ok N - <file>` point with the load error as its `message:` (like JUnit's synthetic `<error>` case). **Where:** `Reporter::Tap`. **Gap:** flat (no nested subtests); message newlines flattened to spaces. |
 | `--reporter verbose` | ✅ | Per-file PASS/FAIL line + one `✓/✗/- name (Nms)` line per test. To stdout. **Where:** `Reporter::Verbose`. |
 | `--reporter dot` | ✅ | One char per FILE (`.` pass / `x` fail / `!` load-error), not per-test (vitest is per-test). **Where:** `Reporter::Dot`. Documented divergence. |
 | `--reporter html` / `tap-flat` / `hanging-process` / `basic` / unknown | 🟡 | Accepted-and-ignored → falls back to the default text reporter, never errors. |
-| `--outputFile[.<reporter>] <path>` | 🟡 | `--outputFile <path>` writes the active artifact reporter (json/junit/tap) to disk; for text/dot/verbose it writes the plain PASS/FAIL lines. The vitest per-reporter dotted form `--outputFile.junit=…` (multi-reporter fan-out) is **not** parsed. **Where:** `src/cli.rs` `--outputFile` arm; `cli.js` value-flag regex. |
+| `--outputFile[.<reporter>] <path>` | 🟡 | `--outputFile <path>` writes the active artifact reporter (json/junit/tap) to disk; for text/dot/verbose it writes the plain PASS/FAIL lines. Missing parent dirs are created for every reporter; a failed write prints `turbo-test: failed to write --outputFile '<path>': <err>` to stderr and the run exits 1. The vitest per-reporter dotted form `--outputFile.junit=…` (multi-reporter fan-out) is **not** parsed. **Where:** `src/cli.rs` `--outputFile` arm; `cli.js` value-flag regex. |
 | dotted flags (`--coverage.reporter`, `--reporter.0`) | ❌ | turbo-test uses flat `--coverage-*`; vitest's dotted form unrecognized. |
 
 ---
@@ -134,7 +141,7 @@ Mostly strong. Notable gaps:
 | `expect(...).toMatchSnapshot()` | ✅ | File snapshots under `__snapshots__/<testfile>.snap`, keyed `<full describe>it name> <counter>`. Missing key or update-mode writes + passes; else compares with a readable diff. Pretty-format-ish serializer (primitives / arrays / objects (sorted keys) / Map / Set / Date / RegExp / Error / functions). Driven by `-u`/`--update` → `TURBO_UPDATE_SNAPSHOTS` env → `globalThis.__TT_UPDATE_SNAPSHOTS`. The test file path reaches the runtime as `globalThis.__ttFile` (set in `drive_tests`). |
 | `expect(...).toMatchInlineSnapshot()` | 🟡 | **Compare path only**: comparing against the passed string (whitespace-normalized) works; with no arg it's a no-op pass. **AUTO-WRITING the inline snapshot back into the source on first run / `-u` is UNSUPPORTED** (no test-source rewriting) — pass the expected string explicitly. |
 | `expect(...).toThrowErrorMatchingSnapshot()` / `toThrowErrorMatchingInlineSnapshot()` | ✅ / 🟡 | The thrown error's `message` is snapshotted via the same file path (✅) / inline compare path (🟡, no auto-write). |
-| `vi.fn/spyOn/mock/unmock/doMock/mocked` | ✅ | |
+| `vi.fn/spyOn/mock/unmock/doMock/mocked` | ✅ | A factory-less `vi.mock(path)` automocks the real module on both loader paths (vitest's algorithm: functions → `vi.fn()` returning `undefined`, classes keep mocked statics + prototype methods, objects / class instances mocked deeply, arrays emptied, primitives kept). A factory result's `default` key is the mock's default export. A `vi.mock`/`vi.doMock` factory that throws (or rejects) fails the import of its module with `[vitest] There was an error when mocking a module. … Caused by: <error>` (`jest.mock`: the factory's own error); a module the file never imports never runs into it. Module-runner (esbuild project): reading a name the factory did not return throws `[vitest] No "x" export is defined on the "<spec>" mock…` (`jest.mock`: reads `undefined`); on the ESM-graph / legacy-bundle paths an ES import binding cannot throw, so the missing name links and reads `undefined`. A setup file's `vi.mock` is hoisted above the setup file's own imports (module-runner). A hoisted factory runs once per file (also without esbuild, where factories see the file's `vi.hoisted` values and async factories are awaited). `vi.doMock` then `import()` returns the mock on every loader path. A `?query` specifier (`./x.js?raw`) is a module id of its own. A setup file that throws fails every test file using it. |
 | `vi.useFakeTimers` + advance/run/clear family, `setSystemTime` | ✅ | Full fake-timer set incl. async variants. |
 | `vi.stubGlobal/stubEnv` + `unstubAllGlobals/unstubAllEnvs` | ✅ | |
 | `vi.hoisted` | ✅ | Shared between mock-prepass & module. |
@@ -142,6 +149,28 @@ Mostly strong. Notable gaps:
 | `jest.*` alias | ✅ | Compatibility shim object. |
 | `toMatchObject` / `toContainEqual` / `toSatisfy` / `toHaveBeenCalledOnce` / `toHaveBeenNthCalledWith` | ✅ | Present (verified by `test/compat-api.test.mjs`). |
 | `bench()` | ❌ | No benchmark API. |
+
+### Node built-in modules
+
+Tests run in bare V8, so Node's builtins are runtime shims (`src/runtime.js` `__nodeBuiltins`).
+`import x from 'node:x'`, `import { a } from 'x'` and `require('x')` all get the same object on both
+loader paths (ESM graph and module runner); `node:` prefixes are accepted. Every listed builtin
+has a non-empty shim (a unit test enforces it); an unlisted one fails to resolve.
+
+| builtin | provided |
+|---|---|
+| `buffer` | `Buffer` (the runtime's global `Buffer`), `atob`, `btoa`, `Blob`, `File`. |
+| `fs`, `fs/promises` | Native-backed `existsSync`/`readFileSync`/`writeFileSync`/`appendFileSync` (a real `O_APPEND` append)/`mkdirSync`/`rmSync`/`readdirSync`; `promises` (= `fs/promises`): `readFile`, `writeFile`, `appendFile`, `mkdir`, `rm`, `readdir`; `constants` (the platform-independent ones: `F_OK`/`R_OK`/`W_OK`/`X_OK`, `O_RDONLY`/`O_WRONLY`/`O_RDWR`, `S_IF*`, `COPYFILE_*`). `statSync` is a stub (always a file). No callback-style API, no streams. |
+| `process` | `globalThis.process`. |
+| `timers`, `timers/promises` | The global timers (fake timers drive the same functions); `timers.promises` = `timers/promises`: `setTimeout`, `setImmediate`, `setInterval` (async iterator), `scheduler.wait`/`scheduler.yield`, all honouring `{ signal }` (`AbortError`, code `ABORT_ERR`). |
+| `assert`, `assert/strict` | Node's API: `ok`, `equal`/`notEqual`, `strictEqual`/`notStrictEqual`, `deepEqual`/`deepStrictEqual` (+ `not…`; Map/Set/Date/RegExp/Error/typed arrays/boxed primitives/prototypes/cycles), `throws`/`doesNotThrow`, `rejects`/`doesNotReject` (class / RegExp / validation function / object matchers), `match`/`doesNotMatch`, `ifError`, `fail`, `AssertionError` (`code: 'ERR_ASSERTION'`, `actual`/`expected`/`operator`). `assert/strict` = `assert.strict` (the `equal`/`deepEqual` family is strict). Generated messages are shorter than Node's diffs. |
+| `querystring` | Node's `parse`/`decode` (incl. `sep`/`eq`/`maxKeys`/`decodeURIComponent`), `stringify`/`encode`, `escape`, `unescape`. |
+| `string_decoder` | `StringDecoder` for `utf8`, `utf16le`/`ucs2`, `latin1`/`binary`, `ascii`, `hex`, `base64`, `base64url`, buffering partial characters across `write()`s like Node (U+FFFD for invalid / truncated UTF-8). |
+| `vm` | `runInThisContext`, `Script#runInThisContext`, `compileFunction` (current context), `isContext` (always `false` for objects). `createContext`, `runInContext`, `runInNewContext` (and the `Script` variants) throw: tests run in a single V8 context. A `Script`'s syntax error surfaces when it runs, not at construction. |
+| `worker_threads` | The main-thread view: `isMainThread: true`, `parentPort: null`, `threadId: 0`, `workerData: null`, `resourceLimits: {}`, `MessageChannel`/`MessagePort` (the runtime's), `get`/`setEnvironmentData`, `markAsUntransferable`/`isMarkedAsUntransferable`, `SHARE_ENV`. `new Worker()` throws (one thread). |
+| `inspector` | No inspector is active: `url()` is `undefined`, `waitForDebugger()` throws `ERR_INSPECTOR_NOT_ACTIVE`, `Session#post` throws `ERR_INSPECTOR_NOT_CONNECTED`, `open()`/`Session#connect()` throw; `console`, `close()`. |
+| `constants` | Node's merge of `os.constants` (`errno`, `priority`, `signals`), `fs.constants` and `crypto.constants`. `os.constants.signals`/`errno` carry the POSIX numbers Linux and macOS share (empty on Windows). |
+| `path`, `os`, `url`, `util`, `events`, `stream`, `crypto`, `module`, `child_process`, `perf_hooks`, `http`, `https`, `http2`, `net`, `tls`, `zlib`, `dns`, `dns/promises`, `tty`, `dgram`, `readline`, `v8`, `diagnostics_channel`, `async_hooks` | Load-time surfaces (enough for libraries to import and construct); see `src/runtime.js`. No real networking, processes or compression. |
 
 ---
 
