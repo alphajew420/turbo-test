@@ -4534,6 +4534,18 @@ fn native_log(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
 }
 
 /// Re-bind native callbacks into a fresh (snapshot-derived) context.
+/// os.tmpdir() as Node's: TMPDIR, else TMP, else TEMP, else /tmp, without a trailing slash.
+fn node_tmpdir(var: impl Fn(&str) -> Option<String>) -> String {
+    let dir = ["TMPDIR", "TMP", "TEMP"]
+        .iter()
+        .find_map(|k| var(k).filter(|v| !v.is_empty()))
+        .unwrap_or_else(|| "/tmp".to_string());
+    match dir.strip_suffix('/') {
+        Some(trimmed) if !trimmed.is_empty() => trimmed.to_string(),
+        _ => dir,
+    }
+}
+
 fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "log", native_log);
     bind_fn(scope, global, "__nativeRequire", native_require);
@@ -4550,11 +4562,19 @@ fn install_natives(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     bind_fn(scope, global, "__fs_rmSync", fs_rm_sync);
     bind_fn(scope, global, "__fs_readdirSync", fs_readdir_sync);
     bind_fn(scope, global, "__fs_symlinkSync", fs_symlink_sync);
-    // process.cwd(): the process's working directory, as vitest's workers report it
-    if let Ok(cwd) = std::env::current_dir() {
-        let key = v8::String::new(scope, "__ttProcessCwd").unwrap();
-        let value = v8::String::new(scope, &cwd.to_string_lossy()).unwrap();
-        global.set(scope, key.into(), value.into());
+    // process.cwd(): the process's working directory, as vitest's workers report it; os.tmpdir()
+    // and os.homedir() as Node computes them
+    let cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned());
+    for (name, value) in [
+        ("__ttProcessCwd", cwd.ok()),
+        ("__ttTmpdir", Some(node_tmpdir(|k| std::env::var(k).ok()))),
+        ("__ttHomedir", std::env::var("HOME").ok()),
+    ] {
+        if let Some(value) = value {
+            let key = v8::String::new(scope, name).unwrap();
+            let value = v8::String::new(scope, &value).unwrap();
+            global.set(scope, key.into(), value.into());
+        }
     }
     bind_fn(scope, global, "__ttStructuredClone", crate::structured_clone::native_structured_clone);
     if std::env::var("TURBO_STACK").is_ok() {

@@ -478,3 +478,17 @@ fn process_cwd_is_the_working_directory() {
         "{want}\n{got}"
     );
 }
+
+/// turbo-test#55: os.tmpdir() / os.homedir() are the environment's, as vitest 4.1.12 (Node):
+/// TMPDIR without its trailing slash, HOME.
+#[test]
+fn os_tmpdir_and_homedir_follow_the_environment() {
+    let p = Project::new("rc-os-dirs");
+    p.file(
+        "os.test.ts",
+        "import { test, expect } from 'vitest';\nimport * as os from 'os';\n\
+         test('dirs', () => {\n  expect(os.tmpdir()).toBe('/tt/tmp/dir');\n  expect(os.homedir()).toBe('/tt/home');\n});\n",
+    );
+    let r = turbo_test(&p.dir, &[], &[("TMPDIR", "/tt/tmp/dir/"), ("HOME", "/tt/home")]);
+    assert_passes(&r, 1);
+}

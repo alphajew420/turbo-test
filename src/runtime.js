@@ -1142,7 +1142,7 @@ globalThis.__fileURLToPath = (u) => String(u).replace(/^file:\/\//, '');
 globalThis.__dirnameOf = (p) => { const s = String(p).replace(/\/+$/, ''); const i = s.lastIndexOf('/'); return i <= 0 ? '/' : s.slice(0, i); };
 const __os = {
   platform: () => globalThis.__ttPlatform || 'darwin', arch: () => globalThis.__ttArch || 'arm64', type: () => globalThis.__ttOsType || 'Darwin', release: () => '23.0.0',
-  version: () => 'Darwin Kernel', EOL: '\n', tmpdir: () => '/tmp', homedir: () => '/', hostname: () => 'localhost',
+  version: () => 'Darwin Kernel', EOL: '\n', tmpdir: () => globalThis.__ttTmpdir || '/tmp', homedir: () => globalThis.__ttHomedir || '/', hostname: () => 'localhost',
   cpus: () => [{ model: 'cpu', speed: 1, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }],
   totalmem: () => 16 * 1024 * 1024 * 1024, freemem: () => 8 * 1024 * 1024 * 1024, uptime: () => 0,
   loadavg: () => [0, 0, 0], endianness: () => 'LE', networkInterfaces: () => ({}),

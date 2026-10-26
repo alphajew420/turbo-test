@@ -1353,3 +1353,16 @@ fn tsc_transform_esm_requires_typescript() {
     let f = put(&d, "a.ts", "export const a: number = 1;");
     assert_eq!(tsc_transform_esm(&f, &d), None);
 }
+
+/// turbo-test#55: os.tmpdir() follows Node: TMPDIR, TMP, TEMP, then /tmp, trailing slash cut.
+#[test]
+fn os_tmpdir_follows_node() {
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+    };
+    assert_eq!(node_tmpdir(env(&[("TMPDIR", "/a/b/")])), "/a/b");
+    assert_eq!(node_tmpdir(env(&[("TMPDIR", ""), ("TMP", "/t")])), "/t");
+    assert_eq!(node_tmpdir(env(&[("TEMP", "/e")])), "/e");
+    assert_eq!(node_tmpdir(env(&[])), "/tmp");
+    assert_eq!(node_tmpdir(env(&[("TMPDIR", "/")])), "/");
+}
