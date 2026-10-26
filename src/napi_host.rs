@@ -338,10 +338,12 @@ pub unsafe extern "C" fn napi_get_value_string_utf8(
     let Ok(str_val) = v8::Local::<v8::String>::try_from(to_local(v)) else {
         return napi_string_expected;
     };
+    // as Node: a NULL buf is a length query, which needs `result` (CHECK_ARG(env, result))
     if buf.is_null() {
-        if !result.is_null() {
-            *result = str_val.utf8_length(s);
+        if result.is_null() {
+            return napi_invalid_arg;
         }
+        *result = str_val.utf8_length(s);
         return napi_ok;
     }
     // As Node: bufsize 0 writes nothing; otherwise at most bufsize - 1 bytes of whole UTF-8

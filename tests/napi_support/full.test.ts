@@ -112,6 +112,9 @@ describe('values', () => {
     for (const v of [5, null, undefined, {}, Symbol('s'), new String('boxed')]) {
       expect(a.strStatus(v)).toEqual([STRING_EXPECTED, 999]);
     }
+    // a NULL buffer is a length query, which needs `result`: without it, napi_invalid_arg
+    expect(a.strNoOut('abc')).toBe(INVALID_ARG);
+    expect(a.strNoOut(5)).toBe(STRING_EXPECTED);
   });
 
   test('napi_coerce_to_string', () => {

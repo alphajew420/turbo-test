@@ -146,6 +146,13 @@ static napi_value f_str_status(napi_env env, napi_callback_info info) {
     return list(env, 2, it);
 }
 
+/* strNoOut(v): NULL buf and NULL result -> the status. */
+static napi_value f_str_no_out(napi_env env, napi_callback_info info) {
+    Args a = args(env, info);
+    ST(napi_get_value_string_utf8(env, arg(env, &a, 0), NULL, 0, NULL));
+    return dbl(env, g_status);
+}
+
 /* strCut(v, n): copy into a 0xaa-filled buffer with bufsize n (n < 16) ->
  * [status, copied, the first n + 1 buffer bytes]: what was written, plus one byte past bufsize. */
 static napi_value f_str_cut(napi_env env, napi_callback_info info) {
@@ -726,6 +733,7 @@ static const struct {
     {"strInfo", f_strinfo},
     {"strStatus", f_str_status},
     {"strCut", f_str_cut},
+    {"strNoOut", f_str_no_out},
     {"coerce", f_coerce},
     {"num", f_num},
     {"setNamed", f_set_named},
