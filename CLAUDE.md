@@ -30,10 +30,10 @@ A release where these disagree is a bug. Bump both in the same commit.
   module they test) and CLI integration tests (`tests/*.rs`, helper `tests/common/mod.rs`:
   throwaway projects outside the repo, isolated TMPDIR/TURBO_CACHE_DIR, spawning the real
   binary). Integration tests and the path/V8-sensitive unit modules are `cfg(unix)`.
-- `cargo tarpaulin` (reads `tarpaulin.toml`: Llvm engine, `target/cov`, `fail-under = 99`)
+- `cargo tarpaulin` (reads `tarpaulin.toml`: Llvm engine, `target/cov`, `fail-under = 99.98`)
   is the CI `coverage` gate. New code needs behaviour-asserting tests (happy path + edge
-  cases) that keep the crate >= 99%; never add coverage-only no-op tests. The remaining
-  uncovered lines are listed in tarpaulin.toml.
+  cases) that keep every line covered; never add coverage-only no-op tests. The single
+  remaining uncovered line (a V8-unreachable guard) is explained in tarpaulin.toml.
 - In-process V8 unit tests must boot isolates from `runner::framework_snapshot()`: the
   read-only heap is process-wide, so a default-snapshot isolate alive alongside
   framework-snapshot ones aborts the test binary.

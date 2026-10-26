@@ -397,11 +397,11 @@ projects and spawn the real `turbo-test` binary against them.
 npm ci
 cargo test --locked          # unit + CLI integration tests
 npm test                     # node --test test/*.mjs (CLI compat + tsc type checks)
-cargo tarpaulin              # line-coverage gate (tarpaulin.toml), fails below 99%
+cargo tarpaulin              # line-coverage gate (tarpaulin.toml), fails below 99.98%
 ```
 
-The Rust crate is gated at **>= 99% line coverage** (cargo-tarpaulin, Llvm engine; CI job
-`coverage`). Subprocess runs of the instrumented binaries are attributed through
+The Rust crate is gated at **>= 99.98% line coverage** (6423/6424 lines; cargo-tarpaulin,
+Llvm engine; CI job `coverage`). Subprocess runs of the instrumented binaries are attributed through
 `tarpaulin.toml`'s `objects`; the `#[path]` unit-test modules are excluded from the figure.
 
 ## License
