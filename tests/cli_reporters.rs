@@ -167,9 +167,12 @@ fn junit_reporter() {
 fn tap_reporter() {
     let p = fixture("rep-tap");
     let r = run(&p, &["--reporter", "tap"]);
-    assert!(
-        r.stdout.starts_with(
-            "TAP version 13\n1..4\nok 1 - adds <&>\nok 2 - later # SKIP\nnot ok 3 - breaks\n  ---\n  message: expected \"x\" to be \"y\"\n  ...\nok 4 - ok\n"
+    // the load-error file is a `not ok` point too (turbo-test#32 item 4), never dropped
+    assert_eq!(
+        r.stdout,
+        format!(
+            "TAP version 13\n1..5\nok 1 - adds <&>\nok 2 - later # SKIP\nnot ok 3 - breaks\n  ---\n  message: expected \"x\" to be \"y\"\n  ...\nok 4 - ok\nnot ok 5 - {}\n  ---\n  message: module errored: Error: top <boom>\n  ...\n\n",
+            path(&p, "c.test.ts")
         ),
         "{}",
         r.all()
@@ -200,7 +203,7 @@ fn output_file_artifacts() {
     run(&p, &["--reporter", "tap", "--output-file", "r.tap"]);
     assert!(std::fs::read_to_string(p.path("r.tap"))
         .unwrap()
-        .starts_with("TAP version 13\n1..4\n"));
+        .starts_with("TAP version 13\n1..5\n"));
 
     run(&p, &["--reporter", "json", "--outputFile", "r.json"]);
     let j: serde_json::Value =

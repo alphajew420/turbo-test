@@ -1003,16 +1003,25 @@ fn junit_reporter() {
 
 #[test]
 fn tap_reporter() {
-    let (_, res) = sample();
-    let expected = "TAP version 13\n1..6\n\
+    let (files, res) = sample();
+    // turbo-test#32 item 4: the load-error file (`files[2]`) is one `not ok` point carrying the
+    // error, like JUnit's / JSON's synthetic failing case — it was silently dropped.
+    let expected = "TAP version 13\n1..7\n\
 ok 1 - suite > adds\n\
 ok 2 - suite > skipped one # SKIP\n\
 not ok 3 - suite > breaks <&>\n  ---\n  message: expected \"1\" to be '2'\n  ...\n\
 ok 4 - todo\n\
 not ok 5 - silent fail\n\
-ok 6 - ok\n";
-    assert_eq!(render_tap(&res), expected);
-    assert_eq!(render_tap(&[]), "TAP version 13\n1..0\n");
+ok 6 - ok\n\
+not ok 7 - /p/c&<x>.test.ts\n  ---\n  message: module errored: Error: top <boom> & \"q\"\n  ...\n";
+    assert_eq!(render_tap(&files, &res), expected);
+    assert_eq!(render_tap(&[], &[]), "TAP version 13\n1..0\n");
+    // a multi-line load error is flattened like a test failure message
+    let only_err = vec![file_result(0, &files[0], Err("a\nb".into()), 1.0)];
+    assert_eq!(
+        render_tap(&files, &only_err),
+        "TAP version 13\n1..1\nnot ok 1 - /p/a.test.ts\n  ---\n  message: a b\n  ...\n"
+    );
 }
 
 #[test]
@@ -1029,7 +1038,7 @@ fn artifact_dispatch() {
     );
     assert_eq!(
         render_artifact(Reporter::Tap, &files, &res, &t),
-        Some(render_tap(&res))
+        Some(render_tap(&files, &res))
     );
     for r in [Reporter::Default, Reporter::Dot, Reporter::Verbose] {
         assert_eq!(render_artifact(r, &files, &res, &t), None);

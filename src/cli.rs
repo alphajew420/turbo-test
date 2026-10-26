@@ -776,22 +776,36 @@ pub fn render_junit(files: &[PathBuf], res: &[FileResult], t: &Totals) -> String
     out
 }
 
-/// TAP v13: a flat numbered plan over every test across all files.
-pub fn render_tap(res: &[FileResult]) -> String {
-    let total: usize = res.iter().map(|r| r.tests.len()).sum();
+/// TAP v13: a flat numbered plan over every test across all files. A file that failed to LOAD has
+/// no per-test list: it is one `not ok N - <file>` point carrying the load error (the TAP twin of
+/// JUnit's synthetic `<error>` case), so the failure is never silently dropped from the plan.
+pub fn render_tap(files: &[PathBuf], res: &[FileResult]) -> String {
+    let total: usize = res
+        .iter()
+        .map(|r| if r.load_error { 1 } else { r.tests.len() })
+        .sum();
     let mut out = String::from("TAP version 13\n");
     out.push_str(&format!("1..{total}\n"));
+    let diag = |out: &mut String, message: &str| {
+        out.push_str("  ---\n");
+        out.push_str(&format!("  message: {}\n", message.replace('\n', " ")));
+        out.push_str("  ...\n");
+    };
     let mut n = 0usize;
     for r in res {
+        if r.load_error {
+            n += 1;
+            out.push_str(&format!("not ok {n} - {}\n", files[r.idx].display()));
+            diag(&mut out, &r.error_msg);
+            continue;
+        }
         for t in &r.tests {
             n += 1;
             let ok = if t.status == "failed" { "not ok" } else { "ok" };
             let dir = if t.status == "skipped" { " # SKIP" } else { "" };
             out.push_str(&format!("{ok} {n} - {}{dir}\n", t.name));
             if t.status == "failed" && !t.message.is_empty() {
-                out.push_str("  ---\n");
-                out.push_str(&format!("  message: {}\n", t.message.replace('\n', " ")));
-                out.push_str("  ...\n");
+                diag(&mut out, &t.message);
             }
         }
     }
@@ -808,7 +822,7 @@ pub fn render_artifact(
     match reporter {
         Reporter::Json => Some(render_json(files, res, t)),
         Reporter::Junit => Some(render_junit(files, res, t)),
-        Reporter::Tap => Some(render_tap(res)),
+        Reporter::Tap => Some(render_tap(files, res)),
         _ => None,
     }
 }
